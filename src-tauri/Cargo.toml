@@ -38,6 +38,8 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "
 keyring = "4.2.0"
 tokio-util = "0.7.19"
 tauri-plugin-dialog = "2.8.0"
+getrandom = "0.4"
+sha2 = "0.11"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

@@ -1,24 +1,31 @@
 //! The Tauri command surface: thin wrappers that turn frontend calls into engine / repository calls.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{AppHandle, State};
+use tauri_plugin_opener::OpenerExt;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::chat::{images, ChatEngine, ChatEvent, ChatSession, EventSink};
+use crate::chat::{images, ChatEngine, ChatEvent, ChatSession, EventSink, ToolDecision};
 use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::models::{
     Character, CharacterNotebookEntry, ChatMessage, Conversation, ExpressionImage, GroupChat, Lorebook, Persona,
-    PromptPreset, QuestLogEntry, WorldState,
+    PromptPreset, QuestLogEntry, UserMemory, WorldState,
 };
+use crate::powershell::settings::{self as tool_settings, PowerShellToolOptions};
 use crate::providers::gemini::GeminiRequestOptions;
+use crate::providers::oauth::{OAuthSession, SessionStatus};
 use crate::providers::ollama::OllamaRequestOptions;
 use crate::providers::{ApiKeyProvider, LlmProviderRegistry, SecretStore};
-use crate::repo::{characters, conversations, group_chats, lorebooks, notebook, personas, prompt_presets, quest_log};
+use crate::repo::{
+    characters, conversations, group_chats, lorebooks, notebook, personas, prompt_presets, quest_log, user_memories,
+};
 use crate::secrets::KeyringSecretStore;
 use crate::{library, settings};
 
@@ -27,6 +34,10 @@ pub struct AppState {
     pub engine: ChatEngine,
     pub providers: Arc<LlmProviderRegistry>,
     pub secrets: Arc<KeyringSecretStore>,
+    /// OAuth sessions of the subscription-login providers, by provider id.
+    pub sessions: HashMap<String, Arc<OAuthSession>>,
+    /// Browser sign-ins in flight (so Cancel can stop the wait), by provider id.
+    pub sign_ins: Mutex<HashMap<String, CancellationToken>>,
     pub images_dir: PathBuf,
     pub data_dir: PathBuf,
 }
@@ -46,7 +57,7 @@ impl EventSink for ChannelSink {
 pub struct ProviderInfo {
     pub id: String,
     pub name: String,
-    /// Whether the provider is set up with an API key ("apiKey") or just a local server ("local").
+    /// How the provider is set up: an API key ("apiKey"), a subscription login ("subscription") or just a local server ("local").
     pub auth: &'static str,
     pub has_key: bool,
 }
@@ -59,12 +70,19 @@ pub struct Bootstrap {
 }
 
 fn provider_info(state: &AppState, id: &str) -> ProviderInfo {
-    let local = id == "ollama";
+    let session = state.sessions.get(id);
     ProviderInfo {
         id: id.to_string(),
         name: crate::chat::reply::provider_display_name(id).to_string(),
-        auth: if local { "local" } else { "apiKey" },
-        has_key: local || state.secrets.try_get_api_key(id).is_some(),
+        auth: match (id, session) {
+            (_, Some(_)) => "subscription",
+            ("ollama", _) => "local",
+            _ => "apiKey",
+        },
+        has_key: match session {
+            Some(session) => session.status().signed_in,
+            None => id == "ollama" || state.secrets.try_get_api_key(id).is_some(),
+        },
     }
 }
 
@@ -327,6 +345,105 @@ pub fn set_api_key(state: State<'_, AppState>, provider_id: String, key: String)
         state.secrets.save_api_key(&provider_id, key)?;
     }
     Ok(provider_info(&state, &provider_id))
+}
+
+fn session_for<'a>(state: &'a AppState, provider_id: &str) -> Result<&'a Arc<OAuthSession>> {
+    state.sessions.get(provider_id).ok_or_else(|| Error::Other("That provider has no subscription login.".into()))
+}
+
+#[tauri::command]
+pub fn subscription_status(state: State<'_, AppState>, provider_id: String) -> Result<SessionStatus> {
+    Ok(session_for(&state, &provider_id)?.status())
+}
+
+/// Opens the browser for the provider's sign-in and waits for the redirect (up to five minutes).
+/// Returns the resulting status - unchanged if the user cancelled.
+#[tauri::command]
+pub async fn subscription_sign_in(app: AppHandle, state: State<'_, AppState>, provider_id: String) -> Result<SessionStatus> {
+    let session = session_for(&state, &provider_id)?.clone();
+    let cancel = CancellationToken::new();
+    {
+        let mut in_flight = state.sign_ins.lock().unwrap();
+        if in_flight.contains_key(&provider_id) {
+            return Err(Error::Other("A sign-in is already in progress.".into()));
+        }
+        in_flight.insert(provider_id.clone(), cancel.clone());
+    }
+
+    let result = session
+        .sign_in(
+            |url| {
+                app.opener().open_url(url, None::<&str>).map_err(|e| {
+                    crate::providers::ProviderError::unknown(format!("Couldn't open your browser for sign-in: {e}")).user_facing()
+                })
+            },
+            &cancel,
+        )
+        .await;
+    state.sign_ins.lock().unwrap().remove(&provider_id);
+    result?;
+    Ok(session.status())
+}
+
+#[tauri::command]
+pub fn subscription_cancel_sign_in(state: State<'_, AppState>, provider_id: String) {
+    if let Some(cancel) = state.sign_ins.lock().unwrap().get(&provider_id) {
+        cancel.cancel();
+    }
+}
+
+#[tauri::command]
+pub fn subscription_sign_out(state: State<'_, AppState>, provider_id: String) -> Result<SessionStatus> {
+    let session = session_for(&state, &provider_id)?;
+    session.sign_out()?;
+    Ok(session.status())
+}
+
+/// The tool options as the frontend sees them (the stored form uses the C# app's PascalCase).
+#[derive(Debug, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PowerShellOptionsDto {
+    pub enabled: bool,
+    pub auto_mode: bool,
+    pub allowlist_patterns: Vec<String>,
+}
+
+#[tauri::command]
+pub fn get_powershell_options(state: State<'_, AppState>) -> Result<PowerShellOptionsDto> {
+    let o = state.db.with(tool_settings::load)?;
+    Ok(PowerShellOptionsDto { enabled: o.enabled, auto_mode: o.auto_mode, allowlist_patterns: o.allowlist_patterns })
+}
+
+#[tauri::command]
+pub fn save_powershell_options(state: State<'_, AppState>, options: PowerShellOptionsDto) -> Result<()> {
+    let stored = PowerShellToolOptions {
+        enabled: options.enabled,
+        auto_mode: options.auto_mode,
+        allowlist_patterns: options.allowlist_patterns,
+    };
+    state.db.with(|c| tool_settings::save(c, &stored))
+}
+
+/// The user's answer to a `toolApproval` event. False if that request is no longer waiting.
+#[tauri::command]
+pub fn resolve_tool_approval(state: State<'_, AppState>, request_id: Uuid, decision: ToolDecision) -> bool {
+    state.engine.resolve_tool_approval(request_id, decision)
+}
+
+/// What the assistant has learned about the user (Assistant chats only), oldest first.
+#[tauri::command]
+pub fn list_memories(state: State<'_, AppState>) -> Result<Vec<UserMemory>> {
+    state.db.with(user_memories::get_all)
+}
+
+#[tauri::command]
+pub fn delete_memory(state: State<'_, AppState>, memory_id: Uuid) -> Result<()> {
+    state.db.with(|c| user_memories::delete(c, memory_id))
+}
+
+#[tauri::command]
+pub fn clear_memories(state: State<'_, AppState>) -> Result<()> {
+    state.db.with(user_memories::delete_all)
 }
 
 #[tauri::command]

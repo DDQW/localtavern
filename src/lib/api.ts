@@ -24,6 +24,9 @@ import type {
   CharacterNotebookEntry,
   Uuid,
   WorldState,
+  PowerShellOptions,
+  SessionStatus,
+  UserMemory,
 } from "./types";
 
 export type EventHandler = (event: ChatEvent) => void;
@@ -68,6 +71,20 @@ export interface Api {
 
   listModels(providerId: string): Promise<string[]>;
   refreshModels(providerId: string): Promise<string[]>;
+  subscriptionStatus(providerId: string): Promise<SessionStatus>;
+  /** Opens the browser and waits for the sign-in to finish (or be cancelled). */
+  subscriptionSignIn(providerId: string): Promise<SessionStatus>;
+  subscriptionCancelSignIn(providerId: string): Promise<void>;
+  subscriptionSignOut(providerId: string): Promise<SessionStatus>;
+
+  getPowerShellOptions(): Promise<PowerShellOptions>;
+  savePowerShellOptions(options: PowerShellOptions): Promise<void>;
+  resolveToolApproval(requestId: Uuid, decision: { allow: boolean; alwaysPattern: string | null }): Promise<boolean>;
+
+  listMemories(): Promise<UserMemory[]>;
+  deleteMemory(memoryId: Uuid): Promise<void>;
+  clearMemories(): Promise<void>;
+
   setApiKey(providerId: string, key: string): Promise<ProviderInfo>;
   getGeminiOptions(): Promise<GeminiOptions>;
   saveGeminiOptions(options: GeminiOptions): Promise<void>;
@@ -148,6 +165,19 @@ const tauriApi: Api = {
 
   listModels: (providerId) => invoke("list_models", { providerId }),
   refreshModels: (providerId) => invoke("refresh_models", { providerId }),
+  subscriptionStatus: (providerId) => invoke("subscription_status", { providerId }),
+  subscriptionSignIn: (providerId) => invoke("subscription_sign_in", { providerId }),
+  subscriptionCancelSignIn: (providerId) => invoke("subscription_cancel_sign_in", { providerId }),
+  subscriptionSignOut: (providerId) => invoke("subscription_sign_out", { providerId }),
+
+  getPowerShellOptions: () => invoke("get_powershell_options"),
+  savePowerShellOptions: (options) => invoke("save_powershell_options", { options }),
+  resolveToolApproval: (requestId, decision) => invoke("resolve_tool_approval", { requestId, decision }),
+
+  listMemories: () => invoke("list_memories"),
+  deleteMemory: (memoryId) => invoke("delete_memory", { memoryId }),
+  clearMemories: () => invoke("clear_memories"),
+
   setApiKey: (providerId, key) => invoke("set_api_key", { providerId, key }),
   getGeminiOptions: () => invoke("get_gemini_options"),
   saveGeminiOptions: (options) => invoke("save_gemini_options", { options }),

@@ -13,7 +13,10 @@ import type {
   GroupChat,
   HistoryEntry,
   Lorebook,
+  PowerShellOptions,
   PromptPresetFull,
+  SessionStatus,
+  UserMemory,
   OllamaOptions,
   Persona,
   ProviderInfo,
@@ -136,6 +139,8 @@ const groups: GroupChat[] = [
 const providers: ProviderInfo[] = [
   { id: "gemini", name: "Gemini", auth: "apiKey", hasKey: true },
   { id: "deepseek", name: "DeepSeek", auth: "apiKey", hasKey: false },
+  { id: "xai-subscription", name: "SuperGrok", auth: "subscription", hasKey: false },
+  { id: "chatgpt-subscription", name: "ChatGPT", auth: "subscription", hasKey: true },
   { id: "ollama", name: "Ollama", auth: "local", hasKey: true },
 ];
 
@@ -254,6 +259,16 @@ function session(id: Uuid): ChatSession {
 }
 
 const running = new Map<Uuid, boolean>();
+const sessions = new Map<string, SessionStatus>([
+  ["xai-subscription", { signedIn: false, email: null }],
+  ["chatgpt-subscription", { signedIn: true, email: "alex@example.com" }],
+]);
+let powershell: PowerShellOptions = { enabled: false, autoMode: false, allowlistPatterns: ["Get-Date*"] };
+let memories: UserMemory[] = [
+  { id: "m0000000-0000-4000-8000-000000000001", content: "Lives in Berlin.", createdAt: "2026-09-01T10:00:00Z" },
+  { id: "m0000000-0000-4000-8000-000000000002", content: "Prefers Rust for side projects.", createdAt: "2026-09-02T10:00:00Z" },
+];
+const approvals = new Map<string, (decision: { allow: boolean; alwaysPattern: string | null }) => void>();
 const notebooks = new Map<Uuid, CharacterNotebookEntry[]>();
 
 async function stream(conversationId: Uuid, target: ChatMessage, onEvent: EventHandler, reply: string, replacing: boolean) {
@@ -384,6 +399,35 @@ export const mockApi: Api = {
     const reply = message(conversationId, "character", "", { speakerCharacterId: c.characterId });
     list.push(reply);
     onEvent({ type: "messageAdded", message: structuredClone(reply) });
+    const command = /^\/ps(!?) (.+)/s.exec(text.trim());
+    if (command && c.mode === "assistant") {
+      // A stand-in for the assistant's PowerShell tool: "/ps Get-Date" (or "/ps! ..." for elevation).
+      await stream(conversationId, reply, onEvent, "Let me check that for you.", false);
+      const decision = await new Promise<{ allow: boolean; alwaysPattern: string | null }>((resolve) => {
+        const requestId = uid();
+        approvals.set(requestId, resolve);
+        onEvent({ type: "toolApproval", requestId, command: command[2], elevate: command[1] === "!" });
+      });
+      const tool = message(conversationId, "tool", "");
+      list.push(tool);
+      onEvent({ type: "messageAdded", message: structuredClone(tool) });
+      if (decision.allow) {
+        onEvent({ type: "delta", messageId: tool.id, text: `$ ${command[2]}\n`, reasoning: "" });
+        await sleep(500);
+        onEvent({ type: "delta", messageId: tool.id, text: "Monday, 29 September 2026\n", reasoning: "" });
+        tool.text = `[PowerShell tool result]\nCommand: ${command[2]}\nElevated: no\nExit code: 0\nOutput:\nMonday, 29 September 2026`;
+      } else {
+        tool.text = `[PowerShell tool result]\nCommand: ${command[2]}\nThe user declined to run this command.`;
+      }
+      tool.alternates = [{ text: tool.text, reasoningText: null, rawPrompt: null }];
+      onEvent({ type: "messageUpdated", message: structuredClone(tool) });
+      const answer = message(conversationId, "character", "");
+      list.push(answer);
+      onEvent({ type: "messageAdded", message: structuredClone(answer) });
+      await stream(conversationId, answer, onEvent, decision.allow ? "It's Monday." : "Okay, I won't run it.", false);
+      onEvent({ type: "finished" });
+      return;
+    }
     await stream(conversationId, reply, onEvent, SAMPLE_REPLY, false);
     onEvent({ type: "finished" });
     if (c.mode === "roleplay" && c.characterId) {
@@ -444,6 +488,42 @@ export const mockApi: Api = {
     const stopped = !running.get(conversationId);
     running.delete(conversationId);
     return stopped ? null : "I lean in closer and lower my voice. \"Tell me more about that.\"";
+  },
+  async subscriptionStatus(providerId) {
+    return structuredClone(sessions.get(providerId)!);
+  },
+  async subscriptionSignIn(providerId) {
+    await sleep(1200);
+    sessions.set(providerId, { signedIn: true, email: "alex@example.com" });
+    providers.find((p) => p.id === providerId)!.hasKey = true;
+    return structuredClone(sessions.get(providerId)!);
+  },
+  async subscriptionCancelSignIn() {},
+  async subscriptionSignOut(providerId) {
+    sessions.set(providerId, { signedIn: false, email: null });
+    providers.find((p) => p.id === providerId)!.hasKey = false;
+    return structuredClone(sessions.get(providerId)!);
+  },
+  async getPowerShellOptions() {
+    return structuredClone(powershell);
+  },
+  async savePowerShellOptions(options) {
+    powershell = structuredClone(options);
+  },
+  async resolveToolApproval(requestId, decision) {
+    const waiting = approvals.get(requestId);
+    approvals.delete(requestId);
+    waiting?.(decision);
+    return !!waiting;
+  },
+  async listMemories() {
+    return structuredClone(memories);
+  },
+  async deleteMemory(id) {
+    memories = memories.filter((m) => m.id !== id);
+  },
+  async clearMemories() {
+    memories = [];
   },
   async swipePrevious(messageId) {
     const target = [...messages.values()].flat().find((m) => m.id === messageId)!;

@@ -13,6 +13,7 @@ use futures::StreamExt;
 use super::auth::AccessTokenSource;
 use super::error::ProviderError;
 use super::http::{ensure_success, send, transport_error};
+use super::oauth::OAuthClientConfig;
 use super::{ChunkStream, LlmProvider};
 use crate::llm::LlmRequest;
 
@@ -21,6 +22,32 @@ const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
 /// Sent as the `originator` (authorize URL and API requests) so OpenAI can tell which app is calling.
 pub const ORIGINATOR: &str = "localtavern";
+
+/// Where the refresh token is kept in the credential store.
+pub const SECRET_KEY: &str = "chatgpt-subscription";
+
+/// OpenAI's OAuth client settings for a ChatGPT (Plus/Pro/Business) login. The client id is the
+/// Codex CLI's public client, which only allows these exact loopback redirects - any other host,
+/// port or path makes auth.openai.com reject the authorize request outright.
+pub fn oauth_config() -> OAuthClientConfig {
+    OAuthClientConfig {
+        display_name: "ChatGPT".into(),
+        authorize_url: "https://auth.openai.com/oauth/authorize".into(),
+        token_url: "https://auth.openai.com/oauth/token".into(),
+        client_id: "app_EMoamEEZ73f0CkXaXp7hrann".into(),
+        // Deliberately minimal: extra scopes only inflate the JWTs.
+        scope: "openid profile email offline_access".into(),
+        redirect_host: "localhost".into(),
+        callback_ports: vec![1455, 1457],
+        callback_path: "/auth/callback".into(),
+        extra_authorize_params: vec![
+            ("id_token_add_organizations".into(), "true".into()),
+            ("codex_cli_simplified_flow".into(), "true".into()),
+            ("originator".into(), ORIGINATOR.into()),
+        ],
+        send_nonce: false,
+    }
+}
 
 /// The model catalog hides models whose minimum client version exceeds this, so it's set high
 /// enough to list everything current.

@@ -26,6 +26,9 @@ pub enum ChatEvent {
     TitleChanged { conversation_id: Uuid, title: String },
     /// Background extraction finished: the quest log and character notebooks may have changed.
     StoryChanged { conversation_id: Uuid },
+    /// The assistant wants to run a PowerShell command and needs the user's decision - answered
+    /// through `ChatEngine::resolve_tool_approval` with this `request_id`.
+    ToolApproval { request_id: Uuid, command: String, elevate: bool },
     Error { message: String, kind: Option<ProviderErrorKind> },
     /// Always the last event of one operation, success or not.
     Finished,

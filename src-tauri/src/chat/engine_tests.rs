@@ -1543,3 +1543,351 @@ async fn regenerating_and_continuing_extract_from_the_new_text() {
     wait_until("story extraction", || sink.events().iter().any(|e| matches!(e, ChatEvent::StoryChanged { .. }))).await;
     assert!(f.provider.asked(QUEST_ASK)[2].contains("Reply: second and more"), "the whole continued reply");
 }
+
+// ---- PowerShell tool ----
+
+use crate::chat::ToolDecision;
+use crate::powershell::exec::{CommandRunner, ExecError, ExecutionResult};
+use crate::powershell::settings::{self as tool_settings, PowerShellToolOptions};
+use tokio_util::sync::CancellationToken;
+
+enum RunOutcome {
+    /// Streams these chunks as live output, then finishes with this result.
+    Done(ExecutionResult, Vec<&'static str>),
+    Fail(ExecError),
+    /// Runs until the generation is stopped.
+    Hang,
+}
+
+/// Records the commands it is asked to run and answers from a script (default: exit 0, "ok").
+struct FakeRunner {
+    calls: Mutex<Vec<(String, bool)>>,
+    outcomes: Mutex<VecDeque<RunOutcome>>,
+}
+
+impl FakeRunner {
+    fn new(outcomes: Vec<RunOutcome>) -> Arc<Self> {
+        Arc::new(Self { calls: Mutex::new(vec![]), outcomes: Mutex::new(outcomes.into()) })
+    }
+
+    fn calls(&self) -> Vec<(String, bool)> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+fn exited(stdout: &str) -> ExecutionResult {
+    ExecutionResult { exit_code: Some(0), std_out: stdout.into(), ..Default::default() }
+}
+
+#[async_trait]
+impl CommandRunner for FakeRunner {
+    async fn run(
+        &self,
+        command: &str,
+        elevate: bool,
+        on_output: &(dyn Fn(String) + Send + Sync),
+        cancel: &CancellationToken,
+    ) -> std::result::Result<ExecutionResult, ExecError> {
+        self.calls.lock().unwrap().push((command.to_string(), elevate));
+        let outcome = self.outcomes.lock().unwrap().pop_front().unwrap_or(RunOutcome::Done(exited("ok"), vec![]));
+        match outcome {
+            RunOutcome::Done(mut result, chunks) => {
+                chunks.into_iter().for_each(|c| on_output(c.to_string()));
+                result.command = command.to_string();
+                result.elevated = elevate;
+                Ok(result)
+            }
+            RunOutcome::Fail(error) => Err(error),
+            RunOutcome::Hang => {
+                cancel.cancelled().await;
+                Err(ExecError::Cancelled)
+            }
+        }
+    }
+}
+
+fn tool_call(command: &str) -> Script {
+    Script::Items(vec![chunk(&format!("<powershell-run>{command}</powershell-run>")), finish("STOP")])
+}
+
+fn tools_on(f: &Fixture, auto_mode: bool, allowlist: &[&str]) {
+    let options = PowerShellToolOptions {
+        enabled: true,
+        auto_mode,
+        allowlist_patterns: allowlist.iter().map(|p| p.to_string()).collect(),
+    };
+    f.db.with(|c| tool_settings::save(c, &options)).unwrap();
+}
+
+fn roles(f: &Fixture, conv: Uuid) -> Vec<(MessageRole, String)> {
+    messages(f, conv).into_iter().map(|m| (m.role, m.text)).collect()
+}
+
+fn approval_request(sink: &VecSink) -> Option<(Uuid, String, bool)> {
+    sink.events().into_iter().find_map(|e| match e {
+        ChatEvent::ToolApproval { request_id, command, elevate } => Some((request_id, command, elevate)),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn auto_mode_runs_the_command_and_feeds_the_result_back() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Checking. <powershell-r"), chunk("un>Get-Da"), chunk("te</powershell-run>"), finish("STOP")]),
+        Script::Items(vec![chunk("It is Monday."), finish("STOP")]),
+    ]);
+    tools_on(&f, true, &[]);
+    let runner = FakeRunner::new(vec![RunOutcome::Done(exited("Monday"), vec!["Mon", "day\n"])]);
+    f.engine.set_command_runner(runner.clone());
+    let conv = ready_assistant(&f);
+
+    let (result, events) = send(&f, conv, "what day is it?").await;
+    result.unwrap();
+
+    assert_eq!(runner.calls(), [("Get-Date".to_string(), false)]);
+    assert!(!events.iter().any(|e| matches!(e, ChatEvent::ToolApproval { .. })), "auto mode never asks");
+
+    let saved = roles(&f, conv);
+    assert_eq!(saved.len(), 4);
+    assert_eq!(saved[1], (MessageRole::Character, "Checking. ".to_string()), "the tag is never stored");
+    assert_eq!(saved[2].0, MessageRole::Tool);
+    assert!(saved[2].1.contains("Command: Get-Date") && saved[2].1.contains("Output:\nMonday"), "{}", saved[2].1);
+    assert_eq!(saved[3], (MessageRole::Character, "It is Monday.".to_string()));
+
+    // The user never saw the tag, but did see the live output stream into the tool bubble.
+    let tool_id = messages(&f, conv)[2].id;
+    assert!(!streamed_text(&events).contains("powershell"), "{}", streamed_text(&events));
+    let live: String = events
+        .iter()
+        .filter_map(|e| match e {
+            ChatEvent::Delta { message_id, text, .. } if *message_id == tool_id => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(live, "$ Get-Date\nMonday\n");
+
+    // The second request carried the real output, and both offered the tool.
+    let requests = f.provider.requests();
+    assert!(requests[1].history.last().unwrap().text.contains("Output:\nMonday"));
+    assert!(requests.iter().all(|r| r.system_instruction.as_deref().unwrap_or("").contains("<powershell-run>")));
+    assert!(events.iter().filter(|e| matches!(e, ChatEvent::Finished)).count() == 1);
+}
+
+#[tokio::test]
+async fn otherwise_the_user_is_asked_and_always_allow_remembers_the_pattern() {
+    let f = fixture(vec![tool_call("Get-Date -Format o"), Script::Items(vec![chunk("Done."), finish("STOP")])]);
+    tools_on(&f, false, &[]);
+    let runner = FakeRunner::new(vec![]);
+    f.engine.set_command_runner(runner.clone());
+    let conv = ready_assistant(&f);
+
+    let sink = Arc::new(VecSink::default());
+    let (engine, task_sink) = (f.engine.clone(), sink.clone() as Arc<dyn EventSink>);
+    let task = tokio::spawn(async move { engine.send_message(conv, "time?".into(), vec![], task_sink).await });
+    wait_until("the approval request", || approval_request(&sink).is_some()).await;
+    let (request_id, command, elevate) = approval_request(&sink).unwrap();
+    assert_eq!((command.as_str(), elevate), ("Get-Date -Format o", false));
+    assert!(runner.calls().is_empty(), "nothing runs before the user agrees");
+
+    assert!(f.engine.resolve_tool_approval(request_id, ToolDecision { allow: true, always_pattern: Some("Get-Date*".into()) }));
+    assert!(!f.engine.resolve_tool_approval(request_id, ToolDecision::default()), "an answer counts once");
+    task.await.unwrap().unwrap();
+    assert_eq!(runner.calls().len(), 1);
+    let stored = f.db.with(tool_settings::load).unwrap();
+    assert_eq!(stored.allowlist_patterns, ["Get-Date*"]);
+
+    // The same kind of command now goes straight through.
+    f.provider.scripts.lock().unwrap().extend([tool_call("Get-Date"), Script::Items(vec![chunk("Again."), finish("STOP")])]);
+    let (result, events) = send(&f, conv, "and now?").await;
+    result.unwrap();
+    assert_eq!(runner.calls().len(), 2);
+    assert!(!events.iter().any(|e| matches!(e, ChatEvent::ToolApproval { .. })));
+}
+
+#[tokio::test]
+async fn a_denied_command_is_not_run_and_the_model_is_told() {
+    let f = fixture(vec![tool_call("Remove-Item x"), Script::Items(vec![chunk("Understood."), finish("STOP")])]);
+    tools_on(&f, false, &[]);
+    let runner = FakeRunner::new(vec![]);
+    f.engine.set_command_runner(runner.clone());
+    let conv = ready_assistant(&f);
+
+    let sink = Arc::new(VecSink::default());
+    let (engine, task_sink) = (f.engine.clone(), sink.clone() as Arc<dyn EventSink>);
+    let task = tokio::spawn(async move { engine.send_message(conv, "clean up".into(), vec![], task_sink).await });
+    wait_until("the approval request", || approval_request(&sink).is_some()).await;
+    f.engine.resolve_tool_approval(approval_request(&sink).unwrap().0, ToolDecision { allow: false, always_pattern: Some("x*".into()) });
+    task.await.unwrap().unwrap();
+
+    assert!(runner.calls().is_empty());
+    let saved = roles(&f, conv);
+    assert_eq!(saved[1].0, MessageRole::Tool);
+    assert!(saved[1].1.contains("declined") && saved[1].1.contains("Remove-Item x"), "{}", saved[1].1);
+    assert_eq!(saved[2].1, "Understood.");
+    assert!(f.db.with(tool_settings::load).unwrap().allowlist_patterns.is_empty(), "denying remembers nothing");
+    assert!(f.provider.requests()[1].history.last().unwrap().text.contains("declined"));
+}
+
+#[tokio::test]
+async fn elevation_always_asks_and_is_never_remembered() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("<powershell-run elevate=\"true\">Restart-Service Spooler</powershell-run>"), finish("STOP")]),
+        Script::Items(vec![chunk("Restarted."), finish("STOP")]),
+    ]);
+    // Auto mode and a match-everything allowlist still don't cover elevation.
+    tools_on(&f, true, &["*"]);
+    let runner = FakeRunner::new(vec![]);
+    f.engine.set_command_runner(runner.clone());
+    let conv = ready_assistant(&f);
+
+    let sink = Arc::new(VecSink::default());
+    let (engine, task_sink) = (f.engine.clone(), sink.clone() as Arc<dyn EventSink>);
+    let task = tokio::spawn(async move { engine.send_message(conv, "fix printing".into(), vec![], task_sink).await });
+    wait_until("the approval request", || approval_request(&sink).is_some()).await;
+    let (id, command, elevate) = approval_request(&sink).unwrap();
+    assert_eq!((command.as_str(), elevate), ("Restart-Service Spooler", true));
+    f.engine.resolve_tool_approval(id, ToolDecision { allow: true, always_pattern: Some("Restart*".into()) });
+    task.await.unwrap().unwrap();
+
+    assert_eq!(runner.calls(), [("Restart-Service Spooler".to_string(), true)]);
+    assert_eq!(f.db.with(tool_settings::load).unwrap().allowlist_patterns, ["*"], "no elevated pattern was stored");
+    assert!(roles(&f, conv)[1].1.contains("Elevated: yes"));
+}
+
+#[tokio::test]
+async fn stopping_while_the_question_is_open_ends_the_turn_without_running_anything() {
+    let f = fixture(vec![Script::Items(vec![chunk("Let me look. <powershell-run>ls</powershell-run>"), finish("STOP")])]);
+    tools_on(&f, false, &[]);
+    let runner = FakeRunner::new(vec![]);
+    f.engine.set_command_runner(runner.clone());
+    let conv = ready_assistant(&f);
+
+    let sink = Arc::new(VecSink::default());
+    let (engine, task_sink) = (f.engine.clone(), sink.clone() as Arc<dyn EventSink>);
+    let task = tokio::spawn(async move { engine.send_message(conv, "list".into(), vec![], task_sink).await });
+    wait_until("the approval request", || approval_request(&sink).is_some()).await;
+    f.engine.stop(conv);
+    tokio::time::timeout(Duration::from_secs(5), task).await.expect("stops promptly").unwrap().unwrap();
+
+    assert!(runner.calls().is_empty());
+    assert_eq!(roles(&f, conv).len(), 2, "just the user message and what the assistant said before the tag");
+    assert!(error_messages(&sink.events()).is_empty());
+    assert!(!f.engine.is_generating(conv));
+    assert!(!f.engine.resolve_tool_approval(approval_request(&sink).unwrap().0, ToolDecision::default()), "the question is gone");
+}
+
+#[tokio::test]
+async fn stopping_a_running_command_kills_it_and_drops_the_unfinished_bubble() {
+    let f = fixture(vec![tool_call("Start-Sleep 60")]);
+    tools_on(&f, true, &[]);
+    f.engine.set_command_runner(FakeRunner::new(vec![RunOutcome::Hang]));
+    let conv = ready_assistant(&f);
+
+    let sink = Arc::new(VecSink::default());
+    let (engine, task_sink) = (f.engine.clone(), sink.clone() as Arc<dyn EventSink>);
+    let task = tokio::spawn(async move { engine.send_message(conv, "wait".into(), vec![], task_sink).await });
+    wait_until("the tool bubble", || {
+        sink.events().iter().any(|e| matches!(e, ChatEvent::MessageAdded { message } if message.role == MessageRole::Tool))
+    })
+    .await;
+    f.engine.stop(conv);
+    tokio::time::timeout(Duration::from_secs(5), task).await.expect("stops promptly").unwrap().unwrap();
+
+    assert!(sink.events().iter().any(|e| matches!(e, ChatEvent::MessageRemoved { .. })));
+    assert_eq!(roles(&f, conv).len(), 1, "only the user's message is left");
+    assert_eq!(f.provider.requests().len(), 1, "the model isn't asked to continue");
+}
+
+#[tokio::test]
+async fn a_runaway_tool_loop_is_cut_off_after_five_round_trips() {
+    let f = fixture((0..7).map(|_| tool_call("Get-Date")).collect());
+    tools_on(&f, true, &[]);
+    let runner = FakeRunner::new(vec![]);
+    f.engine.set_command_runner(runner.clone());
+    let conv = ready_assistant(&f);
+
+    let (result, events) = send(&f, conv, "loop forever").await;
+    result.unwrap();
+    assert_eq!(runner.calls().len(), 5);
+    assert_eq!(f.provider.requests().len(), 6);
+    let saved = roles(&f, conv);
+    assert_eq!(saved.last().unwrap(), &(MessageRole::Tool, "Tool call limit reached for this turn.".to_string()));
+    assert!(error_messages(&events).is_empty());
+    assert!(!f.engine.is_generating(conv));
+}
+
+#[tokio::test]
+async fn runner_problems_reach_the_model_as_tool_results() {
+    let f = fixture(vec![
+        tool_call("Get-Date"),
+        Script::Items(vec![chunk("Can't."), finish("STOP")]),
+        tool_call("Restart-Service x"),
+        Script::Items(vec![chunk("Ok."), finish("STOP")]),
+    ]);
+    tools_on(&f, true, &[]);
+    f.engine.set_command_runner(FakeRunner::new(vec![
+        RunOutcome::Fail(ExecError::PwshNotFound),
+        RunOutcome::Done(ExecutionResult { uac_declined: true, ..Default::default() }, vec![]),
+    ]));
+    let conv = ready_assistant(&f);
+
+    send(&f, conv, "one").await.0.unwrap();
+    assert!(roles(&f, conv)[1].1.contains("wasn't found on PATH"), "{}", roles(&f, conv)[1].1);
+
+    // Elevation turned down at the Windows prompt is reported to the model as a decline.
+    send(&f, conv, "two").await.0.unwrap();
+    let last_tool = roles(&f, conv).into_iter().rev().find(|(role, _)| *role == MessageRole::Tool).unwrap();
+    assert!(last_tool.1.contains("declined"), "{}", last_tool.1);
+}
+
+#[tokio::test]
+async fn the_tool_is_only_offered_in_assistant_chats_when_switched_on() {
+    // Off (the default): the instruction is absent and a tag in the reply is just text.
+    let f = fixture(vec![tool_call("Get-Date")]);
+    let runner = FakeRunner::new(vec![]);
+    f.engine.set_command_runner(runner.clone());
+    let conv = ready_assistant(&f);
+    send(&f, conv, "hi").await.0.unwrap();
+    assert!(!f.provider.requests()[0].system_instruction.clone().unwrap_or_default().contains("powershell"));
+    assert_eq!(messages(&f, conv)[1].text, "<powershell-run>Get-Date</powershell-run>");
+    assert!(runner.calls().is_empty());
+
+    // On, but in a roleplay: still nothing.
+    let f = fixture(vec![tool_call("Get-Date")]);
+    tools_on(&f, true, &[]);
+    let runner = FakeRunner::new(vec![]);
+    f.engine.set_command_runner(runner.clone());
+    let conv = ready_roleplay(&f);
+    send(&f, conv, "hi").await.0.unwrap();
+    assert!(!f.provider.requests()[0].system_instruction.clone().unwrap_or_default().contains("powershell"));
+    assert!(runner.calls().is_empty());
+    assert!(messages(&f, conv)[1].text.contains("<powershell-run>"));
+}
+
+#[tokio::test]
+async fn a_malformed_tag_is_shown_as_written_and_nothing_runs() {
+    let f = fixture(vec![Script::Items(vec![chunk("Try <powershell-run evil=\"1\">x</powershell-run> maybe"), finish("STOP")])]);
+    tools_on(&f, true, &[]);
+    let runner = FakeRunner::new(vec![]);
+    f.engine.set_command_runner(runner.clone());
+    let conv = ready_assistant(&f);
+    let (result, events) = send(&f, conv, "hi").await;
+    result.unwrap();
+    assert!(runner.calls().is_empty());
+    assert_eq!(streamed_text(&events), "Try <powershell-run evil=\"1\">x</powershell-run> maybe");
+    assert_eq!(messages(&f, conv)[1].text, "Try <powershell-run evil=\"1\">x</powershell-run> maybe");
+}
+
+#[tokio::test]
+async fn swiping_or_continuing_never_offers_the_tool() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("first"), finish("STOP")]),
+        Script::Items(vec![chunk("second"), finish("STOP")]),
+    ]);
+    tools_on(&f, true, &[]);
+    let conv = ready_assistant(&f);
+    send(&f, conv, "hi").await.0.unwrap();
+    let reply = messages(&f, conv)[1].id;
+    f.engine.swipe_next(conv, reply, Arc::new(VecSink::default())).await.unwrap();
+    assert!(!f.provider.requests()[1].system_instruction.clone().unwrap_or_default().contains("powershell"));
+}

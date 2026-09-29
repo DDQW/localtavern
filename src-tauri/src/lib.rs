@@ -7,6 +7,7 @@ pub mod import;
 pub mod library;
 pub mod llm;
 pub mod models;
+pub mod powershell;
 pub mod prompting;
 pub mod providers;
 pub mod repo;
@@ -17,6 +18,7 @@ pub mod story;
 #[cfg(test)]
 mod compat_tests;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -27,6 +29,9 @@ use crate::commands::AppState;
 use crate::db::Db;
 use crate::providers::deepseek::DeepSeekProvider;
 use crate::providers::gemini::GeminiProvider;
+use crate::providers::oauth::{OAuthPkceClient, OAuthSession};
+use crate::providers::openai::ChatGptSubscriptionProvider;
+use crate::providers::xai::XaiSubscriptionProvider;
 use crate::providers::ollama::OllamaProvider;
 use crate::providers::{http, LlmProviderRegistry};
 use crate::secrets::KeyringSecretStore;
@@ -46,15 +51,28 @@ fn build_state(data_dir: PathBuf) -> Result<AppState, Box<dyn std::error::Error>
     let secrets = Arc::new(KeyringSecretStore);
     let client = http::build_client();
 
-    let providers = Arc::new(LlmProviderRegistry::new(vec![
+    // Subscription logins: one persistent OAuth session per provider.
+    let session = |config, key: &str| {
+        Arc::new(OAuthSession::new(OAuthPkceClient::new(client.clone(), config), secrets.clone(), key))
+    };
+    let xai = session(providers::xai::oauth_config(), providers::xai::SECRET_KEY);
+    let chatgpt = session(providers::openai::oauth_config(), providers::openai::SECRET_KEY);
+
+    let registry = Arc::new(LlmProviderRegistry::new(vec![
         Arc::new(GeminiProvider::new(client.clone(), secrets.clone(), Arc::new(DbGeminiOptions(db.clone())))),
         Arc::new(DeepSeekProvider::new(client.clone(), secrets.clone())),
-        Arc::new(OllamaProvider::new(client, Arc::new(DbOllamaOptions(db.clone())))),
+        Arc::new(XaiSubscriptionProvider::new(client.clone(), xai.clone())),
+        Arc::new(ChatGptSubscriptionProvider::new(client.clone(), chatgpt.clone())),
+        Arc::new(OllamaProvider::new(client.clone(), Arc::new(DbOllamaOptions(db.clone())))),
     ]));
+    let sessions = HashMap::from([
+        (providers::xai::PROVIDER_ID.to_string(), xai),
+        (providers::openai::PROVIDER_ID.to_string(), chatgpt),
+    ]);
 
     let images_dir = data_dir.join("images");
-    let engine = ChatEngine::new(db.clone(), providers.clone(), images_dir.clone());
-    Ok(AppState { db, engine, providers, secrets, images_dir, data_dir })
+    let engine = ChatEngine::new(db.clone(), registry.clone(), images_dir.clone());
+    Ok(AppState { db, engine, providers: registry, secrets, sessions, sign_ins: Default::default(), images_dir, data_dir })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -98,6 +116,16 @@ pub fn run() {
             commands::list_models,
             commands::refresh_models,
             commands::set_api_key,
+            commands::get_powershell_options,
+            commands::save_powershell_options,
+            commands::resolve_tool_approval,
+            commands::list_memories,
+            commands::delete_memory,
+            commands::clear_memories,
+            commands::subscription_status,
+            commands::subscription_sign_in,
+            commands::subscription_cancel_sign_in,
+            commands::subscription_sign_out,
             commands::get_gemini_options,
             commands::save_gemini_options,
             commands::get_ollama_options,

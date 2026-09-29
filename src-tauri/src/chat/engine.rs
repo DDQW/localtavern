@@ -14,6 +14,8 @@ use std::time::Duration;
 
 use chrono::Utc;
 use futures::StreamExt;
+use serde::Deserialize;
+use tokio::sync::oneshot;
 use rusqlite::Connection;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -34,6 +36,10 @@ use crate::models::{
     Character, ChatMessage, Conversation, ConversationMode, LlmUsage, MessageAttachment, MessageRole, PromptBlockType,
     PromptPreset, WorldState,
 };
+use crate::powershell::exec::{CommandRunner, ExecError, ExecutionResult, Pwsh};
+use crate::powershell::filter::ToolCallFilter;
+use crate::powershell::settings as tool_settings;
+use crate::prompting::powershell_tool::{self, PowerShellToolCallRequest, ToolResult};
 use crate::prompting::{self, emotion_tag, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext};
 use crate::providers::{LlmGeneratedImage, LlmProviderRegistry, ProviderError};
 use crate::repo::{characters, conversations, group_chats, notebook, quest_log, user_memories};
@@ -50,8 +56,31 @@ struct Inner {
     active: Mutex<HashMap<Uuid, CancellationToken>>,
     /// Whether finished replies trigger the background memory / quest / notebook requests.
     extraction: AtomicBool,
+    /// Runs the assistant's PowerShell commands.
+    runner: Mutex<Arc<dyn CommandRunner>>,
+    /// Tool calls waiting for the user's yes/no, by request id.
+    approvals: Mutex<HashMap<Uuid, oneshot::Sender<ToolDecision>>>,
 }
 
+/// The user's answer to a tool-call approval request.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolDecision {
+    pub allow: bool,
+    /// With `allow`: also remember this pattern so matching commands run without asking next time.
+    pub always_pattern: Option<String>,
+}
+
+/// Most tool round trips one turn may take before the assistant is cut off.
+const MAX_TOOL_ITERATIONS: usize = 5;
+
+/// What one model turn came to.
+enum Turn {
+    /// Finished (`true`) or stopped / failed (`false`).
+    Done(bool),
+    /// The reply ended in a tool call; the partial reply before it was kept.
+    ToolCall(PowerShellToolCallRequest),
+}
 #[derive(Clone)]
 pub struct ChatEngine {
     inner: Arc<Inner>,
@@ -62,10 +91,14 @@ enum StreamEnd {
     Completed,
     Cancelled,
     Failed(ProviderError),
+    /// The reply asked to run a command; the stream was stopped there.
+    ToolCall(PowerShellToolCallRequest),
 }
 
 struct StreamResult {
     text: String,
+    /// What was streamed to the UI - `text` minus a tool-call tag being withheld.
+    shown_text: String,
     reasoning: String,
     usage: Option<LlmUsage>,
     images: Vec<LlmGeneratedImage>,
@@ -74,7 +107,14 @@ struct StreamResult {
 
 impl StreamResult {
     fn failed(error: ProviderError) -> Self {
-        Self { text: String::new(), reasoning: String::new(), usage: None, images: vec![], end: StreamEnd::Failed(error) }
+        Self {
+            text: String::new(),
+            shown_text: String::new(),
+            reasoning: String::new(),
+            usage: None,
+            images: vec![],
+            end: StreamEnd::Failed(error),
+        }
     }
 }
 
@@ -99,10 +139,26 @@ struct AssembleOptions<'a> {
     speaker: Option<&'a Character>,
     /// Ask for a `[time-skip: ...]` tag (only where the reply's tag is stripped again).
     time_skip: bool,
+    /// Offer the PowerShell tool (Assistant chats only).
+    tools: bool,
 }
 
 /// The nudge Continue appends as a trailing user turn, so the model extends rather than restarts.
 const CONTINUE_NUDGE: &str = "[Continue your last message without repeating its original content.]";
+
+/// An [`ExecutionResult`] as the text the model (and the tool bubble) gets.
+fn format_execution(result: &ExecutionResult) -> String {
+    let tool_result = ToolResult {
+        command: &result.command,
+        elevated: result.elevated,
+        exit_code: result.exit_code,
+        std_out: &result.std_out,
+        std_err: &result.std_err,
+        timed_out: result.timed_out,
+        declined: result.uac_declined,
+    };
+    powershell_tool::format_result_for_model(&tool_result)
+}
 
 /// The most recent message the user wrote (what the reply after it was answering).
 fn last_user_text(messages: &[ChatMessage]) -> String {
@@ -126,7 +182,11 @@ fn nonempty(s: String) -> Option<String> {
 
 impl ChatEngine {
     pub fn new(db: Db, providers: Arc<LlmProviderRegistry>, images_dir: PathBuf) -> Self {
-        Self { inner: Arc::new(Inner { db, providers, images_dir, active: Mutex::new(HashMap::new()), extraction: AtomicBool::new(true) }) }
+        Self { inner: Arc::new(Inner { db, providers, images_dir, active: Mutex::new(HashMap::new()),
+                extraction: AtomicBool::new(true),
+                runner: Mutex::new(Arc::new(Pwsh::default())),
+                approvals: Mutex::new(HashMap::new()),
+            }) }
     }
 
     fn db(&self) -> &Db {
@@ -482,7 +542,7 @@ impl ChatEngine {
         let raw_prompt = format_prompt(&request);
 
         sink.emit(ChatEvent::Continuing { message_id: target.id });
-        let result = self.stream_reply(&ctx.conversation.provider_id, request, target.id, &sink, &token).await;
+        let result = self.stream_reply(&ctx.conversation.provider_id, request, target.id, &sink, &token, false).await;
         let StreamResult { text: added, reasoning: added_reasoning, usage, end, .. } = result;
 
         let failed = matches!(end, StreamEnd::Failed(_));
@@ -507,7 +567,7 @@ impl ChatEngine {
             StreamEnd::Failed(error) => self.emit_failure(&error, &sink),
             // The clock is not advanced again (same exchange), but the added text may still matter.
             StreamEnd::Completed => self.spawn_enrichment(&ctx, last_user_text(&ctx.messages), reply_text, &sink),
-            StreamEnd::Cancelled => {}
+            StreamEnd::Cancelled | StreamEnd::ToolCall(_) => {}
         }
         Ok(())
     }
@@ -677,6 +737,9 @@ impl ChatEngine {
             let keys: Vec<String> = character.expressions.iter().map(|e| e.emotion.clone()).collect();
             append_instruction(&mut request, &emotion_tag::build_instruction(&character.name, &keys));
         }
+        if options.tools && conversation.mode == ConversationMode::Assistant {
+            append_instruction(&mut request, powershell_tool::build_instruction());
+        }
         if options.time_skip && conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_some() {
             append_instruction(&mut request, time_skip_tag::build_instruction());
         }
@@ -692,6 +755,7 @@ impl ChatEngine {
         message_id: Uuid,
         sink: &Arc<dyn EventSink>,
         token: &CancellationToken,
+        tools: bool,
     ) -> StreamResult {
         let provider = match self.inner.providers.get(provider_id) {
             Ok(p) => p,
@@ -713,6 +777,7 @@ impl ChatEngine {
 
         let mut result = StreamResult {
             text: String::new(),
+            shown_text: String::new(),
             reasoning: String::new(),
             usage: None,
             images: vec![],
@@ -720,6 +785,8 @@ impl ChatEngine {
         };
         let (mut pending_text, mut pending_reasoning) = (String::new(), String::new());
         let mut finish_reason: Option<String> = None;
+        // With the tool on, a `<powershell-run>` tag is held back from the UI and ends the stream.
+        let mut tool_filter = tools.then(ToolCallFilter::new);
         let mut ticker = tokio::time::interval(STREAM_FLUSH_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -748,9 +815,14 @@ impl ChatEngine {
                         break;
                     }
                     Some(Ok(chunk)) => {
+                        let shown = match tool_filter.as_mut() {
+                            Some(filter) => filter.feed(&chunk.delta_text),
+                            None => chunk.delta_text.clone(),
+                        };
                         result.text.push_str(&chunk.delta_text);
+                        result.shown_text.push_str(&shown);
                         result.reasoning.push_str(&chunk.thought_delta_text);
-                        pending_text.push_str(&chunk.delta_text);
+                        pending_text.push_str(&shown);
                         pending_reasoning.push_str(&chunk.thought_delta_text);
                         if chunk.usage.is_some() {
                             result.usage = chunk.usage;
@@ -759,6 +831,10 @@ impl ChatEngine {
                             finish_reason = chunk.finish_reason;
                         }
                         result.images.extend(chunk.images.into_iter().flatten());
+                        if let Some(call) = tool_filter.as_ref().and_then(|f| f.detected_call()) {
+                            result.end = StreamEnd::ToolCall(call.clone());
+                            break; // the command runs before the model says anything else
+                        }
                     }
                 },
             }
@@ -803,6 +879,10 @@ impl ChatEngine {
         sink.emit(ChatEvent::Error { message: user_message(error), kind: Some(error.kind) });
     }
 
+    /// Generates one character's reply. In Assistant chats with the PowerShell tool on, a reply may
+    /// end in a tool call: the command is run (after the user's approval) and its result fed back
+    /// for another turn, each turn its own bubble, up to [`MAX_TOOL_ITERATIONS`] round trips.
+    /// Returns whether the exchange completed (`false`: stopped or failed).
     async fn generate_new(
         &self,
         conversation_id: Uuid,
@@ -810,6 +890,36 @@ impl ChatEngine {
         sink: &Arc<dyn EventSink>,
         token: &CancellationToken,
     ) -> Result<bool> {
+        let tools = self.db().with(|c| {
+            let assistant = conversations::get(c, conversation_id)?.is_some_and(|conv| conv.mode == ConversationMode::Assistant);
+            Ok(assistant && tool_settings::load(c)?.enabled)
+        })?;
+
+        for round_trips in 0.. {
+            match self.generate_turn(conversation_id, speaker_id, sink, token, tools).await? {
+                Turn::Done(completed) => return Ok(completed),
+                Turn::ToolCall(call) => {
+                    if round_trips >= MAX_TOOL_ITERATIONS {
+                        self.append_tool_message(conversation_id, "Tool call limit reached for this turn.", sink)?;
+                        return Ok(true);
+                    }
+                    if !self.run_tool_call(conversation_id, call, sink, token).await? {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        unreachable!("the loop only ends by returning")
+    }
+
+    async fn generate_turn(
+        &self,
+        conversation_id: Uuid,
+        speaker_id: Option<Uuid>,
+        sink: &Arc<dyn EventSink>,
+        token: &CancellationToken,
+        tools: bool,
+    ) -> Result<Turn> {
         let ctx = self.db().with(|c| load_reply_context(c, conversation_id))?;
         let speaker = speaker_id.and_then(|id| ctx.characters.iter().find(|c| c.id == id)).cloned();
 
@@ -817,12 +927,16 @@ impl ChatEngine {
         message.speaker_character_id = speaker_id;
         sink.emit(ChatEvent::MessageAdded { message: message.clone() });
 
-        let request = self.assemble(&ctx, &ctx.messages, AssembleOptions { speaker: speaker.as_ref(), time_skip: true, ..Default::default() })?;
+        let request = self.assemble(
+            &ctx,
+            &ctx.messages,
+            AssembleOptions { speaker: speaker.as_ref(), time_skip: true, tools, ..Default::default() },
+        )?;
         message.raw_prompt_text = Some(format_prompt(&request));
         self.update_conversation(conversation_id, |c| c.updated_at = Utc::now())?;
 
-        let result = self.stream_reply(&ctx.conversation.provider_id, request, message.id, sink, token).await;
-        let StreamResult { text, reasoning, usage, images: generated, end } = result;
+        let result = self.stream_reply(&ctx.conversation.provider_id, request, message.id, sink, token, tools).await;
+        let StreamResult { text, shown_text, reasoning, usage, images: generated, end } = result;
 
         let succeeded = matches!(end, StreamEnd::Completed);
         if succeeded {
@@ -831,6 +945,9 @@ impl ChatEngine {
             let (clean, emotion) = extract_matched_emotion(speaker.as_ref(), &after_clock);
             message.text = clean;
             message.detected_emotion = emotion;
+        } else if matches!(end, StreamEnd::ToolCall(_)) {
+            // Keep what the user saw (everything before the tag); the tag itself is never stored.
+            message.text = shown_text;
         } else {
             // Stopped or failed: keep whatever streamed in, untouched by tag processing.
             message.text = text;
@@ -852,9 +969,10 @@ impl ChatEngine {
         match end {
             StreamEnd::Failed(error) => {
                 self.emit_failure(&error, sink);
-                Ok(false)
+                Ok(Turn::Done(false))
             }
-            StreamEnd::Cancelled => Ok(false),
+            StreamEnd::Cancelled => Ok(Turn::Done(false)),
+            StreamEnd::ToolCall(call) => Ok(Turn::ToolCall(call)),
             StreamEnd::Completed => {
                 self.spawn_enrichment(&ctx, last_user_text(&ctx.messages), message.text.clone(), sink);
                 // Only the conversation's very first exchange gets auto-titled.
@@ -862,9 +980,112 @@ impl ChatEngine {
                     let user_text = ctx.messages.last().map(|m| m.text.clone()).unwrap_or_default();
                     self.spawn_title(&ctx.conversation, user_text, message.text.clone(), sink.clone());
                 }
-                Ok(true)
+                Ok(Turn::Done(true))
             }
         }
+    }
+
+    // ------------------------------------------------------------------ PowerShell tool
+
+    /// Replaces how commands are run (tests use a fake).
+    pub fn set_command_runner(&self, runner: Arc<dyn CommandRunner>) {
+        *self.inner.runner.lock().unwrap() = runner;
+    }
+
+    /// Answers a [`ChatEvent::ToolApproval`]. Returns false if that request is no longer waiting.
+    pub fn resolve_tool_approval(&self, request_id: Uuid, decision: ToolDecision) -> bool {
+        match self.inner.approvals.lock().unwrap().remove(&request_id) {
+            Some(waiting) => waiting.send(decision).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Asks the user whether to run a command. `None` if generation was stopped meanwhile.
+    async fn ask_to_run(
+        &self,
+        call: &PowerShellToolCallRequest,
+        sink: &Arc<dyn EventSink>,
+        token: &CancellationToken,
+    ) -> Option<ToolDecision> {
+        let request_id = Uuid::new_v4();
+        let (send, receive) = oneshot::channel();
+        self.inner.approvals.lock().unwrap().insert(request_id, send);
+        sink.emit(ChatEvent::ToolApproval { request_id, command: call.command.clone(), elevate: call.elevate });
+
+        let decision = tokio::select! {
+            biased;
+            _ = token.cancelled() => None,
+            decision = receive => decision.ok(),
+        };
+        self.inner.approvals.lock().unwrap().remove(&request_id);
+        decision
+    }
+
+    /// Approves (asking the user unless auto mode or the allowlist already covers it; elevation
+    /// always asks), runs, and records one requested command as a Tool message the next turn sees.
+    /// Returns false if the user stopped generation meanwhile.
+    async fn run_tool_call(
+        &self,
+        conversation_id: Uuid,
+        call: PowerShellToolCallRequest,
+        sink: &Arc<dyn EventSink>,
+        token: &CancellationToken,
+    ) -> Result<bool> {
+        let options = self.db().with(tool_settings::load)?;
+        let pre_approved = !call.elevate && (options.auto_mode || options.allows(&call.command));
+        if !pre_approved {
+            let Some(decision) = self.ask_to_run(&call, sink, token).await else {
+                return Ok(false);
+            };
+            if decision.allow {
+                if let Some(pattern) = decision.always_pattern.filter(|_| !call.elevate) {
+                    self.db().with(|c| tool_settings::add_allowlist_pattern(c, &pattern))?;
+                }
+            } else {
+                let declined = ToolResult { command: &call.command, elevated: call.elevate, declined: true, ..Default::default() };
+                self.append_tool_message(conversation_id, &powershell_tool::format_result_for_model(&declined), sink)?;
+                return Ok(true);
+            }
+        }
+
+        // Visible for the whole run: live output streams straight into the bubble, so it's clear the
+        // assistant is doing something rather than stuck.
+        let mut message = ChatMessage::new(conversation_id, MessageRole::Tool, "");
+        sink.emit(ChatEvent::MessageAdded { message: message.clone() });
+        let header = if call.elevate { format!("$ {}  (as Administrator)\n", call.command) } else { format!("$ {}\n", call.command) };
+        sink.emit(ChatEvent::Delta { message_id: message.id, text: header, reasoning: String::new() });
+
+        let runner = self.inner.runner.lock().unwrap().clone();
+        let message_id = message.id;
+        let live = sink.clone();
+        let on_output = move |chunk: String| live.emit(ChatEvent::Delta { message_id, text: chunk, reasoning: String::new() });
+        let outcome = runner.run(&call.command, call.elevate, &on_output, token).await;
+
+        let text = match outcome {
+            Err(ExecError::Cancelled) => {
+                sink.emit(ChatEvent::MessageRemoved { message_id });
+                return Ok(false);
+            }
+            // Not the model's fault and not a "declined" outcome, but it still needs to know.
+            Err(error) => format!("[PowerShell tool result]\nCommand: {}\n{error}", call.command),
+            Ok(result) => format_execution(&result),
+        };
+
+        // The clean, structured result replaces the raw live transcript.
+        message.text = text;
+        message.finalize_generation();
+        self.db().with(|c| conversations::add_message(c, &message))?;
+        sink.emit(ChatEvent::MessageUpdated { message });
+        Ok(true)
+    }
+
+    /// Adds a Tool message that is already complete (a decline or a limit note).
+    fn append_tool_message(&self, conversation_id: Uuid, text: &str, sink: &Arc<dyn EventSink>) -> Result<()> {
+        let mut message = ChatMessage::new(conversation_id, MessageRole::Tool, text);
+        message.finalize_generation();
+        self.db().with(|c| conversations::add_message(c, &message))?;
+        sink.emit(ChatEvent::MessageAdded { message });
+        Ok(())
     }
 
     async fn regenerate_inner(
@@ -897,8 +1118,8 @@ impl ChatEngine {
         let raw_prompt = format_prompt(&request);
 
         sink.emit(ChatEvent::Regenerating { message_id });
-        let result = self.stream_reply(&ctx.conversation.provider_id, request, message_id, &sink, &token).await;
-        let StreamResult { text, reasoning, usage, images: generated, end } = result;
+        let result = self.stream_reply(&ctx.conversation.provider_id, request, message_id, &sink, &token, false).await;
+        let StreamResult { text, reasoning, usage, images: generated, end, .. } = result;
 
         let succeeded = matches!(end, StreamEnd::Completed);
         let reasoning = nonempty(reasoning);
@@ -927,7 +1148,7 @@ impl ChatEngine {
             StreamEnd::Completed => {
                 self.spawn_enrichment(&ctx, last_user_text(&ctx.messages[..position]), reply_text, &sink);
             }
-            StreamEnd::Cancelled => {}
+            StreamEnd::Cancelled | StreamEnd::ToolCall(_) => {}
         }
         Ok(())
     }

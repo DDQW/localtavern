@@ -1,6 +1,15 @@
 <script lang="ts">
   import { api, errorText } from "$lib/api";
-  import type { GeminiOptions, OllamaOptions, ProviderInfo, SafetyCategory, SafetyThreshold } from "$lib/types";
+  import type {
+    GeminiOptions,
+    OllamaOptions,
+    PowerShellOptions,
+    ProviderInfo,
+    SafetyCategory,
+    SafetyThreshold,
+    SessionStatus,
+    UserMemory,
+  } from "$lib/types";
 
   let providers = $state<ProviderInfo[]>([]);
   let dataDir = $state("");
@@ -11,6 +20,19 @@
   let gemini = $state<GeminiOptions | null>(null);
   let ollama = $state<OllamaOptions | null>(null);
   let error = $state("");
+  let sessions = $state<Record<string, SessionStatus>>({});
+  let signingIn = $state<Record<string, boolean>>({});
+  let powershell = $state<PowerShellOptions | null>(null);
+  let newPattern = $state("");
+  let memories = $state<UserMemory[]>([]);
+
+  /** What to know before signing in with a subscription (from the original app). */
+  const SUBSCRIPTION_NOTES: Record<string, string> = {
+    "xai-subscription":
+      "Uses your SuperGrok / X Premium subscription instead of an API key: signing in opens xAI in your browser. Some plans don't include API access and get rejected with HTTP 403 - use an xAI API key in that case. Refreshed models show up in every chat's model picker.",
+    "chatgpt-subscription":
+      "Uses your ChatGPT Plus/Pro/Business plan instead of an API key: signing in opens OpenAI in your browser. Requests count against your plan's Codex usage limits. Temperature/top-p aren't sent (these reasoning models reject them). Refreshed models show up in every chat's model picker.",
+  };
 
   const categories: { id: SafetyCategory; label: string }[] = [
     { id: "harassment", label: "Harassment" },
@@ -37,8 +59,13 @@
         for (const p of boot.providers) {
           modelCounts[p.id] = (await api.listModels(p.id)).length;
         }
+        for (const p of boot.providers.filter((p) => p.auth === "subscription")) {
+          sessions[p.id] = await api.subscriptionStatus(p.id);
+        }
         gemini = await api.getGeminiOptions();
         ollama = await api.getOllamaOptions();
+        powershell = await api.getPowerShellOptions();
+        memories = await api.listMemories();
       } catch (e) {
         error = errorText(e);
       }
@@ -73,6 +100,101 @@
     }
   }
 
+  async function signIn(provider: ProviderInfo) {
+    signingIn[provider.id] = true;
+    status[provider.id] = "Waiting for you to approve access in the browser…";
+    try {
+      const result = await api.subscriptionSignIn(provider.id);
+      sessions[provider.id] = result;
+      providers = providers.map((p) => (p.id === provider.id ? { ...p, hasKey: result.signedIn } : p));
+      status[provider.id] = result.signedIn ? "" : "Sign-in cancelled.";
+    } catch (e) {
+      status[provider.id] = errorText(e);
+      signingIn[provider.id] = false;
+      return;
+    }
+    signingIn[provider.id] = false;
+    if (sessions[provider.id]?.signedIn) await refresh(provider);
+  }
+
+  async function signOut(provider: ProviderInfo) {
+    try {
+      sessions[provider.id] = await api.subscriptionSignOut(provider.id);
+      providers = providers.map((p) => (p.id === provider.id ? { ...p, hasKey: false } : p));
+      status[provider.id] = "";
+    } catch (e) {
+      status[provider.id] = errorText(e);
+    }
+  }
+
+  function pillText(provider: ProviderInfo): string {
+    if (provider.auth === "local") return "Local server";
+    if (provider.auth === "subscription") {
+      const session = sessions[provider.id];
+      if (!session?.signedIn) return "Not signed in";
+      return session.email ? `Signed in as ${session.email}` : "Signed in";
+    }
+    return provider.hasKey ? "Key saved" : "No key";
+  }
+
+  async function savePowerShell() {
+    if (!powershell) return;
+    try {
+      await api.savePowerShellOptions($state.snapshot(powershell));
+      status.powershell = "";
+    } catch (e) {
+      status.powershell = errorText(e);
+    }
+  }
+
+  async function setAutoMode(on: boolean) {
+    if (!powershell) return;
+    if (on) {
+      const sure = confirm(
+        "With Auto mode on, the assistant runs PowerShell commands immediately, with no confirmation dialog, as long as they don't request Administrator rights (those always ask separately). Turn this off any time from this same page.\n\nEnable Auto mode?",
+      );
+      if (!sure) {
+        powershell.autoMode = false;
+        return;
+      }
+    }
+    powershell.autoMode = on;
+    await savePowerShell();
+  }
+
+  async function addPattern() {
+    const pattern = newPattern.trim();
+    if (!powershell || !pattern || powershell.allowlistPatterns.some((p) => p.toLowerCase() === pattern.toLowerCase())) return;
+    powershell.allowlistPatterns.push(pattern);
+    newPattern = "";
+    await savePowerShell();
+  }
+
+  async function removePattern(pattern: string) {
+    if (!powershell) return;
+    powershell.allowlistPatterns = powershell.allowlistPatterns.filter((p) => p !== pattern);
+    await savePowerShell();
+  }
+
+  async function deleteMemory(memory: UserMemory) {
+    try {
+      await api.deleteMemory(memory.id);
+      memories = memories.filter((m) => m.id !== memory.id);
+    } catch (e) {
+      error = errorText(e);
+    }
+  }
+
+  async function clearMemories() {
+    if (!confirm("Forget everything the assistant has learned about you?")) return;
+    try {
+      await api.clearMemories();
+      memories = [];
+    } catch (e) {
+      error = errorText(e);
+    }
+  }
+
   async function saveGemini() {
     if (!gemini) return;
     try {
@@ -103,7 +225,7 @@
       <article class="card block">
         <div class="titleline">
           <h2>{provider.name}</h2>
-          <span class="pill" class:ok={provider.hasKey}>{provider.auth === "local" ? "Local server" : provider.hasKey ? "Key saved" : "No key"}</span>
+          <span class="pill" class:ok={provider.hasKey}>{pillText(provider)}</span>
           <span class="muted models">{modelCounts[provider.id] ?? 0} models cached</span>
         </div>
 
@@ -127,8 +249,21 @@
           <p class="muted small">Stored in the Windows Credential Manager, never in the database. Leave the box empty and press the button to remove a saved key.</p>
         {/if}
 
+        {#if provider.auth === "subscription"}
+          <div class="keyrow">
+            <button class="primary" onclick={() => signIn(provider)} disabled={signingIn[provider.id]}>
+              {signingIn[provider.id] ? "Waiting for the browser…" : `Sign in with ${provider.name}`}
+            </button>
+            {#if signingIn[provider.id]}
+              <button onclick={() => api.subscriptionCancelSignIn(provider.id)}>Cancel</button>
+            {/if}
+            <button onclick={() => signOut(provider)} disabled={signingIn[provider.id] || !sessions[provider.id]?.signedIn}>Sign out</button>
+          </div>
+          <p class="muted small">{SUBSCRIPTION_NOTES[provider.id]}</p>
+        {/if}
+
         <div class="keyrow">
-          <button onclick={() => refresh(provider)} disabled={busy[provider.id] || (provider.auth === "apiKey" && !provider.hasKey)}>
+          <button onclick={() => refresh(provider)} disabled={busy[provider.id] || (provider.auth !== "local" && !provider.hasKey)}>
             ↻ Refresh models
           </button>
           {#if status[provider.id]}<span class="muted small" role="status">{status[provider.id]}</span>{/if}
@@ -179,11 +314,74 @@
     {/each}
 
     <article class="card block">
+      <h2>PowerShell tool</h2>
+      <p class="muted small">
+        Lets the assistant run real PowerShell 7 commands on this machine, in Assistant chats only (never in roleplays). This runs arbitrary code you approve - only enable it if you understand that risk. Needs <code>pwsh</code> on your PATH.
+      </p>
+      {#if powershell}
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={powershell.enabled}
+            onchange={(e) => {
+              if (powershell) powershell.enabled = e.currentTarget.checked;
+              void savePowerShell();
+            }}
+          />
+          Enable PowerShell tool
+        </label>
+        <label class="check">
+          <input type="checkbox" checked={powershell.autoMode} onchange={(e) => setAutoMode(e.currentTarget.checked)} /> Auto mode
+        </label>
+        <p class="muted small">
+          Runs non-elevated commands immediately, with no confirmation dialog. Commands that request Administrator rights always ask separately, regardless of this setting.
+        </p>
+
+        <h3>Always-allowed commands</h3>
+        <p class="muted small">
+          Commands matching one of these patterns run without a confirmation dialog. Use <code>*</code> as a wildcard, e.g. <code>Get-Process*</code>. Added when you choose "Always allow" in a confirmation dialog, or add one here.
+        </p>
+        {#each powershell.allowlistPatterns as pattern (pattern)}
+          <div class="keyrow">
+            <code class="grow">{pattern}</code>
+            <button class="ghost" onclick={() => removePattern(pattern)}>Remove</button>
+          </div>
+        {/each}
+        <form
+          class="keyrow"
+          onsubmit={(e) => {
+            e.preventDefault();
+            void addPattern();
+          }}
+        >
+          <input bind:value={newPattern} placeholder="e.g. Get-Process*" aria-label="New allowed command pattern" />
+          <button type="submit" disabled={!newPattern.trim()}>Add</button>
+        </form>
+        {#if status.powershell}<p class="err small" role="alert">{status.powershell}</p>{/if}
+      {/if}
+    </article>
+
+    <article class="card block">
+      <h2>What the assistant remembers about you</h2>
+      <p class="muted small">
+        After each Assistant reply, the app asks the model to note any new lasting facts about you and feeds them back into future Assistant chats. Delete anything you don't want remembered.
+      </p>
+      {#each memories as memory (memory.id)}
+        <div class="keyrow">
+          <span class="grow">{memory.content}</span>
+          <button class="ghost" onclick={() => deleteMemory(memory)}>Delete</button>
+        </div>
+      {:else}
+        <p class="muted small">Nothing remembered yet.</p>
+      {/each}
+      {#if memories.length > 0}
+        <div><button onclick={clearMemories}>Clear all</button></div>
+      {/if}
+    </article>
+
+    <article class="card block">
       <h2>About</h2>
       <p class="muted small">Data folder: <code>{dataDir}</code></p>
-      <p class="muted small">
-        ChatGPT and SuperGrok sign-in, PowerShell tools, memory and character import are being ported from the original app.
-      </p>
     </article>
   </div>
 </section>
@@ -247,6 +445,12 @@
 
   .keyrow input {
     flex: 1;
+  }
+
+  .grow {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .small {

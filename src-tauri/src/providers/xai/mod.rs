@@ -14,11 +14,33 @@ use reqwest::StatusCode;
 use super::auth::AccessTokenSource;
 use super::error::ProviderError;
 use super::http::{ensure_success, send, transport_error};
+use super::oauth::OAuthClientConfig;
 use super::{openai_compat, ChunkStream, LlmProvider};
 use crate::llm::LlmRequest;
 
 pub const PROVIDER_ID: &str = "xai-subscription";
 const DEFAULT_BASE_URL: &str = "https://api.x.ai/v1";
+
+/// Where the refresh token is kept in the credential store.
+pub const SECRET_KEY: &str = "xai-subscription";
+
+/// xAI's OAuth client settings for a SuperGrok / X Premium login. The client id and redirect URI are
+/// the Grok CLI's public client (the same one Zed and Hermes use) - xAI only accepts that exact
+/// loopback redirect for it.
+pub fn oauth_config() -> OAuthClientConfig {
+    OAuthClientConfig {
+        display_name: "SuperGrok".into(),
+        authorize_url: "https://auth.x.ai/oauth2/authorize".into(),
+        token_url: "https://auth.x.ai/oauth2/token".into(),
+        client_id: "b1a00492-073a-47ea-816f-4c329264a828".into(),
+        scope: "openid profile email offline_access grok-cli:access api:access".into(),
+        redirect_host: "127.0.0.1".into(),
+        callback_ports: vec![56121],
+        callback_path: "/callback".into(),
+        extra_authorize_params: vec![],
+        send_nonce: true,
+    }
+}
 
 /// Models that are part of the subscription but may be missing from the live /models listing
 /// (grok-build-0.1 is subscription-only and not in the API-key catalog). Only ever added to a

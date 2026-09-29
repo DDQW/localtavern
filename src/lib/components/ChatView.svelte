@@ -5,6 +5,7 @@
   import Composer from "./Composer.svelte";
   import Message from "./Message.svelte";
   import StoryPanel from "./StoryPanel.svelte";
+  import ToolApprovalDialog from "./ToolApprovalDialog.svelte";
 
   const PAGE = 60;
 
@@ -82,6 +83,8 @@
     <StoryPanel />
   {/if}
 </div>
+
+<ToolApprovalDialog />
 
 <style>
   .chat {

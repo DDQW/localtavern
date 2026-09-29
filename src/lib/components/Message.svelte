@@ -11,6 +11,7 @@
   const speaker = $derived(chat.speaker(message));
   const isUser = $derived(message.role === "user");
   const isCharacter = $derived(message.role === "character");
+  const isTool = $derived(message.role === "tool");
   const swipeLabel = $derived(`${message.activeAlternateIndex + 1}/${Math.max(message.alternates.length, 1)}`);
   const canSwipePrevious = $derived(message.activeAlternateIndex > 0);
   const waiting = $derived(message.streaming && message.text.length === 0 && !message.reasoningText);
@@ -67,6 +68,8 @@
       </div>
     {:else if waiting}
       <div class="typing" aria-label="Generating"><span></span><span></span><span></span></div>
+    {:else if isTool}
+      <pre class="toolout" aria-label="PowerShell output">{message.text}</pre>
     {:else}
       <div class="content"><Markdown text={message.text} />{#if message.streaming}<span class="caret"></span>{/if}</div>
     {/if}
@@ -133,6 +136,19 @@
 
   .content {
     font-size: 14.5px;
+  }
+
+  .toolout {
+    margin: 0;
+    padding: 8px 10px;
+    max-height: 320px;
+    overflow: auto;
+    background: var(--panel-3);
+    border-radius: var(--radius-sm);
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 12.5px;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 
   .caret {

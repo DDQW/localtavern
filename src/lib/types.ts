@@ -155,8 +155,32 @@ export interface ChatSession {
 export interface ProviderInfo {
   id: string;
   name: string;
-  auth: "apiKey" | "local";
+  auth: "apiKey" | "subscription" | "local";
   hasKey: boolean;
+}
+
+export interface SessionStatus {
+  signedIn: boolean;
+  email: string | null;
+}
+
+export interface PowerShellOptions {
+  enabled: boolean;
+  autoMode: boolean;
+  allowlistPatterns: string[];
+}
+
+export interface UserMemory {
+  id: Uuid;
+  content: string;
+  createdAt: string;
+}
+
+/** A PowerShell command the assistant wants to run, waiting for the user's answer. */
+export interface ToolApproval {
+  requestId: Uuid;
+  command: string;
+  elevate: boolean;
 }
 
 export interface Bootstrap {
@@ -224,6 +248,7 @@ export type ChatEvent =
   | { type: "worldStateChanged"; conversationId: Uuid; worldState: WorldState }
   | { type: "titleChanged"; conversationId: Uuid; title: string }
   | { type: "storyChanged"; conversationId: Uuid }
+  | { type: "toolApproval"; requestId: Uuid; command: string; elevate: boolean }
   | { type: "error"; message: string; kind: ErrorKind | null }
   | { type: "finished" };
 

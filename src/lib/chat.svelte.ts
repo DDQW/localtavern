@@ -9,6 +9,7 @@ import type {
   Character,
   Persona,
   StoryState,
+  ToolApproval,
   UiMessage,
   Uuid,
   WorldState,
@@ -33,6 +34,8 @@ class ChatStore {
   error = $state("");
   input = $state("");
   pendingAttachments = $state<string[]>([]);
+  /** A PowerShell command the assistant is waiting for permission to run. */
+  approval = $state<ToolApproval | null>(null);
 
   get conversationId(): Uuid | null {
     return this.session?.conversation.id ?? null;
@@ -72,6 +75,7 @@ class ChatStore {
     this.input = "";
     this.pendingAttachments = [];
     this.busy = false;
+    this.approval = null;
     this.story = null;
     void this.refreshStory();
   }
@@ -167,7 +171,8 @@ class ChatStore {
 
     switch (event.type) {
       case "messageAdded":
-        this.messages.push(toUi(event.message, event.message.role === "character"));
+        // An empty message that isn't the user's is about to stream in.
+        this.messages.push(toUi(event.message, event.message.role !== "user" && event.message.text === ""));
         break;
       case "regenerating": {
         const m = this.find(event.messageId);
@@ -209,7 +214,11 @@ class ChatStore {
       case "error":
         this.error = event.message;
         break;
+      case "toolApproval":
+        this.approval = { requestId: event.requestId, command: event.command, elevate: event.elevate };
+        break;
       case "finished":
+        this.approval = null;
         for (const m of this.messages) m.streaming = false;
         this.busy = false;
         void this.refreshStory();
@@ -251,6 +260,18 @@ class ChatStore {
         this.error ||= errorText(e);
         this.busy = false;
       }
+    }
+  }
+
+  /** Answers the open tool-approval question (see `approval`). */
+  async answerApproval(allow: boolean, alwaysPattern: string | null = null) {
+    const open = this.approval;
+    if (!open) return;
+    this.approval = null;
+    try {
+      await api.resolveToolApproval(open.requestId, { allow, alwaysPattern });
+    } catch (e) {
+      this.error = errorText(e);
     }
   }
 

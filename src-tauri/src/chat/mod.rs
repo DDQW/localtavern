@@ -12,6 +12,6 @@ pub mod session;
 #[cfg(test)]
 mod engine_tests;
 
-pub use engine::ChatEngine;
+pub use engine::{ChatEngine, ToolDecision};
 pub use events::{ChatEvent, EventSink};
 pub use session::ChatSession;
