@@ -11,13 +11,16 @@ use uuid::Uuid;
 use crate::chat::{images, ChatEngine, ChatEvent, ChatSession, EventSink};
 use crate::db::Db;
 use crate::error::{Error, Result};
-use crate::models::{Character, CharacterNotebookEntry, ChatMessage, Conversation, Persona, QuestLogEntry};
+use crate::models::{
+    Character, CharacterNotebookEntry, ChatMessage, Conversation, ExpressionImage, GroupChat, Lorebook, Persona,
+    PromptPreset, QuestLogEntry,
+};
 use crate::providers::gemini::GeminiRequestOptions;
 use crate::providers::ollama::OllamaRequestOptions;
 use crate::providers::{ApiKeyProvider, LlmProviderRegistry, SecretStore};
-use crate::repo::{characters, conversations, notebook, quest_log};
+use crate::repo::{characters, conversations, group_chats, lorebooks, notebook, personas, prompt_presets, quest_log};
 use crate::secrets::KeyringSecretStore;
-use crate::settings;
+use crate::{library, settings};
 
 pub struct AppState {
     pub db: Db,
@@ -82,7 +85,7 @@ pub fn list_characters(state: State<'_, AppState>) -> Result<Vec<Character>> {
 
 #[tauri::command]
 pub fn list_personas(state: State<'_, AppState>) -> Result<Vec<Persona>> {
-    state.db.with(crate::repo::personas::get_all)
+    state.db.with(personas::get_all)
 }
 
 #[tauri::command]
@@ -115,6 +118,22 @@ pub fn new_chat(state: State<'_, AppState>, conversation_id: Uuid) -> Result<Cha
 #[tauri::command]
 pub fn delete_conversation(state: State<'_, AppState>, conversation_id: Uuid) -> Result<()> {
     state.engine.delete_conversation(conversation_id)
+}
+
+#[tauri::command]
+pub fn open_group(state: State<'_, AppState>, group_id: Uuid, force_new: bool) -> Result<ChatSession> {
+    state.engine.open_group(group_id, force_new)
+}
+
+#[tauri::command]
+pub async fn pick_speaker(
+    state: State<'_, AppState>,
+    conversation_id: Uuid,
+    character_id: Uuid,
+    on_event: Channel<ChatEvent>,
+) -> Result<()> {
+    let engine = state.engine.clone();
+    engine.pick_speaker(conversation_id, character_id, Arc::new(ChannelSink(on_event))).await
 }
 
 #[tauri::command]
@@ -299,4 +318,99 @@ pub fn save_ollama_options(state: State<'_, AppState>, options: OllamaRequestOpt
 pub fn store_image(state: State<'_, AppState>, path: String) -> Result<String> {
     let stored = images::store_file(&state.images_dir, Path::new(&path))?;
     Ok(stored.to_string_lossy().into_owned())
+}
+
+// ---- library: characters ----
+
+#[tauri::command]
+pub fn save_character(state: State<'_, AppState>, character: Character) -> Result<Character> {
+    state.db.with(|c| library::save_character(c, character))
+}
+
+#[tauri::command]
+pub fn delete_character(state: State<'_, AppState>, character_id: Uuid) -> Result<()> {
+    state.db.with(|c| characters::delete(c, character_id))
+}
+
+/// Imports a SillyTavern `.json` or `.png` card.
+#[tauri::command]
+pub fn import_character(state: State<'_, AppState>, path: String) -> Result<Character> {
+    state.db.with(|c| library::import_character(c, &state.images_dir, Path::new(&path)))
+}
+
+/// Writes the character (as currently edited) to `path` as a character-card-v2 JSON file.
+#[tauri::command]
+pub fn export_character_card(state: State<'_, AppState>, character: Character, path: String) -> Result<()> {
+    let json = state.db.with(|c| library::export_character_card(c, &character))?;
+    std::fs::write(&path, json).map_err(|e| Error::Other(format!("Couldn't write {path}: {e}")))
+}
+
+/// Imports a sprite folder: one image per emotion, named after the emotion.
+#[tauri::command]
+pub fn import_expression_folder(state: State<'_, AppState>, folder: String) -> Result<Vec<ExpressionImage>> {
+    library::import_expression_folder(&state.images_dir, Path::new(&folder))
+}
+
+/// Deletes a stored picture - only ever files inside the app's own images folder.
+#[tauri::command]
+pub fn delete_image(state: State<'_, AppState>, path: String) -> bool {
+    images::delete_if_owned(&state.images_dir, Path::new(&path))
+}
+
+// ---- library: personas, lorebooks, presets, group chats ----
+
+#[tauri::command]
+pub fn save_persona(state: State<'_, AppState>, persona: Persona) -> Result<Persona> {
+    state.db.with(|c| library::save_persona(c, persona))
+}
+
+#[tauri::command]
+pub fn delete_persona(state: State<'_, AppState>, persona_id: Uuid) -> Result<()> {
+    state.db.with(|c| personas::delete(c, persona_id))
+}
+
+#[tauri::command]
+pub fn list_lorebooks(state: State<'_, AppState>) -> Result<Vec<Lorebook>> {
+    state.db.with(lorebooks::get_all)
+}
+
+#[tauri::command]
+pub fn save_lorebook(state: State<'_, AppState>, lorebook: Lorebook) -> Result<Lorebook> {
+    state.db.with(|c| library::save_lorebook(c, lorebook))
+}
+
+#[tauri::command]
+pub fn delete_lorebook(state: State<'_, AppState>, lorebook_id: Uuid) -> Result<()> {
+    state.db.with(|c| lorebooks::delete(c, lorebook_id))
+}
+
+/// All presets, seeding the two built-in ones on first use.
+#[tauri::command]
+pub fn list_presets(state: State<'_, AppState>) -> Result<Vec<PromptPreset>> {
+    state.db.with(crate::chat::presets::get_all_or_seed)
+}
+
+#[tauri::command]
+pub fn save_preset(state: State<'_, AppState>, preset: PromptPreset) -> Result<PromptPreset> {
+    state.db.with(|c| library::save_preset(c, preset))
+}
+
+#[tauri::command]
+pub fn delete_preset(state: State<'_, AppState>, preset_id: Uuid) -> Result<()> {
+    state.db.with(|c| prompt_presets::delete(c, preset_id))
+}
+
+#[tauri::command]
+pub fn list_group_chats(state: State<'_, AppState>) -> Result<Vec<GroupChat>> {
+    state.db.with(group_chats::get_all)
+}
+
+#[tauri::command]
+pub fn save_group_chat(state: State<'_, AppState>, group: GroupChat) -> Result<GroupChat> {
+    state.db.with(|c| library::save_group_chat(c, group))
+}
+
+#[tauri::command]
+pub fn delete_group_chat(state: State<'_, AppState>, group_id: Uuid) -> Result<()> {
+    state.db.with(|c| group_chats::delete(c, group_id))
 }

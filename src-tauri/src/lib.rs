@@ -3,6 +3,8 @@ pub mod commands;
 pub mod db;
 pub mod error;
 pub mod group_chats;
+pub mod import;
+pub mod library;
 pub mod llm;
 pub mod models;
 pub mod prompting;
@@ -96,6 +98,25 @@ pub fn run() {
             commands::get_ollama_options,
             commands::save_ollama_options,
             commands::store_image,
+            commands::open_group,
+            commands::pick_speaker,
+            commands::save_character,
+            commands::delete_character,
+            commands::import_character,
+            commands::export_character_card,
+            commands::import_expression_folder,
+            commands::delete_image,
+            commands::save_persona,
+            commands::delete_persona,
+            commands::list_lorebooks,
+            commands::save_lorebook,
+            commands::delete_lorebook,
+            commands::list_presets,
+            commands::save_preset,
+            commands::delete_preset,
+            commands::list_group_chats,
+            commands::save_group_chat,
+            commands::delete_group_chat,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

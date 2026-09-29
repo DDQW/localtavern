@@ -15,12 +15,13 @@ use crate::db::{open_in_memory, Db};
 use crate::error::Result;
 use crate::llm::{LlmRequest, LlmRole};
 use crate::models::{
-    Character, ChatMessage, ConversationMode, ExpressionImage, LlmUsage, MessageRole, Persona, WorldState,
+    Character, ChatMessage, ConversationMode, ExpressionImage, GroupActivationMode, GroupChat, LlmUsage, MessageRole,
+    Persona, WorldState,
 };
 use crate::providers::{
     ChunkStream, LlmProvider, LlmProviderRegistry, LlmResponseChunk, ProviderError, ProviderErrorKind,
 };
-use crate::repo::{characters, conversations, personas as persona_repo};
+use crate::repo::{characters, conversations, group_chats, personas as persona_repo};
 use crate::settings;
 
 // ---- a scripted provider ----
@@ -753,4 +754,175 @@ async fn later_exchanges_and_roleplays_do_not_ask_for_a_title() {
     send(&g, rp, "hey").await.0.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(g.provider.requests().len(), 1, "no title request in roleplay");
+}
+
+// ---- group chats ----
+
+fn add_group(f: &Fixture, mode: GroupActivationMode, members: &[&Character]) -> GroupChat {
+    let group = GroupChat {
+        name: "The Crew".into(),
+        character_ids: members.iter().map(|c| c.id).collect(),
+        activation_mode: mode,
+        ..Default::default()
+    };
+    f.db.with(|c| group_chats::upsert(c, &group)).unwrap();
+    group
+}
+
+fn ready_group(f: &Fixture, group: &GroupChat) -> Uuid {
+    let session = f.engine.open_group(group.id, false).unwrap();
+    f.engine.set_model(session.conversation.id, "fake", "fake-model").unwrap();
+    session.conversation.id
+}
+
+fn speakers(f: &Fixture, conversation: Uuid) -> Vec<Option<Uuid>> {
+    messages(f, conversation).iter().filter(|m| m.role == MessageRole::Character).map(|m| m.speaker_character_id).collect()
+}
+
+#[test]
+fn opening_a_group_creates_a_roleplay_with_every_member_and_no_greeting() {
+    let f = fixture(vec![]);
+    let (alice, bob) = (add_character(&f.db, "Alice", Some("Hi!"), &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::Manual, &[&alice, &bob]);
+
+    let session = f.engine.open_group(group.id, false).unwrap();
+
+    assert_eq!(session.conversation.mode, ConversationMode::Roleplay);
+    assert_eq!(session.conversation.group_chat_id, Some(group.id));
+    assert_eq!(session.conversation.title, "The Crew");
+    assert_eq!(session.group.as_ref().unwrap().activation_mode, GroupActivationMode::Manual);
+    assert_eq!(session.characters.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Alice", "Bob"]);
+    assert!(session.messages.is_empty(), "groups don't open with anyone's greeting");
+
+    assert_eq!(f.engine.open_group(group.id, false).unwrap().conversation.id, session.conversation.id);
+    let fresh = f.engine.new_chat_like(session.conversation.id).unwrap();
+    assert_ne!(fresh.conversation.id, session.conversation.id);
+    assert_eq!(fresh.conversation.group_chat_id, Some(group.id));
+    assert_eq!(fresh.history.len(), 2);
+    assert!(f.engine.open_group(Uuid::new_v4(), false).is_err());
+}
+
+#[tokio::test]
+async fn manual_groups_wait_for_the_user_to_pick_who_replies() {
+    let f = fixture(vec![Script::Items(vec![chunk("Bob here."), finish("STOP")])]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::Manual, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+
+    let (result, events) = send(&f, conv, "Hello both").await;
+    result.unwrap();
+
+    assert!(f.provider.requests().is_empty(), "nobody is asked to reply yet");
+    assert!(error_messages(&events).is_empty());
+    assert_eq!(messages(&f, conv).len(), 1);
+
+    let sink = Arc::new(VecSink::default());
+    f.engine.pick_speaker(conv, bob.id, sink.clone()).await.unwrap();
+
+    assert_eq!(speakers(&f, conv), [Some(bob.id)]);
+    assert_eq!(messages(&f, conv)[1].text, "Bob here.");
+    assert!(matches!(sink.events().last(), Some(ChatEvent::Finished)));
+}
+
+#[tokio::test]
+async fn round_robin_groups_hand_the_floor_to_the_next_member_each_turn() {
+    let scripts = (0..3).map(|i| Script::Items(vec![chunk(&format!("reply {i}")), finish("STOP")])).collect();
+    let f = fixture(scripts);
+    let members: Vec<Character> = ["Alice", "Bob", "Cara"].iter().map(|n| add_character(&f.db, n, None, &[])).collect();
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &members.iter().collect::<Vec<_>>());
+    let conv = ready_group(&f, &group);
+
+    for turn in ["one", "two", "three"] {
+        send(&f, conv, turn).await.0.unwrap();
+    }
+
+    let order: Vec<_> = speakers(&f, conv).into_iter().map(Option::unwrap).collect();
+    assert_eq!(order, [members[0].id, members[1].id, members[2].id]);
+}
+
+#[tokio::test]
+async fn trigger_word_groups_reply_in_the_order_names_are_mentioned_and_hear_each_other() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Cara speaking."), finish("STOP")]),
+        Script::Items(vec![chunk("Alice speaking."), finish("STOP")]),
+    ]);
+    let (alice, cara) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Cara", None, &[]));
+    let group = add_group(&f, GroupActivationMode::TriggerWord, &[&alice, &cara]);
+    let conv = ready_group(&f, &group);
+
+    send(&f, conv, "Cara, then Alice - what do you two think?").await.0.unwrap();
+
+    assert_eq!(speakers(&f, conv), [Some(cara.id), Some(alice.id)]);
+    // The second speaker's prompt already contains the first one's reply, labelled with her name.
+    let second = &f.provider.requests()[1];
+    assert_eq!(second.history.last().unwrap().text, "Cara: Cara speaking.");
+    assert_eq!(second.history.last().unwrap().role, LlmRole::Model);
+}
+
+#[tokio::test]
+async fn a_failed_voice_ends_the_round_for_everyone_after_it() {
+    let f = fixture(vec![Script::FailToStart(ProviderError::new("busy", ProviderErrorKind::RateLimit))]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::TriggerWord, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+
+    let (_, events) = send(&f, conv, "Alice and Bob?").await;
+
+    assert_eq!(f.provider.requests().len(), 1, "Bob is not asked once Alice's turn failed");
+    assert_eq!(error_messages(&events).len(), 1);
+}
+
+#[tokio::test]
+async fn stopping_mid_round_skips_the_remaining_speakers() {
+    let f = fixture(vec![Script::Hang(vec![LlmResponseChunk::text("Alice starts")])]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::TriggerWord, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+    let sink = Arc::new(VecSink::default());
+
+    let engine = f.engine.clone();
+    let task_sink: Arc<dyn EventSink> = sink.clone();
+    let task = tokio::spawn(async move { engine.send_message(conv, "Alice, Bob!".into(), vec![], task_sink).await });
+    wait_until("Alice to start", || sink.events().iter().any(|e| matches!(e, ChatEvent::Delta { .. }))).await;
+    f.engine.stop(conv);
+    task.await.unwrap().unwrap();
+
+    assert_eq!(f.provider.requests().len(), 1);
+    assert_eq!(speakers(&f, conv), [Some(alice.id)]);
+}
+
+#[tokio::test]
+async fn picking_a_speaker_is_validated() {
+    let f = fixture(vec![]);
+    let (alice, outsider) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Zed", None, &[]));
+    let group = add_group(&f, GroupActivationMode::Manual, &[&alice]);
+    let conv = ready_group(&f, &group);
+
+    let sink = Arc::new(VecSink::default());
+    let err = f.engine.pick_speaker(conv, outsider.id, sink.clone()).await.unwrap_err();
+    assert!(err.to_string().contains("isn't in this group"));
+
+    // A plain character chat is not a group.
+    let solo = ready_character(&f, &alice);
+    let err = f.engine.pick_speaker(solo, alice.id, sink).await.unwrap_err();
+    assert!(err.to_string().contains("isn't a group chat"));
+    assert!(f.provider.requests().is_empty());
+}
+
+#[tokio::test]
+async fn deleting_a_group_keeps_its_conversations_usable() {
+    let f = fixture(vec![Script::Items(vec![chunk("Still here."), finish("STOP")])]);
+    let alice = add_character(&f.db, "Alice", None, &[]);
+    let group = add_group(&f, GroupActivationMode::Manual, &[&alice]);
+    let conv = ready_group(&f, &group);
+    f.db.with(|c| group_chats::delete(c, group.id)).unwrap();
+
+    // The chat loses its cast (the group reference is cleared) but keeps its history and still works.
+    let session = f.engine.resume(conv).unwrap();
+    assert!(session.group.is_none());
+    assert!(session.characters.is_empty());
+
+    send(&f, conv, "anyone?").await.0.unwrap();
+    assert_eq!(messages(&f, conv).len(), 2);
+    assert_eq!(messages(&f, conv)[1].text, "Still here.");
 }

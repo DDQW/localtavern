@@ -52,6 +52,16 @@ pub fn store_bytes(images_dir: &Path, data: &[u8], mime: &str) -> Result<PathBuf
     Ok(destination)
 }
 
+/// Deletes a stored image, but only if it lives inside the app's own images folder - a character's
+/// avatar can point at the user's original file elsewhere, which must never be removed. Best-effort:
+/// a leftover file is harmless, so failures are ignored. Returns whether a file was removed.
+pub fn delete_if_owned(images_dir: &Path, path: &Path) -> bool {
+    let (Ok(dir), Ok(file)) = (images_dir.canonicalize(), path.canonicalize()) else {
+        return false;
+    };
+    file.starts_with(&dir) && file.is_file() && std::fs::remove_file(&file).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +111,36 @@ mod tests {
     fn storing_a_missing_file_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         assert!(store_file(dir.path(), &dir.path().join("nope.png")).is_err());
+    }
+
+    #[test]
+    fn delete_if_owned_only_removes_files_inside_the_images_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let images = dir.path().join("images");
+        std::fs::create_dir_all(&images).unwrap();
+        let owned = images.join("a.png");
+        let elsewhere = dir.path().join("original.png");
+        std::fs::write(&owned, [1]).unwrap();
+        std::fs::write(&elsewhere, [1]).unwrap();
+
+        assert!(!delete_if_owned(&images, &elsewhere), "the user's original file is never touched");
+        assert!(elsewhere.exists());
+        assert!(delete_if_owned(&images, &owned));
+        assert!(!owned.exists());
+        assert!(!delete_if_owned(&images, &owned), "already gone is fine");
+    }
+
+    #[test]
+    fn delete_if_owned_is_not_fooled_by_path_tricks() {
+        let dir = tempfile::tempdir().unwrap();
+        let images = dir.path().join("images");
+        std::fs::create_dir_all(&images).unwrap();
+        let outside = dir.path().join("secret.txt");
+        std::fs::write(&outside, "x").unwrap();
+
+        let sneaky = images.join("..").join("secret.txt");
+        assert!(!delete_if_owned(&images, &sneaky));
+        assert!(outside.exists());
+        assert!(!delete_if_owned(&images, &images), "a directory is not a file");
     }
 }

@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use super::presets;
 use crate::error::{Error, Result};
-use crate::models::{Character, ChatMessage, Conversation, ConversationMode, Persona, PromptPreset};
+use crate::models::{Character, ChatMessage, Conversation, ConversationMode, GroupChat, Persona, PromptPreset};
 use crate::repo::{characters, conversations, group_chats, lorebooks, personas, user_memories};
 use crate::settings;
 
@@ -35,6 +35,8 @@ pub struct ChatSession {
     pub characters: Vec<Character>,
     pub persona: Option<Persona>,
     pub personas: Vec<Persona>,
+    /// Set for group chats: who is in the group and how speakers are chosen.
+    pub group: Option<GroupChat>,
     pub preset: PromptPreset,
     pub presets: Vec<PresetSummary>,
     pub history: Vec<HistoryEntry>,
@@ -46,6 +48,7 @@ pub struct ChatSession {
 
 /// The loaded state a reply is generated from.
 pub struct ReplyContext {
+    pub group: Option<GroupChat>,
     pub conversation: Conversation,
     pub preset: PromptPreset,
     pub persona: Option<Persona>,
@@ -68,14 +71,17 @@ pub fn load_reply_context(conn: &Connection, conversation_id: Uuid) -> Result<Re
         None => None,
     };
 
+    let group = match conversation.group_chat_id {
+        Some(id) => group_chats::get(conn, id)?,
+        None => None,
+    };
+
     let mut cast = Vec::new();
     if let Some(id) = conversation.character_id {
         cast.extend(characters::get(conn, id)?);
-    } else if let Some(group_id) = conversation.group_chat_id {
-        if let Some(group) = group_chats::get(conn, group_id)? {
-            for id in group.character_ids {
-                cast.extend(characters::get(conn, id)?);
-            }
+    } else if let Some(group) = &group {
+        for id in &group.character_ids {
+            cast.extend(characters::get(conn, *id)?);
         }
     }
 
@@ -88,7 +94,7 @@ pub fn load_reply_context(conn: &Connection, conversation_id: Uuid) -> Result<Re
     }
 
     let messages = conversations::get_messages(conn, conversation_id)?;
-    Ok(ReplyContext { conversation, preset, persona, characters: cast, lorebooks: books, messages })
+    Ok(ReplyContext { group, conversation, preset, persona, characters: cast, lorebooks: books, messages })
 }
 
 pub fn build_session(conn: &Connection, provider_ids: &[String], conversation_id: Uuid) -> Result<ChatSession> {
@@ -117,6 +123,7 @@ pub fn build_session(conn: &Connection, provider_ids: &[String], conversation_id
         characters: ctx.characters,
         persona: ctx.persona,
         personas: personas::get_all(conn)?,
+        group: ctx.group,
         preset: ctx.preset,
         presets,
         history,

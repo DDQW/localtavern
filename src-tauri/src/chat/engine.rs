@@ -2,8 +2,8 @@
 //! deletes messages. It mirrors the C# `ChatViewModel`, minus everything UI-shaped - progress is
 //! reported through an [`EventSink`] and the UI just renders what it's told.
 //!
-//! Not yet ported (later steps): group-chat speaker selection, Continue, Impersonate, the PowerShell
-//! tool loop, and the background memory / quest-log / notebook extraction.
+//! Not yet ported (later steps): Continue, Impersonate, the PowerShell tool loop, and the background
+//! memory / quest-log / notebook extraction.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -26,13 +26,14 @@ use super::reply::{
 use super::session::{build_session, default_persona, load_reply_context, ChatSession, ReplyContext};
 use crate::db::Db;
 use crate::error::{Error, Result};
+use crate::group_chats::strategy_for;
 use crate::llm::{LlmMessage, LlmRequest, LlmRole};
 use crate::models::{
     Character, ChatMessage, Conversation, ConversationMode, LlmUsage, MessageAttachment, MessageRole,
 };
 use crate::prompting::{self, emotion_tag, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext};
 use crate::providers::{LlmGeneratedImage, LlmProviderRegistry, ProviderError};
-use crate::repo::{characters, conversations, notebook, quest_log, user_memories};
+use crate::repo::{characters, conversations, group_chats, notebook, quest_log, user_memories};
 use crate::settings;
 
 /// How often streamed text is pushed to the UI. Rendering faster than the display refreshes buys
@@ -171,6 +172,32 @@ impl ChatEngine {
         }
     }
 
+    /// A group chat: resumes the latest conversation with this group, or starts one.
+    pub fn open_group(&self, group_id: Uuid, force_new: bool) -> Result<ChatSession> {
+        let id = self.db().with(|c| {
+            if !force_new {
+                if let Some(existing) = conversations::get_most_recent_by_group_chat(c, group_id)? {
+                    return Ok(existing.id);
+                }
+            }
+            let group = group_chats::get(c, group_id)?.ok_or_else(|| Error::Other("Group chat not found.".into()))?;
+            let persona = default_persona(c)?;
+            let (provider_id, model) = self.default_provider_and_model(c)?;
+            let conversation = Conversation {
+                title: group.name.clone(),
+                mode: ConversationMode::Roleplay,
+                group_chat_id: Some(group.id),
+                persona_id: persona.map(|p| p.id),
+                provider_id,
+                model,
+                ..Default::default()
+            };
+            conversations::upsert(c, &conversation)?;
+            Ok(conversation.id)
+        })?;
+        self.session(id)
+    }
+
     pub fn resume(&self, conversation_id: Uuid) -> Result<ChatSession> {
         self.session(conversation_id)
     }
@@ -183,8 +210,8 @@ impl ChatEngine {
             .ok_or_else(|| Error::Other("Conversation not found.".into()))?;
         if let Some(character_id) = conversation.character_id {
             self.open_character(character_id, true)
-        } else if conversation.group_chat_id.is_some() {
-            Err(Error::Other("Group chats aren't supported in this build yet.".into()))
+        } else if let Some(group_id) = conversation.group_chat_id {
+            self.open_group(group_id, true)
         } else {
             self.open_assistant(true)
         }
@@ -303,6 +330,27 @@ impl ChatEngine {
         .await
     }
 
+    /// Group chats: has this character reply next (used when the group is in manual mode, or to add
+    /// another voice to a conversation).
+    pub async fn pick_speaker(&self, conversation_id: Uuid, character_id: Uuid, sink: Arc<dyn EventSink>) -> Result<()> {
+        let engine = self.clone();
+        let inner_sink = sink.clone();
+        self.run_guarded(conversation_id, sink, move |token| async move {
+            let ctx = engine.db().with(|c| load_reply_context(c, conversation_id))?;
+            if ctx.group.is_none() {
+                return Err(Error::Other("This isn't a group chat.".into()));
+            }
+            if !ctx.characters.iter().any(|c| c.id == character_id) {
+                return Err(Error::Other("That character isn't in this group.".into()));
+            }
+            if ctx.conversation.model.trim().is_empty() {
+                return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
+            }
+            engine.generate_new(conversation_id, Some(character_id), &inner_sink, &token).await.map(|_| ())
+        })
+        .await
+    }
+
     /// Swiping right: moves to the next existing alternate, or generates a new one when already at
     /// the last (SillyTavern-style - there is no separate "Regenerate" button).
     pub async fn swipe_next(&self, conversation_id: Uuid, message_id: Uuid, sink: Arc<dyn EventSink>) -> Result<()> {
@@ -364,9 +412,6 @@ impl ChatEngine {
         token: CancellationToken,
     ) -> Result<()> {
         let ctx = self.db().with(|c| load_reply_context(c, conversation_id))?;
-        if ctx.conversation.group_chat_id.is_some() {
-            return Err(Error::Other("Group chats aren't supported in this build yet.".into()));
-        }
         if ctx.conversation.model.trim().is_empty() {
             return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
         }
@@ -388,8 +433,23 @@ impl ChatEngine {
             sink.emit(ChatEvent::MessageAdded { message: user });
         }
 
+        if let Some(group) = &ctx.group {
+            // Who answers depends on the group's activation mode; an empty answer means "let the
+            // user pick" (manual mode) - the UI offers the group's members.
+            let history = self.db().with(|c| conversations::get_messages(c, conversation_id))?;
+            let latest_user_text =
+                history.iter().rev().find(|m| m.role == MessageRole::User).map(|m| m.text.clone()).unwrap_or_default();
+            let speakers = strategy_for(group.activation_mode).select_next_speakers(group, &ctx.characters, &history, &latest_user_text);
+            for speaker in speakers {
+                if !self.generate_new(conversation_id, Some(speaker), &sink, &token).await? {
+                    break; // a stop or failure ends the round, not just this voice
+                }
+            }
+            return Ok(());
+        }
+
         let speaker_id = (ctx.characters.len() == 1).then(|| ctx.characters[0].id);
-        self.generate_new(conversation_id, speaker_id, &sink, &token).await
+        self.generate_new(conversation_id, speaker_id, &sink, &token).await.map(|_| ())
     }
 
     // ------------------------------------------------------------------ generation
@@ -563,7 +623,7 @@ impl ChatEngine {
         speaker_id: Option<Uuid>,
         sink: &Arc<dyn EventSink>,
         token: &CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let ctx = self.db().with(|c| load_reply_context(c, conversation_id))?;
         let speaker = speaker_id.and_then(|id| ctx.characters.iter().find(|c| c.id == id)).cloned();
 
@@ -604,17 +664,20 @@ impl ChatEngine {
         }
 
         match end {
-            StreamEnd::Failed(error) => self.emit_failure(&error, sink),
-            StreamEnd::Cancelled => {}
+            StreamEnd::Failed(error) => {
+                self.emit_failure(&error, sink);
+                Ok(false)
+            }
+            StreamEnd::Cancelled => Ok(false),
             StreamEnd::Completed => {
                 // Only the conversation's very first exchange gets auto-titled.
                 if ctx.conversation.mode == ConversationMode::Assistant && ctx.messages.len() == 1 {
                     let user_text = ctx.messages.last().map(|m| m.text.clone()).unwrap_or_default();
                     self.spawn_title(&ctx.conversation, user_text, message.text.clone(), sink.clone());
                 }
+                Ok(true)
             }
         }
-        Ok(())
     }
 
     async fn regenerate_inner(
