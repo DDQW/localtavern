@@ -9,7 +9,10 @@ import type {
   ChatSession,
   Conversation,
   GeminiOptions,
+  GroupChat,
   HistoryEntry,
+  Lorebook,
+  PromptPresetFull,
   OllamaOptions,
   Persona,
   ProviderInfo,
@@ -68,6 +71,66 @@ const characters: Character[] = ["Nova", "Mira", "Dorian"].map((name, i) => ({
 }));
 
 const personas: Persona[] = [{ id: "d0000000-0000-4000-8000-000000000001", name: "Alex", avatarPath: null, description: "A curious traveler.", isDefault: true }];
+
+const lorebooks: Lorebook[] = [
+  {
+    id: "b0000000-0000-4000-8000-000000000001",
+    name: "Lantern Belt",
+    scanDepth: 4,
+    tokenBudget: 1000,
+    entries: [
+      {
+        id: "b1000000-0000-4000-8000-000000000001",
+        keys: ["lantern", "belt"],
+        secondaryKeys: null,
+        content: "The Lantern Belt is a ring of glowing debris.",
+        caseSensitive: false,
+        enabled: true,
+        insertionOrder: 1,
+        position: "beforeCharacterDescription",
+        depth: 0,
+      },
+    ],
+  },
+];
+
+const blocks = (types: PromptPresetFull["blocks"][number]["type"][]): PromptPresetFull["blocks"] =>
+  types.map((type, order) => ({ id: uid(), type, enabled: true, order, customText: null, injectionDepth: 0 }));
+
+const presets: PromptPresetFull[] = [
+  {
+    id: "p1",
+    name: "Assistant (default)",
+    blocks: blocks(["systemPrompt", "personaDescription", "userMemory", "chatHistory"]),
+    temperature: null,
+    topP: null,
+    topK: null,
+    maxOutputTokens: null,
+    reasoningEffort: null,
+    maxContextTokens: null,
+  },
+  {
+    id: "p2",
+    name: "Roleplay (default)",
+    blocks: blocks(["systemPrompt", "personaDescription", "characterDescription", "scenario", "exampleDialogue", "worldInfo", "chatHistory", "postHistoryInstructions", "worldState", "characterNotebook", "questLog"]),
+    temperature: 0.9,
+    topP: null,
+    topK: null,
+    maxOutputTokens: 1024,
+    reasoningEffort: "low",
+    maxContextTokens: null,
+  },
+];
+
+const groups: GroupChat[] = [
+  {
+    id: "g0000000-0000-4000-8000-000000000001",
+    name: "The Crew",
+    characterIds: [characters[0].id, characters[1].id],
+    activationMode: "triggerWord",
+    allowSelfResponses: false,
+  },
+];
 
 const providers: ProviderInfo[] = [
   { id: "gemini", name: "Gemini", auth: "apiKey", hasKey: true },
@@ -156,19 +219,27 @@ function conversation(overrides: Partial<Conversation>): Conversation {
 
 function history(c: Conversation): HistoryEntry[] {
   return conversations
-    .filter((x) => (c.characterId ? x.characterId === c.characterId : x.mode === c.mode && !x.characterId))
+    .filter((x) =>
+      c.characterId ? x.characterId === c.characterId : c.groupChatId ? x.groupChatId === c.groupChatId : x.mode === c.mode && !x.characterId && !x.groupChatId,
+    )
     .map((x) => ({ id: x.id, label: `${x.title} · today`, updatedAt: x.updatedAt }));
 }
 
 function session(id: Uuid): ChatSession {
   const c = conversations.find((x) => x.id === id)!;
-  const cast = c.characterId ? characters.filter((ch) => ch.id === c.characterId) : [];
+  const group = groups.find((g) => g.id === c.groupChatId);
+  const cast = c.characterId
+    ? characters.filter((ch) => ch.id === c.characterId)
+    : group
+      ? group.characterIds.map((id) => characters.find((ch) => ch.id === id)!).filter(Boolean)
+      : [];
   return {
     conversation: c,
     messages: structuredClone(messages.get(id) ?? []),
     characters: cast,
     persona: personas[0],
     personas,
+    group: groups.find((g) => g.id === c.groupChatId) ?? null,
     preset: { id: c.mode === "assistant" ? "p1" : "p2", name: c.mode === "assistant" ? "Assistant (default)" : "Roleplay (default)", blocks: [] },
     presets: [
       { id: "p1", name: "Assistant (default)" },
@@ -235,6 +306,12 @@ export const mockApi: Api = {
     messages.get(c.id)!.push(message(c.id, "character", ch.firstMessages[0].replace("{{user}}", "Alex").replace("{{char}}", ch.name), { speakerCharacterId: ch.id }));
     return session(c.id);
   },
+  async openGroup(groupId, forceNew) {
+    const existing = [...conversations].reverse().find((c) => c.groupChatId === groupId);
+    if (!forceNew && existing) return session(existing.id);
+    const group = groups.find((g) => g.id === groupId)!;
+    return session(conversation({ title: group.name, mode: "roleplay", groupChatId: groupId }).id);
+  },
   async openLastRoleplay() {
     const last = [...conversations].reverse().find((c) => c.mode === "roleplay");
     return last ? session(last.id) : null;
@@ -244,6 +321,7 @@ export const mockApi: Api = {
   },
   async newChat(id) {
     const c = conversations.find((x) => x.id === id)!;
+    if (c.groupChatId) return mockApi.openGroup(c.groupChatId, true);
     return c.characterId ? mockApi.openCharacter(c.characterId, true) : mockApi.openAssistant(true);
   },
   async deleteConversation(id) {
@@ -295,6 +373,13 @@ export const mockApi: Api = {
     } else {
       await stream(conversationId, target, onEvent, "A *different* take on the same question, this time a little shorter.", true);
     }
+    onEvent({ type: "finished" });
+  },
+  async pickSpeaker(conversationId, characterId, onEvent) {
+    const reply = message(conversationId, "character", "", { speakerCharacterId: characterId });
+    messages.get(conversationId)!.push(reply);
+    onEvent({ type: "messageAdded", message: structuredClone(reply) });
+    await stream(conversationId, reply, onEvent, "*leans in* Happy to weigh in — here's my take.", false);
     onEvent({ type: "finished" });
   },
   async swipePrevious(messageId) {
@@ -375,5 +460,83 @@ export const mockApi: Api = {
 
   async storeImage(path) {
     return path;
+  },
+  async deleteImage() {
+    return true;
+  },
+
+  async saveCharacter(character) {
+    const i = characters.findIndex((c) => c.id === character.id);
+    const saved = { ...structuredClone(character), name: character.name.trim(), updatedAt: now() };
+    if (i >= 0) characters[i] = saved;
+    else characters.push(saved);
+    return structuredClone(saved);
+  },
+  async deleteCharacter(id) {
+    characters.splice(characters.findIndex((c) => c.id === id), 1);
+  },
+  async importCharacter() {
+    const imported: Character = { ...structuredClone(characters[0]), id: uid(), name: "Imported Card", tags: ["imported"] };
+    characters.push(imported);
+    return structuredClone(imported);
+  },
+  async exportCharacterCard() {},
+  async importExpressionFolder() {
+    return [
+      { emotion: "happy", imagePath: "C:\\mock\\sprites\\happy.png" },
+      { emotion: "angry", imagePath: "C:\\mock\\sprites\\angry.png" },
+    ];
+  },
+
+  async savePersona(persona) {
+    if (persona.isDefault) personas.forEach((p) => (p.isDefault = false));
+    const i = personas.findIndex((p) => p.id === persona.id);
+    if (i >= 0) personas[i] = structuredClone(persona);
+    else personas.push(structuredClone(persona));
+    return structuredClone(persona);
+  },
+  async deletePersona(id) {
+    personas.splice(personas.findIndex((p) => p.id === id), 1);
+  },
+
+  async listLorebooks() {
+    return structuredClone(lorebooks);
+  },
+  async saveLorebook(book) {
+    const i = lorebooks.findIndex((b) => b.id === book.id);
+    if (i >= 0) lorebooks[i] = structuredClone(book);
+    else lorebooks.push(structuredClone(book));
+    return structuredClone(book);
+  },
+  async deleteLorebook(id) {
+    lorebooks.splice(lorebooks.findIndex((b) => b.id === id), 1);
+  },
+
+  async listPresets() {
+    return structuredClone(presets);
+  },
+  async savePreset(preset) {
+    const saved = { ...structuredClone(preset), name: preset.name.trim() || "Untitled preset" };
+    saved.blocks.forEach((b, order) => (b.order = order));
+    const i = presets.findIndex((p) => p.id === preset.id);
+    if (i >= 0) presets[i] = saved;
+    else presets.push(saved);
+    return structuredClone(saved);
+  },
+  async deletePreset(id) {
+    presets.splice(presets.findIndex((p) => p.id === id), 1);
+  },
+
+  async listGroupChats() {
+    return structuredClone(groups);
+  },
+  async saveGroupChat(group) {
+    const i = groups.findIndex((g) => g.id === group.id);
+    if (i >= 0) groups[i] = structuredClone(group);
+    else groups.push(structuredClone(group));
+    return structuredClone(group);
+  },
+  async deleteGroupChat(id) {
+    groups.splice(groups.findIndex((g) => g.id === id), 1);
   },
 };

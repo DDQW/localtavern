@@ -3,31 +3,63 @@
   import { api, errorText } from "$lib/api";
   import { chat } from "$lib/chat.svelte";
   import Avatar from "$lib/components/Avatar.svelte";
+  import { pickCard } from "$lib/pick";
   import type { Character } from "$lib/types";
 
   let characters = $state<Character[]>([]);
   let query = $state("");
   let error = $state("");
   let loaded = $state(false);
+  let importing = $state(false);
+
+  async function load() {
+    try {
+      characters = await api.listCharacters();
+    } catch (e) {
+      error = errorText(e);
+    } finally {
+      loaded = true;
+    }
+  }
 
   $effect(() => {
-    api
-      .listCharacters()
-      .then((list) => (characters = list))
-      .catch((e) => (error = errorText(e)))
-      .finally(() => (loaded = true));
+    void load();
   });
 
   const filtered = $derived.by(() => {
     const q = query.trim().toLowerCase();
     if (!q) return characters;
-    return characters.filter(
-      (c) => c.name.toLowerCase().includes(q) || c.tags.some((t) => t.toLowerCase().includes(q)),
-    );
+    return characters.filter((c) => c.name.toLowerCase().includes(q) || c.tags.some((t) => t.toLowerCase().includes(q)));
   });
 
   async function startFresh(character: Character) {
     if (await chat.openCharacter(character.id, true)) await goto(`/chat/${chat.conversationId}`);
+  }
+
+  async function importCard() {
+    error = "";
+    try {
+      const path = await pickCard();
+      if (!path) return;
+      importing = true;
+      const imported = await api.importCharacter(path);
+      await load();
+      await goto(`/characters/${imported.id}`);
+    } catch (e) {
+      error = `Import failed: ${errorText(e)}`;
+    } finally {
+      importing = false;
+    }
+  }
+
+  async function remove(character: Character) {
+    if (!confirm(`Delete ${character.name}? Their conversations are kept but lose the character.`)) return;
+    try {
+      await api.deleteCharacter(character.id);
+      characters = characters.filter((c) => c.id !== character.id);
+    } catch (e) {
+      error = errorText(e);
+    }
   }
 </script>
 
@@ -35,13 +67,18 @@
   <header>
     <h1>Characters</h1>
     <input type="search" placeholder="Search name or tag…" bind:value={query} aria-label="Search characters" />
-    <span class="muted count">{characters.length} characters</span>
+    <span class="grow"></span>
+    <span class="muted">{characters.length} characters</span>
+    <button onclick={importCard} disabled={importing} title="Import a SillyTavern .json or .png character card">
+      {importing ? "Importing…" : "⤓ Import card"}
+    </button>
+    <a class="newbtn" href="/characters/new">＋ New character</a>
   </header>
 
-  {#if error}<p class="err">{error}</p>{/if}
+  {#if error}<p class="notice">{error}</p>{/if}
 
   {#if loaded && characters.length === 0 && !error}
-    <p class="muted">No characters yet. Importing and editing characters is being ported — for now, existing ones from the original app appear here.</p>
+    <p class="muted">No characters yet — create one, or import a SillyTavern card (.json or .png).</p>
   {/if}
 
   <div class="grid">
@@ -59,7 +96,12 @@
             {/if}
           </div>
         </a>
-        <button class="ghost" onclick={() => startFresh(character)} title="Start a new conversation with {character.name}">＋ New chat</button>
+        <div class="btnrow tools">
+          <a class="linkbtn" href="/characters/{character.id}">Edit</a>
+          <button class="ghost" onclick={() => startFresh(character)} title="Start a new conversation with {character.name}">＋ New chat</button>
+          <span class="grow"></span>
+          <button class="ghost danger" onclick={() => remove(character)}>Delete</button>
+        </div>
       </article>
     {/each}
   </div>
@@ -70,12 +112,31 @@
     width: 260px;
   }
 
-  .count {
-    margin-left: auto;
+  .grow {
+    flex: 1;
   }
 
-  .err {
-    color: var(--danger);
+  .newbtn,
+  .linkbtn {
+    display: inline-block;
+    text-decoration: none;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    border-radius: var(--radius-sm);
+    padding: 6px 12px;
+  }
+
+  .newbtn {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-text);
+    font-weight: 600;
+  }
+
+  .linkbtn {
+    padding: 4px 10px;
+    font-size: 13px;
   }
 
   .grid {
@@ -88,7 +149,7 @@
     display: flex;
     flex-direction: column;
     padding: 14px;
-    gap: 6px;
+    gap: 8px;
   }
 
   .open {
@@ -135,7 +196,8 @@
     color: var(--muted);
   }
 
-  .card > button {
-    align-self: flex-end;
+  .tools {
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
   }
 </style>

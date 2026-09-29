@@ -11,9 +11,13 @@ import type {
   ChatMessage,
   ChatSession,
   Conversation,
+  ExpressionImage,
   GeminiOptions,
+  GroupChat,
+  Lorebook,
   OllamaOptions,
   Persona,
+  PromptPresetFull,
   ProviderInfo,
   SearchHit,
   StoryState,
@@ -30,6 +34,7 @@ export interface Api {
 
   openAssistant(forceNew: boolean): Promise<ChatSession>;
   openCharacter(characterId: Uuid, forceNew: boolean): Promise<ChatSession>;
+  openGroup(groupId: Uuid, forceNew: boolean): Promise<ChatSession>;
   openLastRoleplay(): Promise<ChatSession | null>;
   resumeConversation(conversationId: Uuid): Promise<ChatSession>;
   newChat(conversationId: Uuid): Promise<ChatSession>;
@@ -39,6 +44,7 @@ export interface Api {
 
   sendMessage(conversationId: Uuid, text: string, attachments: string[], onEvent: EventHandler): Promise<void>;
   swipeNext(conversationId: Uuid, messageId: Uuid, onEvent: EventHandler): Promise<void>;
+  pickSpeaker(conversationId: Uuid, characterId: Uuid, onEvent: EventHandler): Promise<void>;
   swipePrevious(messageId: Uuid): Promise<ChatMessage>;
   stopGeneration(conversationId: Uuid): Promise<void>;
   editMessage(messageId: Uuid, text: string): Promise<ChatMessage>;
@@ -59,6 +65,28 @@ export interface Api {
   saveOllamaOptions(options: OllamaOptions): Promise<void>;
 
   storeImage(path: string): Promise<string>;
+  deleteImage(path: string): Promise<boolean>;
+
+  saveCharacter(character: Character): Promise<Character>;
+  deleteCharacter(characterId: Uuid): Promise<void>;
+  importCharacter(path: string): Promise<Character>;
+  exportCharacterCard(character: Character, path: string): Promise<void>;
+  importExpressionFolder(folder: string): Promise<ExpressionImage[]>;
+
+  savePersona(persona: Persona): Promise<Persona>;
+  deletePersona(personaId: Uuid): Promise<void>;
+
+  listLorebooks(): Promise<Lorebook[]>;
+  saveLorebook(lorebook: Lorebook): Promise<Lorebook>;
+  deleteLorebook(lorebookId: Uuid): Promise<void>;
+
+  listPresets(): Promise<PromptPresetFull[]>;
+  savePreset(preset: PromptPresetFull): Promise<PromptPresetFull>;
+  deletePreset(presetId: Uuid): Promise<void>;
+
+  listGroupChats(): Promise<GroupChat[]>;
+  saveGroupChat(group: GroupChat): Promise<GroupChat>;
+  deleteGroupChat(groupId: Uuid): Promise<void>;
 }
 
 /** Runs a streaming command, forwarding each event to `onEvent`; resolves when the command returns. */
@@ -76,6 +104,7 @@ const tauriApi: Api = {
 
   openAssistant: (forceNew) => invoke("open_assistant", { forceNew }),
   openCharacter: (characterId, forceNew) => invoke("open_character", { characterId, forceNew }),
+  openGroup: (groupId, forceNew) => invoke("open_group", { groupId, forceNew }),
   openLastRoleplay: () => invoke("open_last_roleplay"),
   resumeConversation: (conversationId) => invoke("resume_conversation", { conversationId }),
   newChat: (conversationId) => invoke("new_chat", { conversationId }),
@@ -86,6 +115,8 @@ const tauriApi: Api = {
   sendMessage: (conversationId, text, attachments, onEvent) =>
     streaming("send_message", { conversationId, text, attachments }, onEvent),
   swipeNext: (conversationId, messageId, onEvent) => streaming("swipe_next", { conversationId, messageId }, onEvent),
+  pickSpeaker: (conversationId, characterId, onEvent) =>
+    streaming("pick_speaker", { conversationId, characterId }, onEvent),
   swipePrevious: (messageId) => invoke("swipe_previous", { messageId }),
   stopGeneration: (conversationId) => invoke("stop_generation", { conversationId }),
   editMessage: (messageId, text) => invoke("edit_message", { messageId, text }),
@@ -108,6 +139,28 @@ const tauriApi: Api = {
   saveOllamaOptions: (options) => invoke("save_ollama_options", { options }),
 
   storeImage: (path) => invoke("store_image", { path }),
+  deleteImage: (path) => invoke("delete_image", { path }),
+
+  saveCharacter: (character) => invoke("save_character", { character }),
+  deleteCharacter: (characterId) => invoke("delete_character", { characterId }),
+  importCharacter: (path) => invoke("import_character", { path }),
+  exportCharacterCard: (character, path) => invoke("export_character_card", { character, path }),
+  importExpressionFolder: (folder) => invoke("import_expression_folder", { folder }),
+
+  savePersona: (persona) => invoke("save_persona", { persona }),
+  deletePersona: (personaId) => invoke("delete_persona", { personaId }),
+
+  listLorebooks: () => invoke("list_lorebooks"),
+  saveLorebook: (lorebook) => invoke("save_lorebook", { lorebook }),
+  deleteLorebook: (lorebookId) => invoke("delete_lorebook", { lorebookId }),
+
+  listPresets: () => invoke("list_presets"),
+  savePreset: (preset) => invoke("save_preset", { preset }),
+  deletePreset: (presetId) => invoke("delete_preset", { presetId }),
+
+  listGroupChats: () => invoke("list_group_chats"),
+  saveGroupChat: (group) => invoke("save_group_chat", { group }),
+  deleteGroupChat: (groupId) => invoke("delete_group_chat", { groupId }),
 };
 
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

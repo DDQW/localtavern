@@ -142,6 +142,8 @@ export interface ChatSession {
   characters: Character[];
   persona: Persona | null;
   personas: Persona[];
+  /** Set for group chats: who is in the group and how speakers are chosen. */
+  group: GroupChat | null;
   preset: PromptPreset;
   presets: PresetSummary[];
   history: HistoryEntry[];
@@ -222,3 +224,76 @@ export type ChatEvent =
   | { type: "titleChanged"; conversationId: Uuid; title: string }
   | { type: "error"; message: string; kind: ErrorKind | null }
   | { type: "finished" };
+
+// ---- library (editors) ----
+
+export type WorldInfoPosition = "beforeCharacterDescription" | "afterCharacterDescription" | "atDepth";
+
+export interface WorldInfoEntry {
+  id: Uuid;
+  keys: string[];
+  secondaryKeys: string[] | null;
+  content: string;
+  caseSensitive: boolean;
+  enabled: boolean;
+  insertionOrder: number;
+  position: WorldInfoPosition;
+  depth: number;
+}
+
+export interface Lorebook {
+  id: Uuid;
+  name: string;
+  entries: WorldInfoEntry[];
+  scanDepth: number;
+  tokenBudget: number;
+}
+
+export type PromptBlockType =
+  | "systemPrompt"
+  | "personaDescription"
+  | "characterDescription"
+  | "scenario"
+  | "exampleDialogue"
+  | "worldInfo"
+  | "chatHistory"
+  | "authorsNote"
+  | "custom"
+  | "userMemory"
+  | "postHistoryInstructions"
+  | "worldState"
+  | "characterNotebook"
+  | "questLog";
+
+export type ReasoningEffort = "off" | "low" | "medium" | "high";
+
+export interface PromptBlockFull {
+  id: Uuid;
+  type: PromptBlockType;
+  enabled: boolean;
+  order: number;
+  customText: string | null;
+  injectionDepth: number;
+}
+
+export interface PromptPresetFull {
+  id: Uuid;
+  name: string;
+  blocks: PromptBlockFull[];
+  temperature: number | null;
+  topP: number | null;
+  topK: number | null;
+  maxOutputTokens: number | null;
+  reasoningEffort: ReasoningEffort | null;
+  maxContextTokens: number | null;
+}
+
+export type GroupActivationMode = "manual" | "roundRobin" | "triggerWord";
+
+export interface GroupChat {
+  id: Uuid;
+  name: string;
+  characterIds: Uuid[];
+  activationMode: GroupActivationMode;
+  allowSelfResponses: boolean;
+}

@@ -34,6 +34,15 @@
 </script>
 
 <div class="composer">
+  {#if chat.awaitingSpeaker && chat.session}
+    <div class="speakers" role="group" aria-label="Who replies?">
+      <span class="muted">Who replies?</span>
+      {#each chat.session.characters as character (character.id)}
+        <button onclick={() => chat.pickSpeaker(character.id)}>{character.name}</button>
+      {/each}
+    </div>
+  {/if}
+
   {#if chat.error}
     <div class="error" role="alert">
       <span>{chat.error}</span>
@@ -132,6 +141,14 @@
     padding: 8px 12px;
     margin-bottom: 8px;
     white-space: pre-wrap;
+  }
+
+  .speakers {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
   }
 
   .pending {

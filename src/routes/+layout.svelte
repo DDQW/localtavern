@@ -5,16 +5,14 @@
 
   let { children } = $props();
 
-  // `soon` items exist in the original app and are being ported; they stay visible so the layout is
-  // the familiar one, but aren't clickable yet.
   const items = [
     { href: "/", label: "Assistant", icon: "💬" },
     { href: "/roleplay", label: "Roleplay", icon: "🎭" },
     { href: "/characters", label: "Characters", icon: "🧙" },
-    { href: "/personas", label: "Personas", icon: "👤", soon: true },
-    { href: "/lorebooks", label: "Lorebooks", icon: "📚", soon: true },
-    { href: "/presets", label: "Prompt Presets", icon: "🧩", soon: true },
-    { href: "/groups", label: "Group Chats", icon: "👥", soon: true },
+    { href: "/personas", label: "Personas", icon: "👤" },
+    { href: "/lorebooks", label: "Lorebooks", icon: "📚" },
+    { href: "/presets", label: "Prompt Presets", icon: "🧩" },
+    { href: "/groups", label: "Group Chats", icon: "👥" },
     { href: "/history", label: "History", icon: "🕘" },
   ];
 
@@ -22,7 +20,8 @@
   const active = (href: string) =>
     href === "/" ? path === "/" : path === href || path.startsWith(`${href}/`);
   // A character chat belongs under "Roleplay"; a conversation opened from History under neither.
-  const activeItem = (href: string) => (href === "/roleplay" ? active(href) || path.startsWith("/character/") : active(href));
+  const activeItem = (href: string) =>
+    href === "/roleplay" ? active(href) || path.startsWith("/character/") || path.startsWith("/group/") : active(href);
 </script>
 
 <div class="app">
@@ -32,16 +31,9 @@
     <ul>
       {#each items as item (item.href)}
         <li>
-          {#if item.soon}
-            <span class="item soon" title="Being ported from the original app">
-              <span class="icon" aria-hidden="true">{item.icon}</span>{item.label}
-              <span class="badge">soon</span>
-            </span>
-          {:else}
-            <a class="item" class:active={activeItem(item.href)} href={item.href} aria-current={activeItem(item.href) ? "page" : undefined}>
-              <span class="icon" aria-hidden="true">{item.icon}</span>{item.label}
-            </a>
-          {/if}
+          <a class="item" class:active={activeItem(item.href)} href={item.href} aria-current={activeItem(item.href) ? "page" : undefined}>
+            <span class="icon" aria-hidden="true">{item.icon}</span>{item.label}
+          </a>
         </li>
       {/each}
     </ul>
@@ -102,7 +94,7 @@
     cursor: pointer;
   }
 
-  .item:hover:not(.soon) {
+  .item:hover {
     background: var(--panel-2);
   }
 
@@ -112,25 +104,9 @@
     box-shadow: inset 3px 0 0 var(--accent);
   }
 
-  .item.soon {
-    color: var(--muted);
-    cursor: default;
-    opacity: 0.6;
-  }
-
   .icon {
     width: 20px;
     text-align: center;
-  }
-
-  .badge {
-    margin-left: auto;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 0 6px;
   }
 
   .grow {

@@ -46,6 +46,11 @@ class ChatStore {
     return !!this.session?.conversation.groupChatId;
   }
 
+  /** In a group whose last message is the user's own: nobody has answered yet, so offer the members. */
+  get awaitingSpeaker(): boolean {
+    return this.isGroup && !this.busy && this.messages.at(-1)?.role === "user";
+  }
+
   get canSend(): boolean {
     if (!this.session || this.busy) return false;
     const last = this.messages.at(-1);
@@ -87,6 +92,10 @@ class ChatStore {
 
   openCharacter(characterId: Uuid, forceNew = false) {
     return this.open(api.openCharacter(characterId, forceNew));
+  }
+
+  openGroup(groupId: Uuid, forceNew = false) {
+    return this.open(api.openGroup(groupId, forceNew));
   }
 
   openLastRoleplay() {
@@ -211,6 +220,21 @@ class ChatStore {
     } catch (e) {
       if (this.conversationId === id) {
         // The engine has already reported its own errors as events; this covers a failed call.
+        this.error ||= errorText(e);
+        this.busy = false;
+      }
+    }
+  }
+
+  async pickSpeaker(characterId: Uuid) {
+    const id = this.conversationId;
+    if (!id || this.busy) return;
+    this.error = "";
+    this.busy = true;
+    try {
+      await api.pickSpeaker(id, characterId, (e) => this.handle(id, e));
+    } catch (e) {
+      if (this.conversationId === id) {
         this.error ||= errorText(e);
         this.busy = false;
       }
