@@ -13,7 +13,7 @@ use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::models::{
     Character, CharacterNotebookEntry, ChatMessage, Conversation, ExpressionImage, GroupChat, Lorebook, Persona,
-    PromptPreset, QuestLogEntry,
+    PromptPreset, QuestLogEntry, WorldState,
 };
 use crate::providers::gemini::GeminiRequestOptions;
 use crate::providers::ollama::OllamaRequestOptions;
@@ -266,6 +266,11 @@ pub fn set_conversation_persona(
 #[tauri::command]
 pub fn set_assistant_prompt(state: State<'_, AppState>, conversation_id: Uuid, text: String) -> Result<Conversation> {
     state.engine.set_assistant_prompt(conversation_id, &text)
+}
+
+#[tauri::command]
+pub fn set_world_state(state: State<'_, AppState>, conversation_id: Uuid, world_state: WorldState) -> Result<WorldState> {
+    state.engine.set_world_state(conversation_id, world_state)
 }
 
 #[tauri::command]

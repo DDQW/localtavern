@@ -378,6 +378,19 @@ class ChatStore {
     if (id) await this.updateConversation(api.setAssistantPrompt(id, text));
   }
 
+  /** Edits the in-story clock/weather. Ignored mid-reply (the reply is about to advance the clock itself). */
+  async updateWorld(patch: Partial<WorldState>) {
+    const id = this.conversationId;
+    const current = this.session?.conversation.worldState;
+    if (!id || !current || this.busy) return;
+    try {
+      const saved = await api.setWorldState(id, { ...current, ...patch });
+      if (this.conversationId === id && this.session) this.session.conversation.worldState = saved;
+    } catch (e) {
+      this.error = errorText(e);
+    }
+  }
+
   async setSearch(enabled: boolean | null) {
     const id = this.conversationId;
     if (id) await this.updateConversation(api.setSearchOverride(id, enabled));

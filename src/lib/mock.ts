@@ -453,6 +453,17 @@ export const mockApi: Api = {
     c.assistantSystemPrompt = text;
     return structuredClone(c);
   },
+  async setWorldState(id, worldState) {
+    const c = conversations.find((x) => x.id === id)!;
+    if (c.mode !== "roleplay") throw "Only roleplays have an in-story clock.";
+    const saved = {
+      ...worldState,
+      defaultAdvanceMinutesPerMessage: Math.max(1, worldState.defaultAdvanceMinutesPerMessage),
+      weatherNotes: worldState.weatherNotes?.trim() ? worldState.weatherNotes : null,
+    };
+    c.worldState = saved;
+    return structuredClone(saved);
+  },
   async setSearchOverride(id, enabled) {
     const c = conversations.find((x) => x.id === id)!;
     c.enableGoogleSearch = enabled;

@@ -16,7 +16,7 @@ use crate::error::Result;
 use crate::llm::{LlmRequest, LlmRole};
 use crate::models::{
     Character, ChatMessage, ConversationMode, ExpressionImage, GroupActivationMode, GroupChat, LlmUsage, MessageRole,
-    Persona, WorldState,
+    Persona, WeatherCondition, WorldState,
 };
 use crate::providers::{
     ChunkStream, LlmProvider, LlmProviderRegistry, LlmResponseChunk, ProviderError, ProviderErrorKind,
@@ -139,6 +139,12 @@ fn ready_character(f: &Fixture, character: &Character) -> Uuid {
     let session = f.engine.open_character(character.id, false).unwrap();
     f.engine.set_model(session.conversation.id, "fake", "fake-model").unwrap();
     session.conversation.id
+}
+
+/// Removes a roleplay's in-story clock, so a test can assert on the exact prompt (the clock adds a
+/// trailing world-state turn).
+fn no_clock(f: &Fixture, conversation: Uuid) {
+    f.db.with(|c| conversations::update_world_state(c, conversation, None)).unwrap();
 }
 
 fn messages(f: &Fixture, conversation: Uuid) -> Vec<ChatMessage> {
@@ -305,6 +311,7 @@ async fn the_roleplay_prompt_includes_persona_character_and_earlier_messages() {
     add_persona(&f.db, "Alex");
     let nova = add_character(&f.db, "Nova", Some("Welcome, {{user}}."), &[]);
     let conv = ready_character(&f, &nova);
+    no_clock(&f, conv);
 
     send(&f, conv, "Hello").await.0.unwrap();
 
@@ -423,8 +430,85 @@ async fn without_a_world_clock_no_time_skip_instruction_is_sent() {
     let f = fixture(vec![Script::Items(vec![chunk("ok"), finish("STOP")])]);
     let nova = add_character(&f.db, "Nova", None, &[]);
     let conv = ready_character(&f, &nova);
+    no_clock(&f, conv);
     send(&f, conv, "hi").await.0.unwrap();
     assert!(!f.provider.requests()[0].system_instruction.clone().unwrap().contains("time-skip"));
+}
+
+fn world(f: &Fixture, conv: Uuid) -> Option<WorldState> {
+    f.db.with(|c| conversations::get(c, conv)).unwrap().unwrap().world_state
+}
+
+#[test]
+fn opening_a_roleplay_gives_it_the_default_clock_but_assistants_get_none() {
+    let f = fixture(vec![]);
+    let nova = add_character(&f.db, "Nova", None, &[]);
+    let session = f.engine.open_character(nova.id, false).unwrap();
+    assert_eq!(session.conversation.world_state, Some(WorldState::create_default()));
+
+    // An edited clock survives reopening; a legacy roleplay without one gets the default.
+    let edited = WorldState { weather: WeatherCondition::Fog, ..WorldState::create_default() };
+    f.engine.set_world_state(session.conversation.id, edited.clone()).unwrap();
+    assert_eq!(f.engine.resume(session.conversation.id).unwrap().conversation.world_state, Some(edited));
+    f.db.with(|c| conversations::update_world_state(c, session.conversation.id, None)).unwrap();
+    assert!(f.engine.resume(session.conversation.id).unwrap().conversation.world_state.is_some());
+
+    assert!(f.engine.open_assistant(false).unwrap().conversation.world_state.is_none());
+}
+
+#[test]
+fn editing_the_clock_saves_it_cleaned_up() {
+    let f = fixture(vec![]);
+    let conv = ready_roleplay(&f);
+    let date = NaiveDate::from_ymd_opt(1999, 12, 31).unwrap().and_hms_opt(23, 30, 0).unwrap();
+    let saved = f
+        .engine
+        .set_world_state(
+            conv,
+            WorldState {
+                fictional_date_time: date,
+                weather: WeatherCondition::Snow,
+                weather_notes: Some("   ".into()),
+                default_advance_minutes_per_message: 0,
+                auto_drift_weather_enabled: true,
+            },
+        )
+        .unwrap();
+    assert_eq!(saved.weather_notes, None, "blank notes are dropped");
+    assert_eq!(saved.default_advance_minutes_per_message, 1, "the tick is at least a minute");
+    assert_eq!(world(&f, conv), Some(saved));
+}
+
+#[test]
+fn only_roleplays_have_a_clock_to_edit() {
+    let f = fixture(vec![]);
+    let assistant = ready_assistant(&f);
+    let err = f.engine.set_world_state(assistant, WorldState::create_default()).unwrap_err();
+    assert!(err.to_string().contains("Only roleplays"));
+    assert!(world(&f, assistant).is_none());
+}
+
+#[tokio::test]
+async fn the_clock_cannot_be_edited_mid_reply_and_replies_continue_from_the_edited_time() {
+    let f = fixture(vec![
+        Script::Hang(vec![LlmResponseChunk::text("busy")]),
+        Script::Items(vec![chunk("Later."), finish("STOP")]),
+    ]);
+    let conv = ready_roleplay(&f);
+    let sink = Arc::new(VecSink::default());
+    let engine = f.engine.clone();
+    let task_sink: Arc<dyn EventSink> = sink.clone();
+    let task = tokio::spawn(async move { engine.send_message(conv, "one".into(), vec![], task_sink).await });
+    wait_until("the reply to start", || f.engine.is_generating(conv)).await;
+    let err = f.engine.set_world_state(conv, WorldState::create_default()).unwrap_err();
+    assert!(err.to_string().contains("Wait for the reply"));
+    f.engine.stop(conv);
+    task.await.unwrap().unwrap();
+
+    let date = NaiveDate::from_ymd_opt(2030, 5, 5).unwrap().and_hms_opt(12, 0, 0).unwrap();
+    f.engine.set_world_state(conv, WorldState { fictional_date_time: date, ..WorldState::create_default() }).unwrap();
+    send(&f, conv, "two").await.0.unwrap();
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, date + chrono::Duration::minutes(5));
 }
 
 // ---- failure, blocking, stopping ----
@@ -550,6 +634,7 @@ async fn swiping_right_past_the_last_alternate_generates_a_new_one_and_left_goes
         Script::Items(vec![chunk("second"), finish("STOP")]),
     ]);
     let conv = ready_roleplay(&f);
+    no_clock(&f, conv);
     send(&f, conv, "hi").await.0.unwrap();
     let reply_id = messages(&f, conv)[1].id;
 
@@ -849,6 +934,7 @@ async fn trigger_word_groups_reply_in_the_order_names_are_mentioned_and_hear_eac
     let (alice, cara) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Cara", None, &[]));
     let group = add_group(&f, GroupActivationMode::TriggerWord, &[&alice, &cara]);
     let conv = ready_group(&f, &group);
+    no_clock(&f, conv);
 
     send(&f, conv, "Cara, then Alice - what do you two think?").await.0.unwrap();
 
@@ -946,6 +1032,7 @@ async fn continue_appends_to_the_same_reply_without_adding_an_alternate() {
         Script::Items(vec![thought("more"), chunk(" open slowly."), finish("STOP")]),
     ]);
     let conv = ready_roleplay(&f);
+    no_clock(&f, conv);
     send(&f, conv, "I knock.").await.0.unwrap();
     let reply_id = messages(&f, conv)[1].id;
 
@@ -1077,6 +1164,7 @@ async fn impersonate_drafts_a_user_message_without_saving_anything() {
     ]);
     add_persona(&f.db, "Alex");
     let conv = ready_roleplay(&f);
+    no_clock(&f, conv);
     send(&f, conv, "hi").await.0.unwrap();
     let before = messages(&f, conv);
 
@@ -1101,6 +1189,7 @@ async fn impersonate_drafts_a_user_message_without_saving_anything() {
 async fn impersonate_folds_the_instruction_into_a_trailing_user_message() {
     let f = fixture(vec![Script::Items(vec![chunk("Well?"), finish("STOP")])]);
     let conv = ready_roleplay(&f);
+    no_clock(&f, conv);
     f.db.with(|c| conversations::add_message(c, &ChatMessage::new(conv, MessageRole::User, "Where were we?"))).unwrap();
 
     f.engine.impersonate(conv).await.unwrap();
@@ -1116,6 +1205,7 @@ async fn impersonate_in_a_group_names_the_other_characters() {
     let bob = add_character(&f.db, "Bob", None, &[]);
     let group = add_group(&f, GroupActivationMode::Manual, &[&alice, &bob]);
     let conv = ready_group(&f, &group);
+    no_clock(&f, conv);
 
     f.engine.impersonate(conv).await.unwrap();
     let last = f.provider.requests()[0].history.last().unwrap().text.clone();

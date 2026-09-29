@@ -90,6 +90,7 @@ pub fn run() {
             commands::set_conversation_persona,
             commands::set_assistant_prompt,
             commands::set_search_override,
+            commands::set_world_state,
             commands::list_models,
             commands::refresh_models,
             commands::set_api_key,

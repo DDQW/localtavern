@@ -25,6 +25,15 @@ export function numberOrNull(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * Shifts an in-story timestamp ("2025-01-01T09:00:00", no time zone) by `minutes`. Done in UTC so
+ * the machine's daylight-saving changes never skip or repeat an hour of the story.
+ */
+export function addMinutes(stamp: string, minutes: number): string {
+  const shifted = new Date(new Date(`${stamp.slice(0, 19)}Z`).getTime() + minutes * 60_000);
+  return shifted.toISOString().slice(0, 19);
+}
+
 /** Moves item `index` by `delta` places in `list`, in place. No-op at the ends. */
 export function move<T>(list: T[], index: number, delta: number) {
   const target = index + delta;

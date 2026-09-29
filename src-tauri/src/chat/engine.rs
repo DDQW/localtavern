@@ -30,7 +30,7 @@ use crate::group_chats::strategy_for;
 use crate::llm::{LlmMessage, LlmRequest, LlmRole};
 use crate::models::{
     Character, ChatMessage, Conversation, ConversationMode, LlmUsage, MessageAttachment, MessageRole, PromptBlockType,
-    PromptPreset,
+    PromptPreset, WorldState,
 };
 use crate::prompting::{self, emotion_tag, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext};
 use crate::providers::{LlmGeneratedImage, LlmProviderRegistry, ProviderError};
@@ -125,7 +125,15 @@ impl ChatEngine {
 
     fn session(&self, conversation_id: Uuid) -> Result<ChatSession> {
         let providers = self.provider_ids();
-        self.db().with(|c| build_session(c, &providers, conversation_id))
+        self.db().with(|c| {
+            // A roleplay always has an in-story clock: the first time one is opened it gets the default.
+            if let Some(conversation) = conversations::get(c, conversation_id)? {
+                if conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_none() {
+                    conversations::update_world_state(c, conversation_id, Some(&WorldState::create_default()))?;
+                }
+            }
+            build_session(c, &providers, conversation_id)
+        })
     }
 
     /// The dedicated Assistant view: resumes your most recent Assistant-mode conversation, or starts
@@ -295,6 +303,25 @@ impl ChatEngine {
 
     pub fn set_search_override(&self, conversation_id: Uuid, enabled: Option<bool>) -> Result<Conversation> {
         self.update_conversation(conversation_id, |c| c.enable_google_search = enabled)
+    }
+
+    /// Saves the in-story clock and weather as edited by the user. Refused while a reply is being
+    /// generated, since that reply would otherwise advance from (and overwrite) the old clock.
+    pub fn set_world_state(&self, conversation_id: Uuid, mut state: WorldState) -> Result<WorldState> {
+        if self.is_generating(conversation_id) {
+            return Err(Error::Other("Wait for the reply to finish before changing the clock.".into()));
+        }
+        state.default_advance_minutes_per_message = state.default_advance_minutes_per_message.max(1);
+        state.weather_notes = state.weather_notes.filter(|n| !n.trim().is_empty());
+        self.db().with(|c| {
+            let conversation =
+                conversations::get(c, conversation_id)?.ok_or_else(|| Error::Other("Conversation not found.".into()))?;
+            if conversation.mode != ConversationMode::Roleplay {
+                return Err(Error::Other("Only roleplays have an in-story clock.".into()));
+            }
+            conversations::update_world_state(c, conversation_id, Some(&state))
+        })?;
+        Ok(state)
     }
 
     pub fn delete_conversation(&self, conversation_id: Uuid) -> Result<()> {

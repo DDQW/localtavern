@@ -22,6 +22,7 @@ import type {
   SearchHit,
   StoryState,
   Uuid,
+  WorldState,
 } from "./types";
 
 export type EventHandler = (event: ChatEvent) => void;
@@ -58,6 +59,8 @@ export interface Api {
   setConversationPersona(conversationId: Uuid, personaId: Uuid | null): Promise<Conversation>;
   setAssistantPrompt(conversationId: Uuid, text: string): Promise<Conversation>;
   setSearchOverride(conversationId: Uuid, enabled: boolean | null): Promise<Conversation>;
+  /** Saves the in-story clock; returns it as stored (minutes clamped, blank notes dropped). */
+  setWorldState(conversationId: Uuid, worldState: WorldState): Promise<WorldState>;
 
   listModels(providerId: string): Promise<string[]>;
   refreshModels(providerId: string): Promise<string[]>;
@@ -134,6 +137,7 @@ const tauriApi: Api = {
     invoke("set_conversation_persona", { conversationId, personaId }),
   setAssistantPrompt: (conversationId, text) => invoke("set_assistant_prompt", { conversationId, text }),
   setSearchOverride: (conversationId, enabled) => invoke("set_search_override", { conversationId, enabled }),
+  setWorldState: (conversationId, worldState) => invoke("set_world_state", { conversationId, worldState }),
 
   listModels: (providerId) => invoke("list_models", { providerId }),
   refreshModels: (providerId) => invoke("refresh_models", { providerId }),
