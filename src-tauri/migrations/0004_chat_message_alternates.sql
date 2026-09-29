@@ -1,0 +1,2 @@
+ALTER TABLE ChatMessages ADD COLUMN AlternatesJson TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE ChatMessages ADD COLUMN ActiveAlternateIndex INTEGER NOT NULL DEFAULT 0;

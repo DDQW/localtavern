@@ -1,0 +1,4 @@
+ALTER TABLE Characters ADD COLUMN ExpressionsJson TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE Characters ADD COLUMN GalleryImagePathsJson TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE ChatMessages ADD COLUMN AttachmentsJson TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE ChatMessages ADD COLUMN DetectedEmotion TEXT NULL;

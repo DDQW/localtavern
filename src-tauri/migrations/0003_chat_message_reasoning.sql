@@ -1,0 +1,1 @@
+ALTER TABLE ChatMessages ADD COLUMN ReasoningText TEXT NULL;

@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS UserMemories (
+    Id TEXT PRIMARY KEY,
+    Content TEXT NOT NULL,
+    CreatedAt TEXT NOT NULL
+);
