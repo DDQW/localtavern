@@ -24,6 +24,22 @@ pub enum WeatherCondition {
     Windy,
 }
 
+impl WeatherCondition {
+    /// The variant name, as shown in prompts ("PartlyCloudy") - matches the C# `ToString()`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Clear => "Clear",
+            Self::PartlyCloudy => "PartlyCloudy",
+            Self::Overcast => "Overcast",
+            Self::Rain => "Rain",
+            Self::Thunderstorm => "Thunderstorm",
+            Self::Snow => "Snow",
+            Self::Fog => "Fog",
+            Self::Windy => "Windy",
+        }
+    }
+}
+
 /// Per-conversation in-story date/time and weather.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

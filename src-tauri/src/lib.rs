@@ -1,6 +1,9 @@
 pub mod db;
 pub mod error;
+pub mod group_chats;
+pub mod llm;
 pub mod models;
+pub mod prompting;
 pub mod repo;
 
 #[cfg(test)]
