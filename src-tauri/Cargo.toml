@@ -27,6 +27,14 @@ uuid = { version = "1.26.1", features = ["v4", "serde"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 thiserror = "2.0.21"
 regex = "1.13.1"
+reqwest = { version = "0.13.5", features = ["stream"] }
+futures = "0.3.34"
+async-stream = "0.3.6"
+async-trait = "0.1.92"
+bytes = "1.12.1"
+base64 = "0.23.1"
+percent-encoding = "2.3.2"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "process", "fs"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
@@ -39,3 +47,4 @@ strip = true
 
 [dev-dependencies]
 tempfile = "3.27.0"
+wiremock = "0.6.5"

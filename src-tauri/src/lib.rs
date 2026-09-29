@@ -4,6 +4,7 @@ pub mod group_chats;
 pub mod llm;
 pub mod models;
 pub mod prompting;
+pub mod providers;
 pub mod repo;
 
 #[cfg(test)]
