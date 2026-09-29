@@ -5,6 +5,7 @@
 import type { Api, EventHandler } from "./api";
 import type {
   Character,
+  CharacterNotebookEntry,
   ChatMessage,
   ChatSession,
   Conversation,
@@ -253,6 +254,7 @@ function session(id: Uuid): ChatSession {
 }
 
 const running = new Map<Uuid, boolean>();
+const notebooks = new Map<Uuid, CharacterNotebookEntry[]>();
 
 async function stream(conversationId: Uuid, target: ChatMessage, onEvent: EventHandler, reply: string, replacing: boolean) {
   const reasoning = "Thinking about how best to answer…";
@@ -329,13 +331,36 @@ export const mockApi: Api = {
     messages.delete(id);
   },
   async storyState(id) {
+    if (!notebooks.has(id)) {
+      notebooks.set(id, [{ id: uid(), conversationId: id, characterId: characters[0].id, content: "Alex prefers the window seat.", createdAt: now() }]);
+    }
     return {
+      notebook: structuredClone(notebooks.get(id)!),
       quests: [
         { id: uid(), conversationId: id, title: "Reach the Lantern Belt", description: "Three days out on the current heading.", status: "active", createdAt: now(), updatedAt: now() },
         { id: uid(), conversationId: id, title: "Repair the coolant loop", description: "", status: "completed", createdAt: now(), updatedAt: now() },
       ],
-      notebook: [{ id: uid(), conversationId: id, characterId: characters[0].id, content: "Alex prefers the window seat.", createdAt: now() }],
     };
+  },
+  async addNote(conversationId, characterId, content) {
+    if (!content.trim()) throw "A note can't be empty.";
+    await mockApi.storyState(conversationId);
+    const entry = { id: uid(), conversationId, characterId, content: content.trim(), createdAt: now() };
+    notebooks.get(conversationId)!.push(entry);
+    return structuredClone(entry);
+  },
+  async updateNote(noteId, content) {
+    if (!content.trim()) throw "A note can't be empty - delete it instead.";
+    const entry = [...notebooks.values()].flat().find((n) => n.id === noteId);
+    if (!entry) throw "That note no longer exists.";
+    entry.content = content.trim();
+    return structuredClone(entry);
+  },
+  async deleteNote(noteId) {
+    for (const list of notebooks.values()) {
+      const i = list.findIndex((n) => n.id === noteId);
+      if (i >= 0) list.splice(i, 1);
+    }
   },
   async searchMessages(query) {
     const q = query.toLowerCase();
@@ -361,6 +386,19 @@ export const mockApi: Api = {
     onEvent({ type: "messageAdded", message: structuredClone(reply) });
     await stream(conversationId, reply, onEvent, SAMPLE_REPLY, false);
     onEvent({ type: "finished" });
+    if (c.mode === "roleplay" && c.characterId) {
+      // Like the real engine: the notebook fills in shortly after the reply, in the background.
+      await sleep(400);
+      await mockApi.storyState(conversationId);
+      notebooks.get(conversationId)!.push({
+        id: uid(),
+        conversationId,
+        characterId: c.characterId,
+        content: `Alex said: "${text.trim().slice(0, 60)}"`,
+        createdAt: now(),
+      });
+      onEvent({ type: "storyChanged", conversationId });
+    }
   },
   async swipeNext(conversationId, messageId, onEvent) {
     const target = messages.get(conversationId)!.find((m) => m.id === messageId)!;

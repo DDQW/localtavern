@@ -118,21 +118,42 @@
 
   <details open>
     <summary>Notebook</summary>
+    <p class="muted small">What each character has privately learned. Filled in after replies; edit freely.</p>
     {#each cast as character (character.id)}
       {@const notes = notesFor(character.id)}
-      {#if notes.length > 0}
-        <h3>{character.name}</h3>
-        {#each notes as note (note.id)}
-          <div class="item small">{note.content}</div>
-        {/each}
-      {/if}
+      <h3>{character.name}</h3>
+      {#each notes as note (note.id)}
+        <div class="note">
+          <textarea
+            rows="1"
+            value={note.content}
+            aria-label="Note for {character.name}"
+            onchange={(e) => {
+              void chat.saveNote(note, e.currentTarget.value);
+              // An emptied note is refused; show the saved text again.
+              if (!e.currentTarget.value.trim()) e.currentTarget.value = note.content;
+            }}
+          ></textarea>
+          <button class="ghost" onclick={() => chat.deleteNote(note.id)} aria-label="Delete note">✕</button>
+        </div>
+      {:else}
+        <p class="muted small">No notes yet.</p>
+      {/each}
+      <form
+        class="add"
+        onsubmit={async (e) => {
+          e.preventDefault();
+          const input = e.currentTarget.elements.namedItem("text") as HTMLInputElement;
+          if (await chat.addNote(character.id, input.value)) input.value = "";
+        }}
+      >
+        <input name="text" placeholder="Add a note…" aria-label="New note for {character.name}" />
+        <button type="submit">Add</button>
+      </form>
     {/each}
-    {#if !story || story.notebook.length === 0}
-      <p class="muted small">No notes yet.</p>
-    {/if}
   </details>
 
-  <p class="muted small footnote">Quests and notes are read-only for now — they fill in automatically once extraction is ported.</p>
+  <p class="muted small footnote">Quests are tracked automatically after each reply.</p>
 </aside>
 
 <style>
@@ -207,6 +228,36 @@
     flex: 1;
     font-size: 11px;
     padding: 4px 6px;
+  }
+
+  .note,
+  .add {
+    display: flex;
+    gap: 4px;
+    align-items: flex-start;
+    margin: 4px 0;
+  }
+
+  .note textarea {
+    flex: 1;
+    min-height: 0;
+    resize: vertical;
+    font-size: 12px;
+    padding: 4px 6px;
+    field-sizing: content;
+  }
+
+  .add input {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    padding: 4px 6px;
+  }
+
+  .add button,
+  .note button {
+    font-size: 11px;
+    padding: 3px 8px;
   }
 
   .footnote {

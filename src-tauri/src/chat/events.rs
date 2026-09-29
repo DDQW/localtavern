@@ -24,6 +24,8 @@ pub enum ChatEvent {
     MessageRemoved { message_id: Uuid },
     WorldStateChanged { conversation_id: Uuid, world_state: WorldState },
     TitleChanged { conversation_id: Uuid, title: String },
+    /// Background extraction finished: the quest log and character notebooks may have changed.
+    StoryChanged { conversation_id: Uuid },
     Error { message: String, kind: Option<ProviderErrorKind> },
     /// Always the last event of one operation, success or not.
     Finished,

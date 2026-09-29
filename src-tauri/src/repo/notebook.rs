@@ -22,6 +22,12 @@ pub fn get_by_conversation(conn: &Connection, conversation_id: Uuid) -> Result<V
     Ok(list)
 }
 
+pub fn get(conn: &Connection, id: Uuid) -> Result<Option<CharacterNotebookEntry>> {
+    let mut stmt = conn.prepare("SELECT * FROM CharacterNotebookEntries WHERE Id = ?1;")?;
+    let mut found = stmt.query_map([id.to_string()], map)?;
+    Ok(found.next().transpose()?)
+}
+
 pub fn add(conn: &Connection, e: &CharacterNotebookEntry) -> Result<()> {
     conn.execute(
         "INSERT INTO CharacterNotebookEntries (Id, ConversationId, CharacterId, Content, CreatedAt)

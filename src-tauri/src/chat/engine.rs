@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::events::{ChatEvent, EventSink};
+use super::extraction::{Exchange, Extractor};
 use super::images;
 use super::reply::{
     advance_world_state, append_instruction, check_blocked, extract_matched_emotion, format_prompt, random_unit,
@@ -46,6 +48,8 @@ struct Inner {
     providers: Arc<LlmProviderRegistry>,
     images_dir: PathBuf,
     active: Mutex<HashMap<Uuid, CancellationToken>>,
+    /// Whether finished replies trigger the background memory / quest / notebook requests.
+    extraction: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -100,6 +104,18 @@ struct AssembleOptions<'a> {
 /// The nudge Continue appends as a trailing user turn, so the model extends rather than restarts.
 const CONTINUE_NUDGE: &str = "[Continue your last message without repeating its original content.]";
 
+/// The most recent message the user wrote (what the reply after it was answering).
+fn last_user_text(messages: &[ChatMessage]) -> String {
+    messages.iter().rev().find(|m| m.role == MessageRole::User).map(|m| m.text.clone()).unwrap_or_default()
+}
+
+/// Background work has nobody to tell, so a failure only goes to stderr.
+fn report(what: &str, result: Result<()>) {
+    if let Err(error) = result {
+        eprintln!("{what} failed: {error}");
+    }
+}
+
 fn nonempty(s: String) -> Option<String> {
     if s.is_empty() {
         None
@@ -110,11 +126,16 @@ fn nonempty(s: String) -> Option<String> {
 
 impl ChatEngine {
     pub fn new(db: Db, providers: Arc<LlmProviderRegistry>, images_dir: PathBuf) -> Self {
-        Self { inner: Arc::new(Inner { db, providers, images_dir, active: Mutex::new(HashMap::new()) }) }
+        Self { inner: Arc::new(Inner { db, providers, images_dir, active: Mutex::new(HashMap::new()), extraction: AtomicBool::new(true) }) }
     }
 
     fn db(&self) -> &Db {
         &self.inner.db
+    }
+
+    /// Turns the background memory / quest / notebook requests after each reply on or off (on by default).
+    pub fn set_extraction(&self, enabled: bool) {
+        self.inner.extraction.store(enabled, Ordering::Relaxed);
     }
 
     pub fn provider_ids(&self) -> Vec<String> {
@@ -479,10 +500,14 @@ impl ChatEngine {
             self.db().with(|c| conversations::update_message(c, &target))?;
         }
 
+        let reply_text = target.text.clone();
         // Also restores the original text on the UI after a failure.
         sink.emit(ChatEvent::MessageUpdated { message: target });
-        if let StreamEnd::Failed(error) = end {
-            self.emit_failure(&error, &sink);
+        match end {
+            StreamEnd::Failed(error) => self.emit_failure(&error, &sink),
+            // The clock is not advanced again (same exchange), but the added text may still matter.
+            StreamEnd::Completed => self.spawn_enrichment(&ctx, last_user_text(&ctx.messages), reply_text, &sink),
+            StreamEnd::Cancelled => {}
         }
         Ok(())
     }
@@ -831,6 +856,7 @@ impl ChatEngine {
             }
             StreamEnd::Cancelled => Ok(false),
             StreamEnd::Completed => {
+                self.spawn_enrichment(&ctx, last_user_text(&ctx.messages), message.text.clone(), sink);
                 // Only the conversation's very first exchange gets auto-titled.
                 if ctx.conversation.mode == ConversationMode::Assistant && ctx.messages.len() == 1 {
                     let user_text = ctx.messages.last().map(|m| m.text.clone()).unwrap_or_default();
@@ -892,13 +918,53 @@ impl ChatEngine {
         }
 
         self.db().with(|c| conversations::update_message(c, &target))?;
+        let reply_text = target.text.clone();
         // Also restores the original text on the UI when nothing new arrived.
         sink.emit(ChatEvent::MessageUpdated { message: target });
 
-        if let StreamEnd::Failed(error) = end {
-            self.emit_failure(&error, &sink);
+        match end {
+            StreamEnd::Failed(error) => self.emit_failure(&error, &sink),
+            StreamEnd::Completed => {
+                self.spawn_enrichment(&ctx, last_user_text(&ctx.messages[..position]), reply_text, &sink);
+            }
+            StreamEnd::Cancelled => {}
         }
         Ok(())
+    }
+
+    /// Fire-and-forget follow-up requests once a reply has completed: Assistant chats learn facts
+    /// about the user; roleplays update the characters' notebooks and the quest log (and tell the UI
+    /// when they are done). Failures are dropped - the reply itself already succeeded.
+    fn spawn_enrichment(&self, ctx: &ReplyContext, user_text: String, reply_text: String, sink: &Arc<dyn EventSink>) {
+        if !self.inner.extraction.load(Ordering::Relaxed) || user_text.trim().is_empty() {
+            return;
+        }
+        let engine = self.clone();
+        let (conversation, characters) = (ctx.conversation.clone(), ctx.characters.clone());
+        let sink = sink.clone();
+        tokio::spawn(async move {
+            let extractor = Extractor {
+                db: engine.db(),
+                providers: &engine.inner.providers,
+                provider_id: &conversation.provider_id,
+                model: &conversation.model,
+            };
+            let exchange = Exchange { user_text: &user_text, reply_text: &reply_text };
+            match conversation.mode {
+                ConversationMode::Assistant => {
+                    report("memory extraction", extractor.memories(&exchange).await);
+                }
+                ConversationMode::Roleplay => {
+                    let (notes, quests) = tokio::join!(
+                        extractor.notebooks(conversation.id, &characters, &exchange),
+                        extractor.quests(conversation.id, &exchange)
+                    );
+                    report("notebook extraction", notes);
+                    report("quest log extraction", quests);
+                    sink.emit(ChatEvent::StoryChanged { conversation_id: conversation.id });
+                }
+            }
+        });
     }
 
     /// Best-effort background enrichment after a conversation's first exchange: asks the model for a

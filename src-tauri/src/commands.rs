@@ -159,6 +159,26 @@ pub fn story_state(state: State<'_, AppState>, conversation_id: Uuid) -> Result<
     })
 }
 
+#[tauri::command]
+pub fn add_note(
+    state: State<'_, AppState>,
+    conversation_id: Uuid,
+    character_id: Uuid,
+    content: String,
+) -> Result<CharacterNotebookEntry> {
+    state.db.with(|c| crate::story::add_note(c, conversation_id, character_id, &content))
+}
+
+#[tauri::command]
+pub fn update_note(state: State<'_, AppState>, note_id: Uuid, content: String) -> Result<CharacterNotebookEntry> {
+    state.db.with(|c| crate::story::update_note(c, note_id, &content))
+}
+
+#[tauri::command]
+pub fn delete_note(state: State<'_, AppState>, note_id: Uuid) -> Result<()> {
+    state.db.with(|c| crate::story::delete_note(c, note_id))
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchHit {

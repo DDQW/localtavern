@@ -223,6 +223,7 @@ export type ChatEvent =
   | { type: "messageRemoved"; messageId: Uuid }
   | { type: "worldStateChanged"; conversationId: Uuid; worldState: WorldState }
   | { type: "titleChanged"; conversationId: Uuid; title: string }
+  | { type: "storyChanged"; conversationId: Uuid }
   | { type: "error"; message: string; kind: ErrorKind | null }
   | { type: "finished" };
 

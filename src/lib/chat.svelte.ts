@@ -200,6 +200,9 @@ class ChatStore {
       case "worldStateChanged":
         if (this.session) this.session.conversation.worldState = event.worldState as WorldState;
         break;
+      case "storyChanged":
+        void this.refreshStory();
+        break;
       case "titleChanged":
         if (this.session) this.session.conversation.title = event.title;
         break;
@@ -334,6 +337,40 @@ class ChatStore {
     try {
       await api.deleteMessage(message.id);
       this.messages = this.messages.filter((m) => m.id !== message.id);
+    } catch (e) {
+      this.error = errorText(e);
+    }
+  }
+
+  // ---- notebook ----
+
+  async addNote(characterId: Uuid, text: string): Promise<boolean> {
+    const id = this.conversationId;
+    if (!id || !text.trim()) return false;
+    try {
+      const note = await api.addNote(id, characterId, text);
+      this.story?.notebook.push(note);
+      return true;
+    } catch (e) {
+      this.error = errorText(e);
+      return false;
+    }
+  }
+
+  /** Saves an edited note; an emptied one is put back the way it was (deleting is its own button). */
+  async saveNote(note: { id: Uuid; content: string }, text: string) {
+    if (!text.trim() || text.trim() === note.content) return;
+    try {
+      note.content = (await api.updateNote(note.id, text)).content;
+    } catch (e) {
+      this.error = errorText(e);
+    }
+  }
+
+  async deleteNote(noteId: Uuid) {
+    try {
+      await api.deleteNote(noteId);
+      if (this.story) this.story.notebook = this.story.notebook.filter((n) => n.id !== noteId);
     } catch (e) {
       this.error = errorText(e);
     }
