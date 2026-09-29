@@ -1,7 +1,6 @@
 //! DeepSeek (`api.deepseek.com`), an OpenAI-compatible API authenticated with a bearer API key.
 
 mod errors;
-mod stream;
 pub mod wire;
 
 use std::sync::Arc;
@@ -12,7 +11,7 @@ use futures::StreamExt;
 use super::error::ProviderError;
 use super::http::{ensure_success, send, transport_error};
 use super::keys::ApiKeyProvider;
-use super::{ChunkStream, LlmProvider};
+use super::{openai_compat, ChunkStream, LlmProvider};
 use crate::llm::LlmRequest;
 
 pub const PROVIDER_ID: &str = "deepseek";
@@ -76,7 +75,7 @@ impl LlmProvider for DeepSeekProvider {
 
         let response = send(http_request, "DeepSeek").await?;
         let response = ensure_success(response, errors::to_provider_error).await?;
-        Ok(stream::read_chunks(response.bytes_stream()).boxed())
+        Ok(openai_compat::read_chunks(response.bytes_stream(), "DeepSeek").boxed())
     }
 }
 

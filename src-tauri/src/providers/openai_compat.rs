@@ -1,17 +1,49 @@
-//! Parses a DeepSeek (OpenAI-compatible) chat-completions SSE stream. Each `data: {json}` event
-//! carries one incremental delta; the stream ends with a literal `data: [DONE]` event, which carries
-//! no JSON and is simply the exit signal.
+//! The OpenAI-style chat-completions SSE stream, shared by every provider that speaks it (DeepSeek,
+//! xAI). Each `data: {json}` event carries one incremental delta; the stream ends with a literal
+//! `data: [DONE]` event, which carries no JSON and is simply the exit signal.
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
+use serde::Deserialize;
 
-use super::wire::DeepSeekChatCompletionChunk;
+use super::error::ProviderError;
+use super::http::lines;
+use super::LlmResponseChunk;
 use crate::models::LlmUsage;
-use crate::providers::error::ProviderError;
-use crate::providers::http::lines;
-use crate::providers::LlmResponseChunk;
 
-pub fn read_chunks<S, E>(bytes: S) -> impl Stream<Item = Result<LlmResponseChunk, ProviderError>>
+/// `reasoning_content` is a reasoning model's chain-of-thought, streamed separately from `content`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Delta {
+    pub content: Option<String>,
+    pub reasoning_content: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Choice {
+    pub delta: Option<Delta>,
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Usage {
+    pub prompt_tokens: Option<i32>,
+    pub completion_tokens: Option<i32>,
+    pub total_tokens: Option<i32>,
+}
+
+/// One `data:` SSE event. With `stream_options.include_usage` set, an extra trailing chunk arrives
+/// after the one carrying `finish_reason` - it has an empty `choices` array and only `usage`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ChatCompletionChunk {
+    pub choices: Option<Vec<Choice>>,
+    pub usage: Option<Usage>,
+}
+
+/// `provider_name` only shapes the parse-error message ("Failed to parse DeepSeek stream chunk").
+pub fn read_chunks<S, E>(
+    bytes: S,
+    provider_name: &'static str,
+) -> impl Stream<Item = Result<LlmResponseChunk, ProviderError>>
 where
     S: Stream<Item = Result<Bytes, E>>,
     E: std::fmt::Display,
@@ -31,8 +63,8 @@ where
                 break;
             }
 
-            let chunk: DeepSeekChatCompletionChunk = serde_json::from_str(payload)
-                .map_err(|e| ProviderError::unknown(format!("Failed to parse DeepSeek stream chunk: {e}")))?;
+            let chunk: ChatCompletionChunk = serde_json::from_str(payload)
+                .map_err(|e| ProviderError::unknown(format!("Failed to parse {provider_name} stream chunk: {e}")))?;
 
             let usage = chunk.usage.map(|u| LlmUsage {
                 prompt_tokens: u.prompt_tokens,
@@ -73,7 +105,7 @@ mod tests {
     use crate::providers::http::testing::chunked;
 
     async fn collect(sse: &str, chunk_size: usize) -> Result<Vec<LlmResponseChunk>, ProviderError> {
-        read_chunks(chunked(sse, chunk_size)).collect::<Vec<_>>().await.into_iter().collect()
+        read_chunks(chunked(sse, chunk_size), "Test").collect::<Vec<_>>().await.into_iter().collect()
     }
 
     const FULL: &str = concat!(
@@ -132,6 +164,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_reasoning_only_delta_and_an_empty_finishing_delta_both_parse() {
+        // Shape xAI streams: reasoning first, then content, then an empty delta carrying the reason.
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hmm\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        );
+        let chunks = collect(sse, 4096).await.unwrap();
+        assert_eq!(chunks[0].thought_delta_text, "hmm");
+        assert_eq!(chunks[0].delta_text, "");
+        assert_eq!(chunks[1].delta_text, "Hello");
+        assert_eq!(chunks[2].finish_reason.as_deref(), Some("stop"));
+        assert!(chunks[2].is_final);
+    }
+
+    #[tokio::test]
     async fn ignores_non_data_lines_and_blank_lines() {
         let sse = "event: message\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
         let chunks = collect(sse, 4096).await.unwrap();
@@ -142,13 +190,13 @@ mod tests {
     #[tokio::test]
     async fn a_delta_with_null_content_yields_an_empty_chunk() {
         let sse = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":null}}]}\n\n";
-        let chunks = collect(sse, 4096).await.unwrap();
-        assert_eq!(chunks[0].delta_text, "");
+        assert_eq!(collect(sse, 4096).await.unwrap()[0].delta_text, "");
     }
 
     #[tokio::test]
-    async fn malformed_json_is_a_provider_error() {
+    async fn malformed_json_is_a_provider_error_naming_the_provider() {
         let err = collect("data: {not valid json\n\n", 4096).await.unwrap_err();
         assert_eq!(err.kind, ProviderErrorKind::Unknown);
+        assert!(err.message.starts_with("Failed to parse Test stream chunk"), "{}", err.message);
     }
 }

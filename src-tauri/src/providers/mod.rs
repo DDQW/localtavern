@@ -1,6 +1,7 @@
 //! LLM providers. Each maps the provider-agnostic [`LlmRequest`] onto its own wire format and turns
 //! the streamed reply back into [`LlmResponseChunk`]s.
 
+pub mod auth;
 pub mod chunk;
 pub mod deepseek;
 pub mod error;
@@ -8,6 +9,9 @@ pub mod gemini;
 pub mod http;
 pub mod keys;
 pub mod ollama;
+pub mod openai;
+pub mod openai_compat;
+pub mod xai;
 
 use std::pin::Pin;
 use std::sync::Arc;

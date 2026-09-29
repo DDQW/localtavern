@@ -47,34 +47,6 @@ pub struct DeepSeekChatCompletionRequest {
     pub reasoning_effort: Option<String>,
 }
 
-/// `reasoning_content` is deepseek-reasoner's chain-of-thought, streamed separately from `content`.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct DeepSeekDelta {
-    pub content: Option<String>,
-    pub reasoning_content: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct DeepSeekChoice {
-    pub delta: Option<DeepSeekDelta>,
-    pub finish_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct DeepSeekUsage {
-    pub prompt_tokens: Option<i32>,
-    pub completion_tokens: Option<i32>,
-    pub total_tokens: Option<i32>,
-}
-
-/// One `data:` SSE event. With `include_usage` set, an extra trailing chunk arrives after the one
-/// carrying `finish_reason` - it has an empty `choices` array and only `usage` populated.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct DeepSeekChatCompletionChunk {
-    pub choices: Option<Vec<DeepSeekChoice>>,
-    pub usage: Option<DeepSeekUsage>,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct DeepSeekErrorDetail {
     pub message: String,
