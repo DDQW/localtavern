@@ -2,8 +2,8 @@
 //! deletes messages. It mirrors the C# `ChatViewModel`, minus everything UI-shaped - progress is
 //! reported through an [`EventSink`] and the UI just renders what it's told.
 //!
-//! Not yet ported (later steps): Continue, Impersonate, the PowerShell tool loop, and the background
-//! memory / quest-log / notebook extraction.
+//! Not yet ported (later steps): the PowerShell tool loop and the background memory / quest-log /
+//! notebook extraction.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -29,7 +29,8 @@ use crate::error::{Error, Result};
 use crate::group_chats::strategy_for;
 use crate::llm::{LlmMessage, LlmRequest, LlmRole};
 use crate::models::{
-    Character, ChatMessage, Conversation, ConversationMode, LlmUsage, MessageAttachment, MessageRole,
+    Character, ChatMessage, Conversation, ConversationMode, LlmUsage, MessageAttachment, MessageRole, PromptBlockType,
+    PromptPreset,
 };
 use crate::prompting::{self, emotion_tag, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext};
 use crate::providers::{LlmGeneratedImage, LlmProviderRegistry, ProviderError};
@@ -72,6 +73,32 @@ impl StreamResult {
         Self { text: String::new(), reasoning: String::new(), usage: None, images: vec![], end: StreamEnd::Failed(error) }
     }
 }
+
+/// Marks a conversation as generating; dropping it (however the operation ends) frees the slot.
+struct ActiveGuard<'a> {
+    active: &'a Mutex<HashMap<Uuid, CancellationToken>>,
+    conversation_id: Uuid,
+}
+
+impl Drop for ActiveGuard<'_> {
+    fn drop(&mut self) {
+        self.active.lock().unwrap().remove(&self.conversation_id);
+    }
+}
+
+/// Per-request choices for [`ChatEngine::assemble`].
+#[derive(Default)]
+struct AssembleOptions<'a> {
+    /// Replaces the conversation's own preset.
+    preset: Option<&'a PromptPreset>,
+    /// Whose reply this is; a speaker with an expression pack is asked to tag its emotion.
+    speaker: Option<&'a Character>,
+    /// Ask for a `[time-skip: ...]` tag (only where the reply's tag is stripped again).
+    time_skip: bool,
+}
+
+/// The nudge Continue appends as a trailing user turn, so the model extends rather than restarts.
+const CONTINUE_NUDGE: &str = "[Continue your last message without repeating its original content.]";
 
 fn nonempty(s: String) -> Option<String> {
     if s.is_empty() {
@@ -377,6 +404,121 @@ impl ChatEngine {
         .await
     }
 
+    /// Extends the last reply instead of starting a new one (SillyTavern-style): the reply stays in
+    /// the history, followed by a small nudge turn, and whatever comes back is appended to the same
+    /// message - no new alternate. A stop keeps the partial continuation; a failure rolls back to
+    /// the text as it was.
+    pub async fn continue_message(&self, conversation_id: Uuid, sink: Arc<dyn EventSink>) -> Result<()> {
+        let engine = self.clone();
+        let inner_sink = sink.clone();
+        self.run_guarded(conversation_id, sink, move |token| async move {
+            engine.continue_inner(conversation_id, inner_sink, token).await
+        })
+        .await
+    }
+
+    async fn continue_inner(&self, conversation_id: Uuid, sink: Arc<dyn EventSink>, token: CancellationToken) -> Result<()> {
+        let ctx = self.db().with(|c| load_reply_context(c, conversation_id))?;
+        let mut target = match ctx.messages.last() {
+            Some(m) if m.role == MessageRole::Character => m.clone(),
+            _ => return Err(Error::Other("There is no reply to continue.".into())),
+        };
+        if ctx.conversation.model.trim().is_empty() {
+            return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
+        }
+
+        let mut history = ctx.messages.clone();
+        history.push(ChatMessage::new(conversation_id, MessageRole::User, CONTINUE_NUDGE));
+        // The world clock and emotion tags belong to whole replies; a continuation is neither.
+        let request = self.assemble(&ctx, &history, AssembleOptions::default())?;
+        let raw_prompt = format_prompt(&request);
+
+        sink.emit(ChatEvent::Continuing { message_id: target.id });
+        let result = self.stream_reply(&ctx.conversation.provider_id, request, target.id, &sink, &token).await;
+        let StreamResult { text: added, reasoning: added_reasoning, usage, end, .. } = result;
+
+        let failed = matches!(end, StreamEnd::Failed(_));
+        if !failed && !(added.is_empty() && added_reasoning.is_empty()) {
+            let reasoning = match target.reasoning_text.as_deref().filter(|r| !r.is_empty()) {
+                Some(base) if !added_reasoning.is_empty() => Some(format!("{base}
+
+{added_reasoning}")),
+                Some(base) => Some(base.to_string()),
+                None => nonempty(added_reasoning),
+            };
+            let text = format!("{}{added}", target.text);
+            target.usage = usage.or(target.usage);
+            target.extend_active(text, reasoning, Some(raw_prompt));
+            self.db().with(|c| conversations::update_message(c, &target))?;
+        }
+
+        // Also restores the original text on the UI after a failure.
+        sink.emit(ChatEvent::MessageUpdated { message: target });
+        if let StreamEnd::Failed(error) = end {
+            self.emit_failure(&error, &sink);
+        }
+        Ok(())
+    }
+
+    /// Drafts the user's next message for them to review - never sent automatically. The model is
+    /// asked, in a trailing turn (Gemini rejects histories ending on a model turn, and a
+    /// system-prompt nudge alone lost to strong character cards), to write in the user's voice.
+    /// Returns `None` when stopped.
+    pub async fn impersonate(&self, conversation_id: Uuid) -> Result<Option<String>> {
+        let (token, _guard) = self.claim(conversation_id)?;
+        let ctx = self.db().with(|c| load_reply_context(c, conversation_id))?;
+        if ctx.conversation.model.trim().is_empty() {
+            return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
+        }
+
+        let user_name = ctx.persona.as_ref().map_or("the user", |p| p.name.as_str());
+        let other_party = match ctx.characters.as_slice() {
+            [] => "the assistant",
+            [only] => only.name.as_str(),
+            _ => "the other characters",
+        };
+        let instruction = format!(
+            "[Write {user_name}'s next message in this conversation, using the chat history so far as a guideline for their writing style. Don't write as {other_party}. Reply with only the message text, nothing else.]"
+        );
+
+        let mut history = ctx.messages.clone();
+        match history.last_mut() {
+            Some(last) if last.role == MessageRole::User => {
+                let mut folded = ChatMessage::new(conversation_id, MessageRole::User, format!("{}
+
+{instruction}", last.text));
+                folded.speaker_character_id = last.speaker_character_id;
+                *last = folded;
+            }
+            _ => history.push(ChatMessage::new(conversation_id, MessageRole::User, instruction)),
+        }
+
+        // The preset's own system prompt ("Write {{char}}'s next reply...") would fight the instruction.
+        let mut preset = ctx.preset.clone();
+        preset.blocks.retain(|b| b.block_type != PromptBlockType::SystemPrompt);
+        let request = self.assemble(&ctx, &history, AssembleOptions { preset: Some(&preset), ..Default::default() })?;
+
+        let provider = self.inner.providers.get(&ctx.conversation.provider_id).map_err(|e| Error::Other(user_message(&e)))?;
+        let outcome = tokio::select! {
+            biased;
+            _ = token.cancelled() => return Ok(None),
+            outcome = provider.get_completion(request) => outcome,
+        };
+        let response = outcome.map_err(|e| Error::Other(user_message(&e)))?;
+        Ok(Some(response.delta_text.trim().to_string()))
+    }
+
+    /// Claims the conversation's single generation slot; fails if a reply is already in flight.
+    fn claim(&self, conversation_id: Uuid) -> Result<(CancellationToken, ActiveGuard<'_>)> {
+        let token = CancellationToken::new();
+        let mut active = self.inner.active.lock().unwrap();
+        if active.contains_key(&conversation_id) {
+            return Err(Error::Other("A reply is already being generated for this chat.".into()));
+        }
+        active.insert(conversation_id, token.clone());
+        Ok((token, ActiveGuard { active: &self.inner.active, conversation_id }))
+    }
+
     /// Runs one operation as the conversation's only active generation, reporting failure and
     /// completion through the sink whatever happens.
     async fn run_guarded<F, Fut>(&self, conversation_id: Uuid, sink: Arc<dyn EventSink>, operation: F) -> Result<()>
@@ -384,17 +526,9 @@ impl ChatEngine {
         F: FnOnce(CancellationToken) -> Fut,
         Fut: Future<Output = Result<()>>,
     {
-        let token = CancellationToken::new();
-        {
-            let mut active = self.inner.active.lock().unwrap();
-            if active.contains_key(&conversation_id) {
-                return Err(Error::Other("A reply is already being generated for this chat.".into()));
-            }
-            active.insert(conversation_id, token.clone());
-        }
-
+        let (token, guard) = self.claim(conversation_id)?;
         let result = operation(token).await;
-        self.inner.active.lock().unwrap().remove(&conversation_id);
+        drop(guard);
 
         if let Err(error) = &result {
             sink.emit(ChatEvent::Error { message: error.to_string(), kind: None });
@@ -456,7 +590,7 @@ impl ChatEngine {
 
     /// Builds the provider request for a turn: assembled prompt plus the per-turn instructions
     /// (emotion tag for characters with an expression pack, time-skip tag while a world clock runs).
-    fn assemble(&self, ctx: &ReplyContext, history: &[ChatMessage], speaker: Option<&Character>) -> Result<LlmRequest> {
+    fn assemble(&self, ctx: &ReplyContext, history: &[ChatMessage], options: AssembleOptions<'_>) -> Result<LlmRequest> {
         let conversation = &ctx.conversation;
         let (memories, notebook_entries, quests) = self.db().with(|c| {
             let memories = if conversation.mode == ConversationMode::Assistant { user_memories::get_all(c)? } else { vec![] };
@@ -472,7 +606,7 @@ impl ChatEngine {
             .then(|| conversation.world_state.as_ref().map(world_state::format))
             .flatten();
 
-        let mut pctx = PromptAssemblyContext::new(conversation, &ctx.preset, history)
+        let mut pctx = PromptAssemblyContext::new(conversation, options.preset.unwrap_or(&ctx.preset), history)
             .with_characters(&ctx.characters)
             .with_lorebooks(&ctx.lorebooks)
             .with_user_memories(&memories)
@@ -487,11 +621,11 @@ impl ChatEngine {
 
         let mut request = prompting::assemble(&pctx, &KeywordWorldInfoScanner);
 
-        if let Some(character) = speaker.filter(|c| !c.expressions.is_empty()) {
+        if let Some(character) = options.speaker.filter(|c| !c.expressions.is_empty()) {
             let keys: Vec<String> = character.expressions.iter().map(|e| e.emotion.clone()).collect();
             append_instruction(&mut request, &emotion_tag::build_instruction(&character.name, &keys));
         }
-        if conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_some() {
+        if options.time_skip && conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_some() {
             append_instruction(&mut request, time_skip_tag::build_instruction());
         }
         Ok(request)
@@ -631,7 +765,7 @@ impl ChatEngine {
         message.speaker_character_id = speaker_id;
         sink.emit(ChatEvent::MessageAdded { message: message.clone() });
 
-        let request = self.assemble(&ctx, &ctx.messages, speaker.as_ref())?;
+        let request = self.assemble(&ctx, &ctx.messages, AssembleOptions { speaker: speaker.as_ref(), time_skip: true, ..Default::default() })?;
         message.raw_prompt_text = Some(format_prompt(&request));
         self.update_conversation(conversation_id, |c| c.updated_at = Utc::now())?;
 
@@ -702,7 +836,11 @@ impl ChatEngine {
         }
 
         let speaker = target.speaker_character_id.and_then(|id| ctx.characters.iter().find(|c| c.id == id)).cloned();
-        let request = self.assemble(&ctx, &ctx.messages[..position], speaker.as_ref())?;
+        let request = self.assemble(
+            &ctx,
+            &ctx.messages[..position],
+            AssembleOptions { speaker: speaker.as_ref(), time_skip: true, ..Default::default() },
+        )?;
         let raw_prompt = format_prompt(&request);
 
         sink.emit(ChatEvent::Regenerating { message_id });

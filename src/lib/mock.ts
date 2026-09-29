@@ -382,6 +382,31 @@ export const mockApi: Api = {
     await stream(conversationId, reply, onEvent, "*leans in* Happy to weigh in — here's my take.", false);
     onEvent({ type: "finished" });
   },
+  async continueMessage(conversationId, onEvent) {
+    const target = messages.get(conversationId)!.at(-1);
+    if (target?.role !== "character") throw "There is no reply to continue.";
+    onEvent({ type: "continuing", messageId: target.id });
+    running.set(conversationId, true);
+    let added = "";
+    for (const word of " The silence stretches on, and then, quietly, she adds a few more words.".split(/(?<=\s)/)) {
+      if (!running.get(conversationId)) break;
+      await sleep(25);
+      added += word;
+      onEvent({ type: "delta", messageId: target.id, text: word, reasoning: "" });
+    }
+    running.delete(conversationId);
+    target.text += added;
+    if (target.alternates.length) target.alternates[target.activeAlternateIndex].text = target.text;
+    onEvent({ type: "messageUpdated", message: structuredClone(target) });
+    onEvent({ type: "finished" });
+  },
+  async impersonate(conversationId) {
+    running.set(conversationId, true);
+    await sleep(600);
+    const stopped = !running.get(conversationId);
+    running.delete(conversationId);
+    return stopped ? null : "I lean in closer and lower my voice. \"Tell me more about that.\"";
+  },
   async swipePrevious(messageId) {
     const target = [...messages.values()].flat().find((m) => m.id === messageId)!;
     if (target.activeAlternateIndex > 0) {

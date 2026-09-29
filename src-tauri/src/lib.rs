@@ -100,6 +100,8 @@ pub fn run() {
             commands::store_image,
             commands::open_group,
             commands::pick_speaker,
+            commands::continue_message,
+            commands::impersonate,
             commands::save_character,
             commands::delete_character,
             commands::import_character,

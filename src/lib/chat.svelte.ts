@@ -51,6 +51,11 @@ class ChatStore {
     return this.isGroup && !this.busy && this.messages.at(-1)?.role === "user";
   }
 
+  /** Continue extends the last reply, so it needs one (and nothing already running). */
+  get canContinue(): boolean {
+    return !!this.session && !this.busy && this.messages.at(-1)?.role === "character";
+  }
+
   get canSend(): boolean {
     if (!this.session || this.busy) return false;
     const last = this.messages.at(-1);
@@ -173,6 +178,11 @@ class ChatStore {
         }
         break;
       }
+      case "continuing": {
+        const m = this.find(event.messageId);
+        if (m) m.streaming = true; // keeps its text; the deltas that follow are appended
+        break;
+      }
       case "delta": {
         const m = this.find(event.messageId);
         if (m) {
@@ -238,6 +248,38 @@ class ChatStore {
         this.error ||= errorText(e);
         this.busy = false;
       }
+    }
+  }
+
+  /** Extends the last reply in place. */
+  async continueLast() {
+    const id = this.conversationId;
+    if (!id || !this.canContinue) return;
+    this.error = "";
+    this.busy = true;
+    try {
+      await api.continueMessage(id, (e) => this.handle(id, e));
+    } catch (e) {
+      if (this.conversationId === id) {
+        this.error ||= errorText(e);
+        this.busy = false;
+      }
+    }
+  }
+
+  /** Has the model draft the user's next message into the input box, to be edited and sent by hand. */
+  async impersonate() {
+    const id = this.conversationId;
+    if (!id || this.busy) return;
+    this.error = "";
+    this.busy = true;
+    try {
+      const draft = await api.impersonate(id);
+      if (draft && this.conversationId === id) this.input = draft;
+    } catch (e) {
+      if (this.conversationId === id) this.error = errorText(e);
+    } finally {
+      if (this.conversationId === id) this.busy = false;
     }
   }
 

@@ -129,6 +129,19 @@ impl ChatMessage {
         self.swipe_to(self.alternates.len() - 1);
     }
 
+    /// Replaces the shown variant's text, reasoning and prompt in place (used by "Continue": it is
+    /// still the same generation, just longer, so no new alternate is added).
+    pub fn extend_active(&mut self, text: String, reasoning_text: Option<String>, raw_prompt: Option<String>) {
+        if let Some(i) = self.active_index() {
+            self.alternates[i].text = text.clone();
+            self.alternates[i].reasoning_text = reasoning_text.clone();
+            self.alternates[i].raw_prompt = raw_prompt.clone().or_else(|| self.alternates[i].raw_prompt.take());
+        }
+        self.text = text;
+        self.reasoning_text = reasoning_text;
+        self.raw_prompt_text = raw_prompt.or_else(|| self.raw_prompt_text.take());
+    }
+
     /// Shows another alternate. Returns false (and changes nothing) when `index` is out of range.
     pub fn swipe_to(&mut self, index: usize) -> bool {
         let Some(alt) = self.alternates.get(index) else {
@@ -196,6 +209,26 @@ mod tests {
         assert_eq!(m.text, "second");
         assert_eq!(m.reasoning_text.as_deref(), Some("thoughts"));
         assert_eq!(m.raw_prompt_text.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn extend_active_rewrites_the_shown_variant_without_adding_one() {
+        let mut m = ChatMessage::new(Uuid::new_v4(), MessageRole::Character, "a");
+        m.raw_prompt_text = Some("p1".into());
+        m.finalize_generation();
+        m.add_alternate("b".into(), None, Some("p2".into()));
+
+        m.extend_active("b and more".into(), Some("why".into()), Some("p3".into()));
+        assert_eq!(m.alternates.len(), 2);
+        assert_eq!((m.text.as_str(), m.alternates[1].text.as_str()), ("b and more", "b and more"));
+        assert_eq!(m.alternates[1].reasoning_text.as_deref(), Some("why"));
+        assert_eq!((m.raw_prompt_text.as_deref(), m.alternates[1].raw_prompt.as_deref()), (Some("p3"), Some("p3")));
+        assert_eq!(m.alternates[0].text, "a", "the other variant is untouched");
+
+        // Without a new prompt the old one stays.
+        m.extend_active("b and more!".into(), None, None);
+        assert_eq!(m.raw_prompt_text.as_deref(), Some("p3"));
+        assert_eq!(m.alternates[1].raw_prompt.as_deref(), Some("p3"));
     }
 
     #[test]

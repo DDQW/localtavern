@@ -217,6 +217,7 @@ export type ErrorKind = "auth" | "rateLimit" | "invalidRequest" | "network" | "c
 export type ChatEvent =
   | { type: "messageAdded"; message: ChatMessage }
   | { type: "regenerating"; messageId: Uuid }
+  | { type: "continuing"; messageId: Uuid }
   | { type: "delta"; messageId: Uuid; text: string; reasoning: string }
   | { type: "messageUpdated"; message: ChatMessage }
   | { type: "messageRemoved"; messageId: Uuid }

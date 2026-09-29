@@ -205,6 +205,19 @@ pub async fn swipe_next(
 }
 
 #[tauri::command]
+pub async fn continue_message(state: State<'_, AppState>, conversation_id: Uuid, on_event: Channel<ChatEvent>) -> Result<()> {
+    let engine = state.engine.clone();
+    engine.continue_message(conversation_id, Arc::new(ChannelSink(on_event))).await
+}
+
+/// A drafted user message (`None` when stopped); the UI puts it in the input box.
+#[tauri::command]
+pub async fn impersonate(state: State<'_, AppState>, conversation_id: Uuid) -> Result<Option<String>> {
+    let engine = state.engine.clone();
+    engine.impersonate(conversation_id).await
+}
+
+#[tauri::command]
 pub fn swipe_previous(state: State<'_, AppState>, message_id: Uuid) -> Result<ChatMessage> {
     state.engine.swipe_previous(message_id)
 }

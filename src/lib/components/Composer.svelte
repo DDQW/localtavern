@@ -83,6 +83,19 @@
       </label>
     {/if}
 
+    {#if chat.isRoleplay && !chat.busy}
+      <button onclick={() => chat.impersonate()} title="Ask the AI to draft your next message, for you to review and send">
+        Impersonate
+      </button>
+      <button
+        onclick={() => chat.continueLast()}
+        disabled={!chat.canContinue}
+        title="Extend the last reply instead of starting a new one"
+      >
+        Continue
+      </button>
+    {/if}
+
     {#if chat.busy}
       <button onclick={() => chat.stop()} title="Stop generating and keep what has arrived so far">Stop</button>
     {:else}

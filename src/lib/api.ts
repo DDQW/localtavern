@@ -45,6 +45,9 @@ export interface Api {
   sendMessage(conversationId: Uuid, text: string, attachments: string[], onEvent: EventHandler): Promise<void>;
   swipeNext(conversationId: Uuid, messageId: Uuid, onEvent: EventHandler): Promise<void>;
   pickSpeaker(conversationId: Uuid, characterId: Uuid, onEvent: EventHandler): Promise<void>;
+  continueMessage(conversationId: Uuid, onEvent: EventHandler): Promise<void>;
+  /** A drafted user message for the input box; null when stopped. */
+  impersonate(conversationId: Uuid): Promise<string | null>;
   swipePrevious(messageId: Uuid): Promise<ChatMessage>;
   stopGeneration(conversationId: Uuid): Promise<void>;
   editMessage(messageId: Uuid, text: string): Promise<ChatMessage>;
@@ -117,6 +120,8 @@ const tauriApi: Api = {
   swipeNext: (conversationId, messageId, onEvent) => streaming("swipe_next", { conversationId, messageId }, onEvent),
   pickSpeaker: (conversationId, characterId, onEvent) =>
     streaming("pick_speaker", { conversationId, characterId }, onEvent),
+  continueMessage: (conversationId, onEvent) => streaming("continue_message", { conversationId }, onEvent),
+  impersonate: (conversationId) => invoke("impersonate", { conversationId }),
   swipePrevious: (messageId) => invoke("swipe_previous", { messageId }),
   stopGeneration: (conversationId) => invoke("stop_generation", { conversationId }),
   editMessage: (messageId, text) => invoke("edit_message", { messageId, text }),

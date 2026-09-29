@@ -15,6 +15,8 @@ pub enum ChatEvent {
     MessageAdded { message: ChatMessage },
     /// An existing message is being regenerated: clear its shown text and stream into it.
     Regenerating { message_id: Uuid },
+    /// An existing message is being extended: keep its text and append the streamed deltas.
+    Continuing { message_id: Uuid },
     /// Streamed text and reasoning since the last delta, coalesced to roughly 30 per second.
     Delta { message_id: Uuid, text: String, reasoning: String },
     /// The message's final (or restored) state.

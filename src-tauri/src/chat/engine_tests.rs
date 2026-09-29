@@ -926,3 +926,216 @@ async fn deleting_a_group_keeps_its_conversations_usable() {
     assert_eq!(messages(&f, conv).len(), 2);
     assert_eq!(messages(&f, conv)[1].text, "Still here.");
 }
+
+// ---- continue ----
+
+fn thought(text: &str) -> std::result::Result<LlmResponseChunk, ProviderError> {
+    Ok(LlmResponseChunk { thought_delta_text: text.into(), ..Default::default() })
+}
+
+async fn continue_reply(f: &Fixture, conversation: Uuid) -> (Result<()>, Vec<ChatEvent>) {
+    let sink = Arc::new(VecSink::default());
+    let result = f.engine.continue_message(conversation, sink.clone()).await;
+    (result, sink.events())
+}
+
+#[tokio::test]
+async fn continue_appends_to_the_same_reply_without_adding_an_alternate() {
+    let f = fixture(vec![
+        Script::Items(vec![thought("hm"), chunk("The door creaks"), finish("STOP")]),
+        Script::Items(vec![thought("more"), chunk(" open slowly."), finish("STOP")]),
+    ]);
+    let conv = ready_roleplay(&f);
+    send(&f, conv, "I knock.").await.0.unwrap();
+    let reply_id = messages(&f, conv)[1].id;
+
+    let (result, events) = continue_reply(&f, conv).await;
+    result.unwrap();
+    assert!(matches!(events[0], ChatEvent::Continuing { message_id } if message_id == reply_id));
+    assert_eq!(streamed_text(&events), " open slowly.", "only the new part is streamed");
+    assert!(matches!(events.last(), Some(ChatEvent::Finished)));
+
+    let all = messages(&f, conv);
+    assert_eq!(all.len(), 2, "no new message");
+    let reply = &all[1];
+    assert_eq!(reply.text, "The door creaks open slowly.");
+    assert_eq!(reply.alternates.len(), 1, "still one generation");
+    assert_eq!(reply.alternates[0].text, "The door creaks open slowly.");
+    assert_eq!(reply.reasoning_text.as_deref(), Some("hm\n\nmore"));
+
+    // The model saw the reply, then the nudge as a trailing user turn.
+    let request = &f.provider.requests()[1];
+    let tail: Vec<_> = request.history.iter().map(|m| (m.role, m.text.as_str())).collect();
+    assert_eq!(
+        tail,
+        [
+            (LlmRole::User, "I knock."),
+            (LlmRole::Model, "The door creaks"),
+            (LlmRole::User, "[Continue your last message without repeating its original content.]"),
+        ]
+    );
+    assert!(reply.raw_prompt_text.as_deref().unwrap().contains("[Continue your last message"));
+}
+
+#[tokio::test]
+async fn continue_extends_only_the_shown_swipe() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("one"), finish("STOP")]),
+        Script::Items(vec![chunk("two"), finish("STOP")]),
+        Script::Items(vec![chunk("!"), finish("STOP")]),
+    ]);
+    let conv = ready_roleplay(&f);
+    send(&f, conv, "hi").await.0.unwrap();
+    let reply_id = messages(&f, conv)[1].id;
+    f.engine.swipe_next(conv, reply_id, Arc::new(VecSink::default())).await.unwrap();
+
+    continue_reply(&f, conv).await.0.unwrap();
+    let reply = &messages(&f, conv)[1];
+    let texts: Vec<_> = reply.alternates.iter().map(|a| a.text.as_str()).collect();
+    assert_eq!(texts, ["one", "two!"]);
+    assert_eq!(reply.text, "two!");
+}
+
+#[tokio::test]
+async fn continue_asks_for_no_emotion_or_time_skip_tags() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("She smiles.[emotion: joy]"), finish("STOP")]),
+        Script::Items(vec![chunk(" Warmly."), finish("STOP")]),
+    ]);
+    let nova = add_character(&f.db, "Nova", None, &["joy"]);
+    let conv = ready_character(&f, &nova);
+    send(&f, conv, "hi").await.0.unwrap();
+    assert!(f.provider.requests()[0].system_instruction.as_deref().unwrap().contains("emotion"));
+
+    continue_reply(&f, conv).await.0.unwrap();
+    let system = f.provider.requests()[1].system_instruction.clone().unwrap_or_default();
+    assert!(!system.contains("[emotion:") && !system.contains("time-skip"), "{system}");
+    assert_eq!(messages(&f, conv)[1].text, "She smiles. Warmly.");
+    assert_eq!(messages(&f, conv)[1].detected_emotion.as_deref(), Some("joy"), "the earlier emotion stays");
+}
+
+#[tokio::test]
+async fn stopping_a_continuation_keeps_the_part_that_arrived() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Start."), finish("STOP")]),
+        Script::Hang(vec![LlmResponseChunk::text(" And on")]),
+    ]);
+    let conv = ready_roleplay(&f);
+    send(&f, conv, "go").await.0.unwrap();
+
+    let sink = Arc::new(VecSink::default());
+    let engine = f.engine.clone();
+    let task_sink: Arc<dyn EventSink> = sink.clone();
+    let task = tokio::spawn(async move { engine.continue_message(conv, task_sink).await });
+    wait_until("a streamed delta", || sink.events().iter().any(|e| matches!(e, ChatEvent::Delta { .. }))).await;
+    f.engine.stop(conv);
+    task.await.unwrap().unwrap();
+
+    assert_eq!(messages(&f, conv)[1].text, "Start. And on");
+    assert!(error_messages(&sink.events()).is_empty());
+    assert!(!f.engine.is_generating(conv));
+}
+
+#[tokio::test]
+async fn a_failed_continuation_rolls_back_to_the_original_text() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Original."), finish("STOP")]),
+        Script::Items(vec![chunk(" partial"), Err(ProviderError::network("dropped"))]),
+    ]);
+    let conv = ready_roleplay(&f);
+    send(&f, conv, "go").await.0.unwrap();
+
+    let (result, events) = continue_reply(&f, conv).await;
+    result.unwrap();
+    assert_eq!(error_messages(&events).len(), 1);
+    assert!(events.iter().any(|e| matches!(e, ChatEvent::MessageUpdated { message } if message.text == "Original.")));
+    assert_eq!(messages(&f, conv)[1].text, "Original.");
+}
+
+#[tokio::test]
+async fn continue_needs_a_character_reply() {
+    let f = fixture(vec![]);
+    let conv = ready_roleplay(&f);
+    // Nothing to continue in an empty chat...
+    let (result, events) = continue_reply(&f, conv).await;
+    assert!(result.unwrap_err().to_string().contains("no reply to continue"));
+    assert_eq!(error_messages(&events).len(), 1);
+
+    // ...nor when the last message is the user's own.
+    f.db.with(|c| conversations::add_message(c, &ChatMessage::new(conv, MessageRole::User, "hello"))).unwrap();
+    assert!(continue_reply(&f, conv).await.0.is_err());
+    assert!(f.provider.requests().is_empty());
+}
+
+// ---- impersonate ----
+
+#[tokio::test]
+async fn impersonate_drafts_a_user_message_without_saving_anything() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Hello there."), finish("STOP")]),
+        Script::Items(vec![chunk("  I lean closer and whisper.\n"), finish("STOP")]),
+    ]);
+    add_persona(&f.db, "Alex");
+    let conv = ready_roleplay(&f);
+    send(&f, conv, "hi").await.0.unwrap();
+    let before = messages(&f, conv);
+
+    let draft = f.engine.impersonate(conv).await.unwrap();
+    assert_eq!(draft.as_deref(), Some("I lean closer and whisper."));
+    assert_eq!(messages(&f, conv), before, "the draft is only returned, never stored");
+    assert!(!f.engine.is_generating(conv));
+
+    // The last turn was the character's, so the instruction is a new trailing user turn.
+    let request = &f.provider.requests()[1];
+    let last = request.history.last().unwrap();
+    assert_eq!(last.role, LlmRole::User);
+    assert!(last.text.starts_with("[Write Alex's next message"), "{}", last.text);
+    assert!(last.text.contains("Don't write as Nova."));
+    assert_eq!(request.history.len(), 3);
+    // The preset's own "write the character's reply" prompt is gone.
+    let system = request.system_instruction.clone().unwrap_or_default();
+    assert!(!system.contains(crate::prompting::defaults::DEFAULT_ROLEPLAY_SYSTEM_PROMPT), "{system}");
+}
+
+#[tokio::test]
+async fn impersonate_folds_the_instruction_into_a_trailing_user_message() {
+    let f = fixture(vec![Script::Items(vec![chunk("Well?"), finish("STOP")])]);
+    let conv = ready_roleplay(&f);
+    f.db.with(|c| conversations::add_message(c, &ChatMessage::new(conv, MessageRole::User, "Where were we?"))).unwrap();
+
+    f.engine.impersonate(conv).await.unwrap();
+    let request = &f.provider.requests()[0];
+    assert_eq!(request.history.len(), 1, "no second user turn (providers reject two in a row)");
+    assert!(request.history[0].text.starts_with("Where were we?\n\n[Write the user's next message"));
+}
+
+#[tokio::test]
+async fn impersonate_in_a_group_names_the_other_characters() {
+    let f = fixture(vec![Script::Items(vec![chunk("Right."), finish("STOP")])]);
+    let alice = add_character(&f.db, "Alice", None, &[]);
+    let bob = add_character(&f.db, "Bob", None, &[]);
+    let group = add_group(&f, GroupActivationMode::Manual, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+
+    f.engine.impersonate(conv).await.unwrap();
+    let last = f.provider.requests()[0].history.last().unwrap().text.clone();
+    assert!(last.contains("Don't write as the other characters."), "{last}");
+}
+
+#[tokio::test]
+async fn impersonate_reports_provider_failures_and_can_be_stopped() {
+    let f = fixture(vec![Script::FailToStart(ProviderError::auth("bad key")), Script::Hang(vec![])]);
+    let conv = ready_roleplay(&f);
+    let err = f.engine.impersonate(conv).await.unwrap_err();
+    assert!(err.to_string().contains("Authentication failed"), "{err}");
+    assert!(!f.engine.is_generating(conv), "the slot is freed after a failure");
+
+    let engine = f.engine.clone();
+    let task = tokio::spawn(async move { engine.impersonate(conv).await });
+    wait_until("the request to start", || f.engine.is_generating(conv) && f.provider.requests().len() == 2).await;
+    // Nothing else may generate meanwhile.
+    assert!(send(&f, conv, "hi").await.0.unwrap_err().to_string().contains("already being generated"));
+    f.engine.stop(conv);
+    assert_eq!(task.await.unwrap().unwrap(), None);
+    assert!(!f.engine.is_generating(conv));
+}
