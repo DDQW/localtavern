@@ -209,6 +209,12 @@ pub fn delete_message(conn: &Connection, id: Uuid) -> Result<()> {
     Ok(())
 }
 
+pub fn get_message(conn: &Connection, id: Uuid) -> Result<Option<ChatMessage>> {
+    Ok(conn
+        .query_row("SELECT * FROM ChatMessages WHERE Id = ?1;", [id.to_string()], map_message)
+        .optional()?)
+}
+
 pub fn get_messages(conn: &Connection, conversation_id: Uuid) -> Result<Vec<ChatMessage>> {
     let mut stmt = conn.prepare("SELECT * FROM ChatMessages WHERE ConversationId = ?1 ORDER BY RowId;")?;
     let list = stmt.query_map([conversation_id.to_string()], map_message)?.collect::<rusqlite::Result<Vec<_>>>()?;

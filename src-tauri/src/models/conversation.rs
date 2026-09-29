@@ -25,6 +25,17 @@ pub enum WeatherCondition {
 }
 
 impl WeatherCondition {
+    pub const ALL: [Self; 8] = [
+        Self::Clear,
+        Self::PartlyCloudy,
+        Self::Overcast,
+        Self::Rain,
+        Self::Thunderstorm,
+        Self::Snow,
+        Self::Fog,
+        Self::Windy,
+    ];
+
     /// The variant name, as shown in prompts ("PartlyCloudy") - matches the C# `ToString()`.
     pub fn name(self) -> &'static str {
         match self {

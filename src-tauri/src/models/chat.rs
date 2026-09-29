@@ -108,6 +108,48 @@ impl ChatMessage {
         self.text = value;
     }
 
+    /// Snapshots the current text/reasoning/prompt as alternate #1 - call once a brand-new reply has
+    /// finished streaming.
+    pub fn finalize_generation(&mut self) {
+        self.alternates = vec![MessageAlternate {
+            text: self.text.clone(),
+            reasoning_text: self.reasoning_text.clone().filter(|r| !r.is_empty()),
+            raw_prompt: self.raw_prompt_text.clone().filter(|p| !p.is_empty()),
+        }];
+        self.active_alternate_index = 0;
+    }
+
+    /// Appends a freshly regenerated variant and switches to showing it. A message that predates
+    /// alternates keeps its original text as alternate #1 instead of losing it.
+    pub fn add_alternate(&mut self, text: String, reasoning_text: Option<String>, raw_prompt: Option<String>) {
+        if self.alternates.is_empty() {
+            self.finalize_generation();
+        }
+        self.alternates.push(MessageAlternate { text, reasoning_text, raw_prompt });
+        self.swipe_to(self.alternates.len() - 1);
+    }
+
+    /// Shows another alternate. Returns false (and changes nothing) when `index` is out of range.
+    pub fn swipe_to(&mut self, index: usize) -> bool {
+        let Some(alt) = self.alternates.get(index) else {
+            return false;
+        };
+        self.text = alt.text.clone();
+        self.reasoning_text = alt.reasoning_text.clone();
+        self.raw_prompt_text = alt.raw_prompt.clone();
+        self.active_alternate_index = index as i32;
+        true
+    }
+
+    pub fn can_swipe_previous(&self) -> bool {
+        self.active_alternate_index > 0
+    }
+
+    /// Whether swiping right lands on an already-generated alternate (true) or needs a new one.
+    pub fn can_swipe_to_existing_next(&self) -> bool {
+        (self.active_alternate_index.max(0) as usize) + 1 < self.alternates.len()
+    }
+
     /// Re-establishes the invariant `text == active alternate's text`; called after loading a row.
     pub fn sync_text_from_alternates(&mut self) {
         if let Some(i) = self.active_index() {
@@ -142,5 +184,43 @@ mod tests {
         m.active_alternate_index = 9;
         m.sync_text_from_alternates();
         assert_eq!(m.text, "only");
+    }
+
+    #[test]
+    fn add_alternate_preserves_the_original_and_shows_the_new_one() {
+        let mut m = ChatMessage::new(Uuid::new_v4(), MessageRole::Character, "original");
+        m.add_alternate("second".into(), Some("thoughts".into()), Some("prompt".into()));
+        assert_eq!(m.alternates.len(), 2);
+        assert_eq!(m.alternates[0].text, "original");
+        assert_eq!(m.active_alternate_index, 1);
+        assert_eq!(m.text, "second");
+        assert_eq!(m.reasoning_text.as_deref(), Some("thoughts"));
+        assert_eq!(m.raw_prompt_text.as_deref(), Some("prompt"));
+    }
+
+    #[test]
+    fn swipe_to_moves_text_reasoning_and_prompt_together() {
+        let mut m = ChatMessage::new(Uuid::new_v4(), MessageRole::Character, "a");
+        m.reasoning_text = Some("ra".into());
+        m.finalize_generation();
+        m.add_alternate("b".into(), None, None);
+        assert!(m.can_swipe_previous());
+        assert!(!m.can_swipe_to_existing_next());
+
+        assert!(m.swipe_to(0));
+        assert_eq!((m.text.as_str(), m.reasoning_text.as_deref()), ("a", Some("ra")));
+        assert!(!m.can_swipe_previous());
+        assert!(m.can_swipe_to_existing_next());
+        assert!(!m.swipe_to(5));
+        assert_eq!(m.active_alternate_index, 0);
+    }
+
+    #[test]
+    fn finalize_generation_drops_empty_reasoning_and_prompt() {
+        let mut m = ChatMessage::new(Uuid::new_v4(), MessageRole::Character, "hi");
+        m.reasoning_text = Some(String::new());
+        m.finalize_generation();
+        assert_eq!(m.alternates[0].reasoning_text, None);
+        assert_eq!(m.alternates[0].raw_prompt, None);
     }
 }

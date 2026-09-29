@@ -7,10 +7,27 @@ pub mod rows;
 pub mod time;
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
+
+/// A shared handle to the single SQLite connection. SQLite calls are short and synchronous, so
+/// callers lock it for one closure and never hold it across an `.await`.
+#[derive(Clone)]
+pub struct Db(Arc<Mutex<Connection>>);
+
+impl Db {
+    pub fn new(conn: Connection) -> Self {
+        Self(Arc::new(Mutex::new(conn)))
+    }
+
+    pub fn with<R>(&self, f: impl FnOnce(&Connection) -> Result<R>) -> Result<R> {
+        let guard = self.0.lock().map_err(|_| Error::Other("The database lock was poisoned by an earlier crash.".into()))?;
+        f(&guard)
+    }
+}
 
 /// Ordered migration scripts. Scripts are NOT idempotent (later ones use plain ALTER TABLE) - the
 /// SchemaVersion gate is what makes re-running safe.
@@ -33,7 +50,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
 /// Opens (creating if needed) the database at `path`, enables foreign keys and applies pending migrations.
 pub fn open(path: &Path) -> Result<Connection> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| crate::error::Error::Other(e.to_string()))?;
+        std::fs::create_dir_all(dir).map_err(|e| Error::Other(e.to_string()))?;
     }
     let mut conn = Connection::open(path)?;
     prepare(&mut conn)?;

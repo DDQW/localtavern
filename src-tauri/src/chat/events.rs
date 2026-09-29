@@ -1,0 +1,69 @@
+use std::sync::Mutex;
+
+use serde::Serialize;
+use uuid::Uuid;
+
+use crate::models::{ChatMessage, WorldState};
+use crate::providers::ProviderErrorKind;
+
+/// What the engine tells the UI while a reply is being produced. Serialized as
+/// `{ "type": "delta", "messageId": ..., ... }`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ChatEvent {
+    /// A new message (the user's, or the still-empty reply that is about to stream).
+    MessageAdded { message: ChatMessage },
+    /// An existing message is being regenerated: clear its shown text and stream into it.
+    Regenerating { message_id: Uuid },
+    /// Streamed text and reasoning since the last delta, coalesced to roughly 30 per second.
+    Delta { message_id: Uuid, text: String, reasoning: String },
+    /// The message's final (or restored) state.
+    MessageUpdated { message: ChatMessage },
+    MessageRemoved { message_id: Uuid },
+    WorldStateChanged { conversation_id: Uuid, world_state: WorldState },
+    TitleChanged { conversation_id: Uuid, title: String },
+    Error { message: String, kind: Option<ProviderErrorKind> },
+    /// Always the last event of one operation, success or not.
+    Finished,
+}
+
+/// Receives events. The app implements this over a Tauri channel; tests collect into a vector.
+pub trait EventSink: Send + Sync {
+    fn emit(&self, event: ChatEvent);
+}
+
+/// Collects events in memory.
+#[derive(Default)]
+pub struct VecSink(Mutex<Vec<ChatEvent>>);
+
+impl VecSink {
+    pub fn events(&self) -> Vec<ChatEvent> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl EventSink for VecSink {
+    fn emit(&self, event: ChatEvent) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn events_serialize_with_a_type_tag_and_camel_case_fields() {
+        let id = Uuid::nil();
+        let json = serde_json::to_value(ChatEvent::Delta { message_id: id, text: "hi".into(), reasoning: String::new() }).unwrap();
+        assert_eq!(json["type"], "delta");
+        assert_eq!(json["messageId"], id.to_string());
+        assert_eq!(json["text"], "hi");
+
+        let finished = serde_json::to_value(ChatEvent::Finished).unwrap();
+        assert_eq!(finished, serde_json::json!({ "type": "finished" }));
+
+        let error = serde_json::to_value(ChatEvent::Error { message: "x".into(), kind: Some(ProviderErrorKind::RateLimit) }).unwrap();
+        assert_eq!(error["kind"], "rateLimit");
+    }
+}
