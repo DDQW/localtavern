@@ -191,8 +191,7 @@ mod tests {
     #[test]
     fn gemini_options_round_trip_and_use_the_csharp_shape() {
         let conn = open_in_memory().unwrap();
-        let mut options = GeminiRequestOptions::default();
-        options.enable_google_search = true;
+        let mut options = GeminiRequestOptions { enable_google_search: true, ..Default::default() };
         options.safety_thresholds.insert(GeminiSafetyCategory::HateSpeech, GeminiSafetyThreshold::BlockMediumAndAbove);
         save_gemini_options(&conn, &options).unwrap();
 

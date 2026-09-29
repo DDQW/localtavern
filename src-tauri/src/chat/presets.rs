@@ -58,10 +58,9 @@ fn backfill_world_system_blocks(conn: &Connection, all: Vec<PromptPreset>) -> Re
         return Ok(all);
     }
 
-    let mut next_order = preset.blocks.iter().map(|b| b.order).max().map_or(0, |m| m + 1);
-    for block_type in missing {
-        preset.blocks.push(PromptBlock::new(block_type, next_order));
-        next_order += 1;
+    let first_order = preset.blocks.iter().map(|b| b.order).max().map_or(0, |m| m + 1);
+    for (offset, block_type) in missing.into_iter().enumerate() {
+        preset.blocks.push(PromptBlock::new(block_type, first_order + offset as i32));
     }
     prompt_presets::upsert(conn, &preset)?;
     prompt_presets::get_all(conn)

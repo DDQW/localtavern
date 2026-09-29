@@ -11,11 +11,11 @@ use uuid::Uuid;
 use crate::chat::{images, ChatEngine, ChatEvent, ChatSession, EventSink};
 use crate::db::Db;
 use crate::error::{Error, Result};
-use crate::models::{Character, ChatMessage, Conversation, Persona};
+use crate::models::{Character, CharacterNotebookEntry, ChatMessage, Conversation, Persona, QuestLogEntry};
 use crate::providers::gemini::GeminiRequestOptions;
 use crate::providers::ollama::OllamaRequestOptions;
 use crate::providers::{ApiKeyProvider, LlmProviderRegistry, SecretStore};
-use crate::repo::{characters, conversations};
+use crate::repo::{characters, conversations, notebook, quest_log};
 use crate::secrets::KeyringSecretStore;
 use crate::settings;
 
@@ -115,6 +115,49 @@ pub fn new_chat(state: State<'_, AppState>, conversation_id: Uuid) -> Result<Cha
 #[tauri::command]
 pub fn delete_conversation(state: State<'_, AppState>, conversation_id: Uuid) -> Result<()> {
     state.engine.delete_conversation(conversation_id)
+}
+
+#[tauri::command]
+pub fn open_last_roleplay(state: State<'_, AppState>) -> Result<Option<ChatSession>> {
+    state.engine.open_last_roleplay()
+}
+
+/// The in-story state shown beside a roleplay: quests and per-character notebooks.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoryState {
+    pub quests: Vec<QuestLogEntry>,
+    pub notebook: Vec<CharacterNotebookEntry>,
+}
+
+#[tauri::command]
+pub fn story_state(state: State<'_, AppState>, conversation_id: Uuid) -> Result<StoryState> {
+    state.db.with(|c| {
+        Ok(StoryState {
+            quests: quest_log::get_by_conversation(c, conversation_id)?,
+            notebook: notebook::get_by_conversation(c, conversation_id)?,
+        })
+    })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub message: ChatMessage,
+    pub conversation_title: String,
+}
+
+/// Full-text search over every chat message, newest match first.
+#[tauri::command]
+pub fn search_messages(state: State<'_, AppState>, query: String) -> Result<Vec<SearchHit>> {
+    state.db.with(|c| {
+        let mut hits = Vec::new();
+        for message in conversations::search_messages(c, &query, 50)? {
+            let title = conversations::get(c, message.conversation_id)?.map(|conv| conv.title).unwrap_or_default();
+            hits.push(SearchHit { message, conversation_title: title });
+        }
+        Ok(hits)
+    })
 }
 
 // ---- generation ----

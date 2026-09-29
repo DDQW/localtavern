@@ -163,6 +163,14 @@ impl ChatEngine {
         self.session(id)
     }
 
+    /// The most recently active roleplay (1:1 or group), if there is one - what the "Roleplay" nav item opens.
+    pub fn open_last_roleplay(&self) -> Result<Option<ChatSession>> {
+        match self.db().with(conversations::get_most_recent_roleplay)? {
+            Some(conversation) => self.session(conversation.id).map(Some),
+            None => Ok(None),
+        }
+    }
+
     pub fn resume(&self, conversation_id: Uuid) -> Result<ChatSession> {
         self.session(conversation_id)
     }
