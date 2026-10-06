@@ -8,6 +8,7 @@ pub mod emotion_tag;
 pub mod notebook;
 pub mod powershell_tool;
 pub mod quest_log;
+pub mod roles;
 pub mod time_skip_tag;
 pub mod world_info;
 pub mod world_state;

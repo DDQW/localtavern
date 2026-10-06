@@ -28,10 +28,26 @@ pub struct Extractor<'a> {
     pub model: &'a str,
 }
 
-/// One exchange: the user's message and the reply to it.
+/// One exchange: the user's message and the reply to it, each with who wrote it (the names only
+/// matter to the roleplay questions; the Assistant memory question labels them User/Assistant).
 pub struct Exchange<'a> {
+    pub user_name: &'a str,
     pub user_text: &'a str,
+    pub reply_name: &'a str,
     pub reply_text: &'a str,
+}
+
+impl Exchange<'_> {
+    /// The exchange for a roleplay question, each message under its author's name. Unlabelled, a
+    /// "*I draw my sword*" from the player is easily credited to a character in the notes.
+    fn roleplay_transcript(&self) -> String {
+        let (user, reply) = (self.user_name, self.reply_name);
+        format!(
+            "Exchange (everything in a message, *actions* included, was said or done by whoever wrote it; in {user}'s message \"I\" means {user}):\n\
+{user} (the player) wrote:\n{}\n\n{reply} replied:\n{}",
+            self.user_text, self.reply_text,
+        )
+    }
 }
 
 /// "- fact" / "* fact" / "fact" lines, without blanks.
@@ -102,15 +118,14 @@ List any NEW, durable, specific facts about the user worth remembering long-term
         let prompt = format!(
             "You are maintaining a quest/objective log for an ongoing roleplay, based on one exchange.\n\n\
 Current quests:\n{existing_list}\n\n\
-Exchange:\nUser: {user}\nReply: {reply}\n\n\
+{transcript}\n\n\
 Output zero or more lines, one per change, in exactly this grammar:\n\
 ADD: <title> :: <one-line description>\n\
 UPDATE: <existing title, exact> :: <new one-line description>\n\
 COMPLETE: <existing title, exact>\n\
 FAIL: <existing title, exact>\n\
 Only ADD a new quest for a concrete objective introduced in this exchange. Only UPDATE/COMPLETE/FAIL a quest whose title exactly matches one already listed above. If nothing changed, output exactly: NONE",
-            user = exchange.user_text,
-            reply = exchange.reply_text,
+            transcript = exchange.roleplay_transcript(),
         );
         let response = self.ask(prompt).await?;
 
@@ -172,10 +187,10 @@ Only ADD a new quest for a concrete objective introduced in this exchange. Only 
             "You are extracting what specific characters in an ongoing roleplay have PERSONALLY learned about the player or events from one exchange, for their own private long-term memory. A character's notebook is private to them - other characters do not automatically know what's in it.\n\n\
 Characters present: {names}\n\n\
 What each character already knows (do not repeat these):\n{existing_block}\n\n\
-Exchange:\nUser: {user}\nReply: {reply}\n\n\
-For each character who personally learned something NEW and worth remembering (a fact about the player, a secret, an event they witnessed), output one line as \"<CharacterName>: <fact>\". Skip characters who learned nothing new or weren't present. If nobody learned anything new, output exactly: NONE",
-            user = exchange.user_text,
-            reply = exchange.reply_text,
+{transcript}\n\n\
+For each character who personally learned something NEW and worth remembering (a fact about the player, a secret, an event they witnessed), output one line as \"<CharacterName>: <fact>\". Name who did what - the player is {player}, never one of the characters. Skip characters who learned nothing new or weren't present. If nobody learned anything new, output exactly: NONE",
+            transcript = exchange.roleplay_transcript(),
+            player = exchange.user_name,
         );
         let response = self.ask(prompt).await?;
 

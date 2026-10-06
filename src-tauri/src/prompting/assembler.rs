@@ -3,7 +3,8 @@
 //! Blocks before the ChatHistory block collapse into the provider's single system-instruction slot
 //! (in the user's configured order); a block placed after ChatHistory is injected as a synthetic
 //! message at its configured depth from the end, mirroring SillyTavern's author's-note-at-depth
-//! behavior. Provider-agnostic: only touches `LlmRequest`/`LlmMessage`.
+//! behavior. Provider-agnostic: only touches `LlmRequest`/`LlmMessage`. Such injected messages are
+//! marked as system notes, since every other user-role message is the user's character speaking.
 
 use std::collections::BTreeMap;
 
@@ -13,10 +14,12 @@ use crate::models::{
 };
 
 use super::context::PromptAssemblyContext;
+use super::roles::{join_names, system_note, user_name};
 use super::world_info::{WorldInfoMatch, WorldInfoScanner};
 use super::{notebook, quest_log};
 
 pub fn assemble(ctx: &PromptAssemblyContext, scanner: &dyn WorldInfoScanner) -> LlmRequest {
+    let macros = Macros::new(ctx.persona, ctx.characters, ctx.speaker);
     let mut blocks: Vec<&PromptBlock> = ctx.preset.blocks.iter().filter(|b| b.enabled).collect();
     blocks.sort_by_key(|b| b.order); // stable, like LINQ OrderBy
 
@@ -40,8 +43,8 @@ pub fn assemble(ctx: &PromptAssemblyContext, scanner: &dyn WorldInfoScanner) -> 
         match block.block_type {
             PromptBlockType::ChatHistory => {
                 history_seen = true;
-                history = build_history(ctx);
-                inject_world_info_at_depth(&mut history, &matches, ctx);
+                history = build_history(ctx, &macros);
+                inject_world_info_at_depth(&mut history, &matches, &macros);
                 continue;
             }
             PromptBlockType::WorldInfo => continue,
@@ -56,33 +59,33 @@ pub fn assemble(ctx: &PromptAssemblyContext, scanner: &dyn WorldInfoScanner) -> 
         let is_character_description = block.block_type == PromptBlockType::CharacterDescription;
         if is_character_description {
             character_description_emitted = true;
-            add_world_info_parts(&mut system_parts, &matches, WorldInfoPosition::BeforeCharacterDescription, ctx);
+            add_world_info_parts(&mut system_parts, &matches, WorldInfoPosition::BeforeCharacterDescription, &macros);
         }
 
-        let text = apply_macros(&resolve_block_text(block, ctx), ctx.persona, ctx.characters);
+        let text = macros.fill(&resolve_block_text(block, ctx, &macros));
         if !text.trim().is_empty() {
             system_parts.push(text);
         }
 
         if is_character_description {
-            add_world_info_parts(&mut system_parts, &matches, WorldInfoPosition::AfterCharacterDescription, ctx);
+            add_world_info_parts(&mut system_parts, &matches, WorldInfoPosition::AfterCharacterDescription, &macros);
         }
     }
 
     // Presets without a CharacterDescription block still surface Before/After world info, appended
     // at the end of the pre-history system prompt in that order.
     if !character_description_emitted {
-        add_world_info_parts(&mut system_parts, &matches, WorldInfoPosition::BeforeCharacterDescription, ctx);
-        add_world_info_parts(&mut system_parts, &matches, WorldInfoPosition::AfterCharacterDescription, ctx);
+        add_world_info_parts(&mut system_parts, &matches, WorldInfoPosition::BeforeCharacterDescription, &macros);
+        add_world_info_parts(&mut system_parts, &matches, WorldInfoPosition::AfterCharacterDescription, &macros);
     }
 
     for block in post_history_blocks {
-        let text = apply_macros(&resolve_block_text(block, ctx), ctx.persona, ctx.characters);
+        let text = macros.fill(&resolve_block_text(block, ctx, &macros));
         if text.trim().is_empty() {
             continue;
         }
         let index = history.len().saturating_sub(block.injection_depth.max(0) as usize);
-        history.insert(index, LlmMessage::new(LlmRole::User, text));
+        history.insert(index, LlmMessage::new(LlmRole::User, system_note(&text)));
     }
 
     let preset = ctx.preset;
@@ -107,12 +110,12 @@ fn add_world_info_parts(
     system_parts: &mut Vec<String>,
     matches: &[WorldInfoMatch],
     position: WorldInfoPosition,
-    ctx: &PromptAssemblyContext,
+    macros: &Macros,
 ) {
     let text = matches
         .iter()
         .filter(|m| m.position == position)
-        .map(|m| apply_macros(&m.content, ctx.persona, ctx.characters))
+        .map(|m| macros.fill(&m.content))
         .filter(|t| !t.trim().is_empty())
         .collect::<Vec<_>>()
         .join("\n");
@@ -121,10 +124,10 @@ fn add_world_info_parts(
     }
 }
 
-/// Injects AtDepth matches into the message history as synthetic user messages. Entries sharing a
-/// depth are merged into one message so they keep scanner priority order; deeper groups are injected
-/// first so shallower groups stay closer to the end.
-fn inject_world_info_at_depth(history: &mut Vec<LlmMessage>, matches: &[WorldInfoMatch], ctx: &PromptAssemblyContext) {
+/// Injects AtDepth matches into the message history as synthetic user messages (system notes).
+/// Entries sharing a depth are merged into one message so they keep scanner priority order; deeper
+/// groups are injected first so shallower groups stay closer to the end.
+fn inject_world_info_at_depth(history: &mut Vec<LlmMessage>, matches: &[WorldInfoMatch], macros: &Macros) {
     let mut groups: BTreeMap<i32, Vec<&WorldInfoMatch>> = BTreeMap::new();
     for m in matches.iter().filter(|m| m.position == WorldInfoPosition::AtDepth) {
         groups.entry(m.depth).or_default().push(m);
@@ -133,18 +136,18 @@ fn inject_world_info_at_depth(history: &mut Vec<LlmMessage>, matches: &[WorldInf
     for (depth, group) in groups.into_iter().rev() {
         let text = group
             .iter()
-            .map(|m| apply_macros(&m.content, ctx.persona, ctx.characters))
+            .map(|m| macros.fill(&m.content))
             .filter(|t| !t.trim().is_empty())
             .collect::<Vec<_>>()
             .join("\n");
         if !text.trim().is_empty() {
             let index = history.len().saturating_sub(depth.max(0) as usize);
-            history.insert(index, LlmMessage::new(LlmRole::User, text));
+            history.insert(index, LlmMessage::new(LlmRole::User, system_note(&text)));
         }
     }
 }
 
-fn build_history(ctx: &PromptAssemblyContext) -> Vec<LlmMessage> {
+fn build_history(ctx: &PromptAssemblyContext, macros: &Macros) -> Vec<LlmMessage> {
     let prefix_speaker = ctx.characters.len() > 1;
 
     let messages: Vec<LlmMessage> = ctx
@@ -158,7 +161,7 @@ fn build_history(ctx: &PromptAssemblyContext) -> Vec<LlmMessage> {
                 MessageRole::User | MessageRole::Tool => LlmRole::User,
                 _ => LlmRole::Model,
             };
-            let mut text = apply_macros(message.effective_text(), ctx.persona, ctx.characters);
+            let mut text = macros.fill(message.effective_text());
 
             if prefix_speaker && message.role == MessageRole::Character {
                 if let Some(speaker) = message
@@ -215,7 +218,7 @@ fn trim_to_context_budget(messages: Vec<LlmMessage>, max_context_tokens: Option<
     kept_rev
 }
 
-fn resolve_block_text(block: &PromptBlock, ctx: &PromptAssemblyContext) -> String {
+fn resolve_block_text(block: &PromptBlock, ctx: &PromptAssemblyContext, macros: &Macros) -> String {
     let custom = block.custom_text.as_deref();
     match block.block_type {
         // Assistant mode's SystemPrompt block normally reflects the chat page's inline,
@@ -232,10 +235,12 @@ fn resolve_block_text(block: &PromptBlock, ctx: &PromptAssemblyContext) -> Strin
             }
         }
         PromptBlockType::PersonaDescription => resolve_persona_description(ctx.persona),
-        PromptBlockType::CharacterDescription => join_per_character(ctx.characters, |c| &c.description, "description"),
-        PromptBlockType::Scenario => join_per_character(ctx.characters, |c| &c.scenario, "scenario"),
+        PromptBlockType::CharacterDescription => {
+            join_per_character(ctx.characters, macros, |c| &c.description, "description")
+        }
+        PromptBlockType::Scenario => join_per_character(ctx.characters, macros, |c| &c.scenario, "scenario"),
         PromptBlockType::ExampleDialogue => {
-            join_per_character(ctx.characters, |c| &c.example_dialogue, "example dialogue")
+            join_per_character(ctx.characters, macros, |c| &c.example_dialogue, "example dialogue")
         }
         PromptBlockType::AuthorsNote => ctx.authors_note_text.or(custom).unwrap_or_default().to_string(),
         PromptBlockType::Custom | PromptBlockType::PostHistoryInstructions => custom.unwrap_or_default().to_string(),
@@ -251,18 +256,46 @@ fn resolve_block_text(block: &PromptBlock, ctx: &PromptAssemblyContext) -> Strin
 /// SillyTavern character cards are written with literal `{{user}}`/`{{char}}` placeholders
 /// throughout, expected to be substituted wherever they appear - sent as-is they read as a broken
 /// template. Public and taking just persona/characters so callers outside prompt assembly (e.g. the
-/// greeting shown the moment a roleplay starts) can substitute once at creation time. Group chats
-/// leave `{{char}}` alone since it's ambiguous which member it refers to.
+/// greeting shown the moment a roleplay starts) can substitute once at creation time.
 pub fn apply_macros(text: &str, persona: Option<&Persona>, characters: &[Character]) -> String {
-    if text.is_empty() {
-        return String::new();
+    Macros::new(persona, characters, None).fill(text)
+}
+
+/// What `{{user}}` and `{{char}}` stand for while assembling one request.
+struct Macros {
+    user: String,
+    /// `None` leaves `{{char}}` as written: there is no character to name.
+    char: Option<String>,
+}
+
+impl Macros {
+    /// `{{char}}` is whoever this reply is for, else the only character, else the whole cast
+    /// ("Alice and Bob") - a literal `{{char}}` reaching the model would leave it guessing who's meant.
+    fn new(persona: Option<&Persona>, characters: &[Character], speaker: Option<&Character>) -> Self {
+        let char = match (speaker, characters) {
+            (Some(me), _) => Some(me.name.clone()),
+            (None, []) => None,
+            (None, cast) => Some(join_names(&cast.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), "and")),
+        };
+        Self { user: user_name(persona).to_string(), char }
     }
-    let user_name = persona.map(|p| p.name.as_str()).filter(|n| !n.trim().is_empty()).unwrap_or("User");
-    let mut result = replace_ignore_ascii_case(text, "{{user}}", user_name);
-    if let [only] = characters {
-        result = replace_ignore_ascii_case(&result, "{{char}}", &only.name);
+
+    /// The same, but with `{{char}}` meaning `character` - inside a card's own text it always means
+    /// that card, even in a group.
+    fn for_character(&self, character: &Character) -> Self {
+        Self { user: self.user.clone(), char: Some(character.name.clone()) }
     }
-    result
+
+    fn fill(&self, text: &str) -> String {
+        if text.is_empty() {
+            return String::new();
+        }
+        let result = replace_ignore_ascii_case(text, "{{user}}", &self.user);
+        match &self.char {
+            Some(name) => replace_ignore_ascii_case(&result, "{{char}}", name),
+            None => result,
+        }
+    }
 }
 
 /// Case-insensitive replace for an ASCII `needle`. ASCII lowercasing never changes byte lengths, so
@@ -291,23 +324,25 @@ fn format_user_memories(memories: &[UserMemory]) -> String {
 
 fn resolve_persona_description(persona: Option<&Persona>) -> String {
     match persona {
-        Some(p) if !p.description.trim().is_empty() => {
-            let name = if p.name.trim().is_empty() { "User" } else { p.name.as_str() };
-            format!("{name}'s persona: {}", p.description)
-        }
+        Some(p) if !p.description.trim().is_empty() => format!("{}'s persona: {}", user_name(persona), p.description),
         _ => String::new(),
     }
 }
 
-fn join_per_character(characters: &[Character], select: impl Fn(&Character) -> &String, label: &str) -> String {
+/// One field from every character's card, each with its own `{{char}}` filled in.
+fn join_per_character(
+    characters: &[Character],
+    macros: &Macros,
+    select: impl Fn(&Character) -> &String,
+    label: &str,
+) -> String {
     match characters {
         [] => String::new(),
-        [only] => select(only).trim().to_string(),
+        [only] => macros.for_character(only).fill(select(only).trim()),
         many => many
             .iter()
-            .map(|c| (c.name.as_str(), select(c).as_str()))
-            .filter(|(_, text)| !text.trim().is_empty())
-            .map(|(name, text)| format!("{name}'s {label}: {text}"))
+            .filter(|c| !select(c).trim().is_empty())
+            .map(|c| format!("{}'s {label}: {}", c.name, macros.for_character(c).fill(select(c))))
             .collect::<Vec<_>>()
             .join("\n"),
     }
@@ -505,17 +540,36 @@ mod tests {
     }
 
     #[test]
-    fn leaves_char_macro_alone_in_group_chats() {
+    fn in_a_group_char_means_the_speaker_but_each_card_means_itself() {
         let conv = roleplay();
         let preset = create_roleplay_preset();
         let characters = [
             Character { name: "Alice".into(), description: "{{char}} greets {{user}}.".into(), ..Default::default() },
-            Character { name: "Bob".into(), ..Default::default() },
+            Character { name: "Bob".into(), scenario: "{{char}} keeps watch.".into(), ..Default::default() },
         ];
+        let history = [msg(MessageRole::User, "Over to you, {{char}}.")];
+
+        let request = assemble(
+            &PromptAssemblyContext::new(&conv, &preset, &history).with_characters(&characters).with_speaker(&characters[1]),
+            &NullScanner,
+        );
+
+        let system = request.system_instruction.clone().unwrap();
+        assert!(system.starts_with("Write Bob's next reply in this fictional roleplay with User."), "{system}");
+        assert!(system.contains("Alice's description: Alice greets User."), "{system}");
+        assert!(system.contains("Bob's scenario: Bob keeps watch."), "{system}");
+        assert_eq!(texts(&request), ["Over to you, Bob."]);
+    }
+
+    #[test]
+    fn in_a_group_without_a_speaker_char_names_the_whole_cast() {
+        let conv = roleplay();
+        let preset = create_roleplay_preset();
+        let characters = [Character { name: "Alice".into(), ..Default::default() }, Character { name: "Bob".into(), ..Default::default() }];
 
         let request = assemble(&PromptAssemblyContext::new(&conv, &preset, &[]).with_characters(&characters), &NullScanner);
 
-        assert!(request.system_instruction.unwrap().contains("{{char}} greets User."));
+        assert!(request.system_instruction.unwrap().starts_with("Write Alice and Bob's next reply"));
     }
 
     #[test]
@@ -620,9 +674,24 @@ mod tests {
 
         assert_eq!(request.system_instruction, None);
         assert_eq!(request.history.len(), 4);
-        // Depth 1 means inserted one message before the end.
-        assert_eq!(request.history[2].text, "Remember the plot twist.");
+        // Depth 1 means inserted one message before the end - marked so it can't pass for the user's own words.
+        assert_eq!(request.history[2].role, LlmRole::User);
+        assert_eq!(request.history[2].text, "[System note: Remember the plot twist.]");
         assert_eq!(request.history[3].text, "Third");
+    }
+
+    #[test]
+    fn injected_blocks_get_macros_filled_before_being_marked() {
+        let conv = roleplay();
+        let mut rule = block(PromptBlockType::PostHistoryInstructions, 1);
+        rule.custom_text = Some("don't act or speak for {{user}}\n".into());
+        let preset = preset_of(vec![block(PromptBlockType::ChatHistory, 0), rule]);
+        let persona = Persona { name: "Alex".into(), ..Default::default() };
+        let history = [msg(MessageRole::User, "*I draw my sword.*")];
+
+        let request = assemble(&PromptAssemblyContext::new(&conv, &preset, &history).with_persona(&persona), &NullScanner);
+
+        assert_eq!(texts(&request), ["*I draw my sword.*", "[System note: don't act or speak for Alex]"]);
     }
 
     #[test]
@@ -633,7 +702,7 @@ mod tests {
         let preset = preset_of(vec![block(PromptBlockType::ChatHistory, 0), note]);
 
         let request = assemble(&PromptAssemblyContext::new(&conv, &preset, &[]).with_authors_note("from chat"), &NullScanner);
-        assert_eq!(texts(&request), ["from chat"]);
+        assert_eq!(texts(&request), ["[System note: from chat]"]);
     }
 
     #[test]
@@ -643,6 +712,7 @@ mod tests {
 
         let request = assemble(&PromptAssemblyContext::new(&conv, &preset, &[]), &NullScanner);
 
+        // No characters: {{char}} has nobody to name and stays literal.
         assert_eq!(
             request.system_instruction.as_deref(),
             Some("Write {{char}}'s next reply in this fictional roleplay with User. Stay in character and be descriptive.")
@@ -704,7 +774,10 @@ mod tests {
 
         let request = assemble(&PromptAssemblyContext::new(&conv, &preset, &history).with_lorebooks(&lorebooks), &scanner);
 
-        assert_eq!(texts(&request), ["Deep lore.", "First", "Second", "Shallow lore.", "Third"]);
+        assert_eq!(
+            texts(&request),
+            ["[System note: Deep lore.]", "First", "Second", "[System note: Shallow lore.]", "Third"]
+        );
     }
 
     #[test]
@@ -720,7 +793,10 @@ mod tests {
 
         let request = assemble(&PromptAssemblyContext::new(&conv, &preset, &history).with_lorebooks(&lorebooks), &scanner);
 
-        assert_eq!(texts(&request), ["First", "First of the pair.\nSecond of the pair.", "Second", "Third"]);
+        assert_eq!(
+            texts(&request),
+            ["First", "[System note: First of the pair.\nSecond of the pair.]", "Second", "Third"]
+        );
     }
 
     #[test]
@@ -839,7 +915,7 @@ mod tests {
             &NullScanner,
         );
 
-        assert_eq!(texts(&request), ["Hi", "It is a rainy morning."]);
+        assert_eq!(texts(&request), ["Hi", "[System note: It is a rainy morning.]"]);
     }
 
     #[test]

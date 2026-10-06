@@ -12,6 +12,8 @@ pub struct PromptAssemblyContext<'a> {
     pub history: &'a [ChatMessage],
     pub persona: Option<&'a Persona>,
     pub characters: &'a [Character],
+    /// Whose reply this is - what `{{char}}` means in a group chat. A one-character chat doesn't need it.
+    pub speaker: Option<&'a Character>,
     pub lorebooks: &'a [Lorebook],
     pub authors_note_text: Option<&'a str>,
     pub user_memories: &'a [UserMemory],
@@ -28,6 +30,7 @@ impl<'a> PromptAssemblyContext<'a> {
             history,
             persona: None,
             characters: &[],
+            speaker: None,
             lorebooks: &[],
             authors_note_text: None,
             user_memories: &[],
@@ -44,6 +47,11 @@ impl<'a> PromptAssemblyContext<'a> {
 
     pub fn with_characters(mut self, characters: &'a [Character]) -> Self {
         self.characters = characters;
+        self
+    }
+
+    pub fn with_speaker(mut self, speaker: &'a Character) -> Self {
+        self.speaker = Some(speaker);
         self
     }
 

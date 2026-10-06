@@ -399,13 +399,35 @@ async fn the_roleplay_prompt_includes_persona_character_and_earlier_messages() {
     send(&f, conv, "Hello").await.0.unwrap();
 
     let request = &f.provider.requests()[0];
-    assert!(request
-        .system_instruction
-        .as_deref()
-        .unwrap()
-        .contains("Write Nova's next reply in this fictional roleplay with Alex."));
+    let system = request.system_instruction.as_deref().unwrap();
+    assert!(system.contains("Write Nova's next reply in this fictional roleplay with Alex."), "{system}");
     let history: Vec<_> = request.history.iter().map(|m| (m.role, m.text.as_str())).collect();
     assert_eq!(history, [(LlmRole::Model, "Welcome, Alex."), (LlmRole::User, "Hello")]);
+}
+
+#[tokio::test]
+async fn every_roleplay_reply_says_who_is_who_even_with_an_edited_preset() {
+    let f = fixture(vec![Script::Items(vec![chunk("ok"), finish("STOP")])]);
+    add_persona(&f.db, "Alex");
+    let nova = add_character(&f.db, "Nova", None, &[]);
+    let conv = ready_character(&f, &nova);
+    let mut preset = f.engine.resume(conv).unwrap().preset;
+    preset.blocks.retain(|b| b.block_type != crate::models::PromptBlockType::SystemPrompt);
+    f.db.with(|c| crate::repo::prompt_presets::upsert(c, &preset)).unwrap();
+
+    send(&f, conv, "*I hand you the map.*").await.0.unwrap();
+
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap();
+    assert!(system.contains("Roles: the user plays Alex; you play Nova."), "{system}");
+    assert!(system.contains("never write what Alex says, does, thinks or feels"), "{system}");
+}
+
+#[tokio::test]
+async fn assistant_chats_get_no_roleplay_rules() {
+    let f = fixture(vec![Script::Items(vec![chunk("ok"), finish("STOP")])]);
+    let conv = ready_assistant(&f);
+    send(&f, conv, "hi").await.0.unwrap();
+    assert!(!f.provider.requests()[0].system_instruction.clone().unwrap_or_default().contains("Roles:"));
 }
 
 #[tokio::test]
@@ -1049,6 +1071,11 @@ async fn trigger_word_groups_reply_in_the_order_names_are_mentioned_and_hear_eac
     let second = &f.provider.requests()[1];
     assert_eq!(second.history.last().unwrap().text, "Cara: Cara speaking.");
     assert_eq!(second.history.last().unwrap().role, LlmRole::Model);
+    // ...and is told it is now Alice's turn, by name - not a literal {{char}}.
+    let system = second.system_instruction.clone().unwrap();
+    assert!(system.starts_with("Write Alice's next reply"), "{system}");
+    assert!(system.contains("this reply is Alice's") && system.contains("Don't write lines or actions for Cara"), "{system}");
+    assert!(!system.contains("{{char}}"), "{system}");
 }
 
 #[tokio::test]
@@ -1156,7 +1183,7 @@ async fn continue_appends_to_the_same_reply_without_adding_an_alternate() {
     assert_eq!(reply.alternates[0].text, "The door creaks open slowly.");
     assert_eq!(reply.reasoning_text.as_deref(), Some("hm\n\nmore"));
 
-    // The model saw the reply, then the nudge as a trailing user turn.
+    // The model saw the reply, then the nudge as a trailing user turn marked as the app's, not the user's.
     let request = &f.provider.requests()[1];
     let tail: Vec<_> = request.history.iter().map(|m| (m.role, m.text.as_str())).collect();
     assert_eq!(
@@ -1164,10 +1191,30 @@ async fn continue_appends_to_the_same_reply_without_adding_an_alternate() {
         [
             (LlmRole::User, "I knock."),
             (LlmRole::Model, "The door creaks"),
-            (LlmRole::User, "[Continue your last message without repeating its original content.]"),
+            (LlmRole::User, "[System note: Continue your last message without repeating its original content.]"),
         ]
     );
-    assert!(reply.raw_prompt_text.as_deref().unwrap().contains("[Continue your last message"));
+    assert!(reply.raw_prompt_text.as_deref().unwrap().contains("[System note: Continue your last message"));
+    assert!(request.system_instruction.as_deref().unwrap().contains("you play Nova"), "the roles still hold");
+}
+
+#[tokio::test]
+async fn continuing_in_a_group_keeps_the_original_speaker() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Bob here"), finish("STOP")]),
+        Script::Items(vec![chunk("."), finish("STOP")]),
+    ]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::Manual, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+    send(&f, conv, "Bob?").await.0.unwrap();
+    f.engine.pick_speaker(conv, bob.id, Arc::new(VecSink::default())).await.unwrap();
+
+    continue_reply(&f, conv).await.0.unwrap();
+
+    let system = f.provider.requests()[1].system_instruction.clone().unwrap();
+    assert!(system.starts_with("Write Bob's next reply"), "{system}");
+    assert!(system.contains("this reply is Bob's"), "{system}");
 }
 
 #[tokio::test]
@@ -1283,12 +1330,13 @@ async fn impersonate_drafts_a_user_message_without_saving_anything() {
     let request = &f.provider.requests()[1];
     let last = request.history.last().unwrap();
     assert_eq!(last.role, LlmRole::User);
-    assert!(last.text.starts_with("[Write Alex's next message"), "{}", last.text);
-    assert!(last.text.contains("Don't write as Nova."));
+    assert!(last.text.starts_with("[System note: This time, write Alex's next message"), "{}", last.text);
+    assert!(last.text.contains("Don't write anything Nova says or does"), "{}", last.text);
     assert_eq!(request.history.len(), 3);
-    // The preset's own "write the character's reply" prompt is gone.
+    // Neither the preset's "write the character's reply" prompt nor the character-side roles remain.
     let system = request.system_instruction.clone().unwrap_or_default();
-    assert!(!system.contains(crate::prompting::defaults::DEFAULT_ROLEPLAY_SYSTEM_PROMPT), "{system}");
+    assert!(!system.contains("Write Nova's next reply"), "{system}");
+    assert!(!system.contains("Roles:"), "{system}");
 }
 
 #[tokio::test]
@@ -1301,7 +1349,7 @@ async fn impersonate_folds_the_instruction_into_a_trailing_user_message() {
     f.engine.impersonate(conv).await.unwrap();
     let request = &f.provider.requests()[0];
     assert_eq!(request.history.len(), 1, "no second user turn (providers reject two in a row)");
-    assert!(request.history[0].text.starts_with("Where were we?\n\n[Write the user's next message"));
+    assert!(request.history[0].text.starts_with("Where were we?\n\n[System note: This time, write User's next message"));
 }
 
 #[tokio::test]
@@ -1315,7 +1363,7 @@ async fn impersonate_in_a_group_names_the_other_characters() {
 
     f.engine.impersonate(conv).await.unwrap();
     let last = f.provider.requests()[0].history.last().unwrap().text.clone();
-    assert!(last.contains("Don't write as the other characters."), "{last}");
+    assert!(last.contains("Don't write anything Alice or Bob says or does"), "{last}");
 }
 
 #[tokio::test]
@@ -1450,9 +1498,10 @@ async fn a_roleplay_reply_fills_the_notebook_and_quest_log_and_tells_the_ui() {
     assert!(events.iter().any(|e| matches!(e, ChatEvent::StoryChanged { conversation_id } if *conversation_id == conv)));
     assert!(error_messages(&events).is_empty());
 
-    // The model was shown the exchange, not just the reply.
+    // The model was shown the exchange, not just the reply, with each message under its author's name.
     let ask = &f.provider.asked(NOTEBOOK_ASK)[0];
-    assert!(ask.contains("User: Where to?") && ask.contains("Reply: We set course."), "{ask}");
+    assert!(ask.contains("User (the player) wrote:\nWhere to?") && ask.contains("Nova replied:\nWe set course."), "{ask}");
+    assert!(ask.contains("the player is User, never one of the characters"), "{ask}");
     assert!(ask.contains("Characters present: Nova") && ask.contains("Nova:\n(none yet)"), "{ask}");
 }
 
@@ -1640,13 +1689,13 @@ async fn regenerating_and_continuing_extract_from_the_new_text() {
     let sink = Arc::new(VecSink::default());
     f.engine.swipe_next(conv, reply_id, sink.clone()).await.unwrap();
     wait_until("story extraction", || sink.events().iter().any(|e| matches!(e, ChatEvent::StoryChanged { .. }))).await;
-    assert!(f.provider.asked(QUEST_ASK)[1].contains("User: go\nReply: second"));
+    assert!(f.provider.asked(QUEST_ASK)[1].contains("User (the player) wrote:\ngo\n\nNova replied:\nsecond"));
 
     f.provider.answer("", " and more");
     let sink = Arc::new(VecSink::default());
     f.engine.continue_message(conv, sink.clone()).await.unwrap();
     wait_until("story extraction", || sink.events().iter().any(|e| matches!(e, ChatEvent::StoryChanged { .. }))).await;
-    assert!(f.provider.asked(QUEST_ASK)[2].contains("Reply: second and more"), "the whole continued reply");
+    assert!(f.provider.asked(QUEST_ASK)[2].contains("Nova replied:\nsecond and more"), "the whole continued reply");
 }
 
 // ---- PowerShell tool ----

@@ -40,7 +40,9 @@ use crate::powershell::exec::{CommandRunner, ExecError, ExecutionResult, Pwsh};
 use crate::powershell::filter::ToolCallFilter;
 use crate::powershell::settings as tool_settings;
 use crate::prompting::powershell_tool::{self, PowerShellToolCallRequest, ToolResult};
-use crate::prompting::{self, emotion_tag, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext};
+use crate::prompting::{
+    self, emotion_tag, roles, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext,
+};
 use crate::providers::{LlmGeneratedImage, LlmProviderRegistry, ProviderError};
 use crate::repo::{characters, conversations, group_chats, notebook, quest_log, user_memories};
 use crate::settings;
@@ -135,16 +137,21 @@ impl Drop for ActiveGuard<'_> {
 struct AssembleOptions<'a> {
     /// Replaces the conversation's own preset.
     preset: Option<&'a PromptPreset>,
-    /// Whose reply this is; a speaker with an expression pack is asked to tag its emotion.
+    /// Whose reply this is: what `{{char}}` means, and who the roleplay rules say the model plays.
     speaker: Option<&'a Character>,
-    /// Ask for a `[time-skip: ...]` tag (only where the reply's tag is stripped again).
-    time_skip: bool,
+    /// A whole new reply, whose trailing tags are stripped again: asks a speaker with an expression
+    /// pack for an `[emotion: ...]` tag and, while a world clock runs, for a `[time-skip: ...]` tag.
+    reply_tags: bool,
     /// Offer the PowerShell tool (Assistant chats only).
     tools: bool,
+    /// Impersonate: the model writes the user's message, so the character-side roleplay rules are
+    /// left out (its own trailing instruction says who is who).
+    as_user: bool,
 }
 
-/// The nudge Continue appends as a trailing user turn, so the model extends rather than restarts.
-const CONTINUE_NUDGE: &str = "[Continue your last message without repeating its original content.]";
+/// The nudge Continue appends as a trailing user turn (a system note), so the model extends rather
+/// than restarts.
+const CONTINUE_NUDGE: &str = "Continue your last message without repeating its original content.";
 
 /// An [`ExecutionResult`] as the text the model (and the tool bubble) gets.
 fn format_execution(result: &ExecutionResult) -> String {
@@ -564,9 +571,10 @@ impl ChatEngine {
         }
 
         let mut history = ctx.messages.clone();
-        history.push(ChatMessage::new(conversation_id, MessageRole::User, CONTINUE_NUDGE));
+        history.push(ChatMessage::new(conversation_id, MessageRole::User, roles::system_note(CONTINUE_NUDGE)));
         // The world clock and emotion tags belong to whole replies; a continuation is neither.
-        let request = self.assemble(&ctx, &history, AssembleOptions::default())?;
+        let speaker = target.speaker_character_id.and_then(|id| ctx.characters.iter().find(|c| c.id == id)).cloned();
+        let request = self.assemble(&ctx, &history, AssembleOptions { speaker: speaker.as_ref(), ..Default::default() })?;
         let raw_prompt = format_prompt(&request);
 
         sink.emit(ChatEvent::Continuing { message_id: target.id });
@@ -594,16 +602,17 @@ impl ChatEngine {
         match end {
             StreamEnd::Failed(error) => self.emit_failure(&error, &sink),
             // The clock is not advanced again (same exchange), but the added text may still matter.
-            StreamEnd::Completed => self.spawn_enrichment(&ctx, last_user_text(&ctx.messages), reply_text, &sink),
+            StreamEnd::Completed => {
+                self.spawn_enrichment(&ctx, speaker.as_ref(), last_user_text(&ctx.messages), reply_text, &sink)
+            }
             StreamEnd::Cancelled | StreamEnd::ToolCall(_) => {}
         }
         Ok(())
     }
 
     /// Drafts the user's next message for them to review - never sent automatically. The model is
-    /// asked, in a trailing turn (Gemini rejects histories ending on a model turn, and a
-    /// system-prompt nudge alone lost to strong character cards), to write in the user's voice.
-    /// Returns `None` when stopped.
+    /// asked, in a trailing turn (Gemini rejects histories ending on a model turn), to write in the
+    /// user's voice; see [`roles::impersonation_request`]. Returns `None` when stopped.
     pub async fn impersonate(&self, conversation_id: Uuid) -> Result<Option<String>> {
         let (token, _guard) = self.claim(conversation_id)?;
         let ctx = self.db().with(|c| load_reply_context(c, conversation_id))?;
@@ -611,15 +620,7 @@ impl ChatEngine {
             return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
         }
 
-        let user_name = ctx.persona.as_ref().map_or("the user", |p| p.name.as_str());
-        let other_party = match ctx.characters.as_slice() {
-            [] => "the assistant",
-            [only] => only.name.as_str(),
-            _ => "the other characters",
-        };
-        let instruction = format!(
-            "[Write {user_name}'s next message in this conversation, using the chat history so far as a guideline for their writing style. Don't write as {other_party}. Reply with only the message text, nothing else.]"
-        );
+        let instruction = roles::impersonation_request(roles::user_name(ctx.persona.as_ref()), &ctx.characters);
 
         let mut history = ctx.messages.clone();
         match history.last_mut() {
@@ -636,7 +637,8 @@ impl ChatEngine {
         // The preset's own system prompt ("Write {{char}}'s next reply...") would fight the instruction.
         let mut preset = ctx.preset.clone();
         preset.blocks.retain(|b| b.block_type != PromptBlockType::SystemPrompt);
-        let request = self.assemble(&ctx, &history, AssembleOptions { preset: Some(&preset), ..Default::default() })?;
+        let request =
+            self.assemble(&ctx, &history, AssembleOptions { preset: Some(&preset), as_user: true, ..Default::default() })?;
 
         let provider = self.inner.providers.get(&ctx.conversation.provider_id).map_err(|e| Error::Other(user_message(&e)))?;
         let outcome = tokio::select! {
@@ -729,7 +731,8 @@ impl ChatEngine {
     // ------------------------------------------------------------------ generation
 
     /// Builds the provider request for a turn: assembled prompt plus the per-turn instructions
-    /// (emotion tag for characters with an expression pack, time-skip tag while a world clock runs).
+    /// (roleplay rules on who is who, emotion tag for characters with an expression pack, time-skip
+    /// tag while a world clock runs).
     fn assemble(&self, ctx: &ReplyContext, history: &[ChatMessage], options: AssembleOptions<'_>) -> Result<LlmRequest> {
         let conversation = &ctx.conversation;
         let (memories, notebook_entries, quests) = self.db().with(|c| {
@@ -755,20 +758,30 @@ impl ChatEngine {
         if let Some(persona) = &ctx.persona {
             pctx = pctx.with_persona(persona);
         }
+        if let Some(speaker) = options.speaker {
+            pctx = pctx.with_speaker(speaker);
+        }
         if let Some(text) = world_text.as_deref() {
             pctx = pctx.with_world_state_text(text);
         }
 
         let mut request = prompting::assemble(&pctx, &KeywordWorldInfoScanner);
 
-        if let Some(character) = options.speaker.filter(|c| !c.expressions.is_empty()) {
+        // Not left to the preset: its system prompt is the user's to rewrite, and these must hold whatever it says.
+        if conversation.mode == ConversationMode::Roleplay && !options.as_user {
+            let user = roles::user_name(ctx.persona.as_ref());
+            if let Some(rules) = roles::reply_rules(user, &ctx.characters, options.speaker) {
+                append_instruction(&mut request, &rules);
+            }
+        }
+        if let Some(character) = options.speaker.filter(|c| options.reply_tags && !c.expressions.is_empty()) {
             let keys: Vec<String> = character.expressions.iter().map(|e| e.emotion.clone()).collect();
             append_instruction(&mut request, &emotion_tag::build_instruction(&character.name, &keys));
         }
         if options.tools && conversation.mode == ConversationMode::Assistant {
             append_instruction(&mut request, powershell_tool::build_instruction());
         }
-        if options.time_skip && conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_some() {
+        if options.reply_tags && conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_some() {
             append_instruction(&mut request, time_skip_tag::build_instruction());
         }
         Ok(request)
@@ -958,7 +971,7 @@ impl ChatEngine {
         let request = self.assemble(
             &ctx,
             &ctx.messages,
-            AssembleOptions { speaker: speaker.as_ref(), time_skip: true, tools, ..Default::default() },
+            AssembleOptions { speaker: speaker.as_ref(), reply_tags: true, tools, ..Default::default() },
         )?;
         message.raw_prompt_text = Some(format_prompt(&request));
         self.update_conversation(conversation_id, |c| c.updated_at = Utc::now())?;
@@ -1002,7 +1015,7 @@ impl ChatEngine {
             StreamEnd::Cancelled => Ok(Turn::Done(false)),
             StreamEnd::ToolCall(call) => Ok(Turn::ToolCall(call)),
             StreamEnd::Completed => {
-                self.spawn_enrichment(&ctx, last_user_text(&ctx.messages), message.text.clone(), sink);
+                self.spawn_enrichment(&ctx, speaker.as_ref(), last_user_text(&ctx.messages), message.text.clone(), sink);
                 // Only the conversation's very first exchange gets auto-titled.
                 if ctx.conversation.mode == ConversationMode::Assistant && ctx.messages.len() == 1 {
                     let user_text = ctx.messages.last().map(|m| m.text.clone()).unwrap_or_default();
@@ -1141,7 +1154,7 @@ impl ChatEngine {
         let request = self.assemble(
             &ctx,
             &ctx.messages[..position],
-            AssembleOptions { speaker: speaker.as_ref(), time_skip: true, ..Default::default() },
+            AssembleOptions { speaker: speaker.as_ref(), reply_tags: true, ..Default::default() },
         )?;
         let raw_prompt = format_prompt(&request);
 
@@ -1174,7 +1187,7 @@ impl ChatEngine {
         match end {
             StreamEnd::Failed(error) => self.emit_failure(&error, &sink),
             StreamEnd::Completed => {
-                self.spawn_enrichment(&ctx, last_user_text(&ctx.messages[..position]), reply_text, &sink);
+                self.spawn_enrichment(&ctx, speaker.as_ref(), last_user_text(&ctx.messages[..position]), reply_text, &sink);
             }
             StreamEnd::Cancelled | StreamEnd::ToolCall(_) => {}
         }
@@ -1183,13 +1196,26 @@ impl ChatEngine {
 
     /// Fire-and-forget follow-up requests once a reply has completed: Assistant chats learn facts
     /// about the user; roleplays update the characters' notebooks and the quest log (and tell the UI
-    /// when they are done). Failures are dropped - the reply itself already succeeded.
-    fn spawn_enrichment(&self, ctx: &ReplyContext, user_text: String, reply_text: String, sink: &Arc<dyn EventSink>) {
+    /// when they are done). `speaker` is who wrote the reply. Failures are dropped - the reply itself
+    /// already succeeded.
+    fn spawn_enrichment(
+        &self,
+        ctx: &ReplyContext,
+        speaker: Option<&Character>,
+        user_text: String,
+        reply_text: String,
+        sink: &Arc<dyn EventSink>,
+    ) {
         if !self.inner.extraction.load(Ordering::Relaxed) || user_text.trim().is_empty() {
             return;
         }
         let engine = self.clone();
         let (conversation, characters) = (ctx.conversation.clone(), ctx.characters.clone());
+        let user_name = roles::user_name(ctx.persona.as_ref()).to_string();
+        let reply_name = match (speaker, ctx.characters.as_slice()) {
+            (Some(me), _) | (None, [me]) => me.name.clone(),
+            _ => "The character".to_string(),
+        };
         let sink = sink.clone();
         tokio::spawn(async move {
             let extractor = Extractor {
@@ -1198,7 +1224,8 @@ impl ChatEngine {
                 provider_id: &conversation.provider_id,
                 model: &conversation.model,
             };
-            let exchange = Exchange { user_text: &user_text, reply_text: &reply_text };
+            let exchange =
+                Exchange { user_name: &user_name, user_text: &user_text, reply_name: &reply_name, reply_text: &reply_text };
             match conversation.mode {
                 ConversationMode::Assistant => {
                     report("memory extraction", extractor.memories(&exchange).await);
