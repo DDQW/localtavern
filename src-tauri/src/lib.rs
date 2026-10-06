@@ -130,6 +130,8 @@ pub fn run() {
             commands::save_gemini_options,
             commands::get_ollama_options,
             commands::save_ollama_options,
+            commands::get_default_personas,
+            commands::save_default_personas,
             commands::store_image,
             commands::open_group,
             commands::pick_speaker,

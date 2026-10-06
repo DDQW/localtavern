@@ -252,6 +252,88 @@ fn new_chat_in_a_character_scope_stays_with_that_character() {
 }
 
 #[test]
+fn each_mode_uses_its_own_persona_and_opening_that_mode_selects_it() {
+    let f = fixture(vec![]);
+    let player = Persona {
+        name: "Player".into(),
+        description: "A daring adventurer.".into(),
+        is_default: true,
+        ..Default::default()
+    };
+    let coder = Persona { name: "Coder".into(), description: "A terse engineer.".into(), ..Default::default() };
+    f.db
+        .with(|c| {
+            persona_repo::upsert(c, &player)?;
+            persona_repo::upsert(c, &coder)?;
+            settings::save_default_personas(
+                c,
+                &settings::DefaultPersonas { roleplay_persona_id: Some(player.id), assistant_persona_id: Some(coder.id) },
+            )
+        })
+        .unwrap();
+
+    let nova = add_character(&f.db, "Nova", Some("Hello {{user}}."), &[]);
+    let roleplay = f.engine.open_character(nova.id, false).unwrap();
+    assert_eq!(roleplay.conversation.persona_id, Some(player.id));
+    assert_eq!(roleplay.messages[0].text, "Hello Player.");
+
+    let assistant = f.engine.open_assistant(false).unwrap();
+    assert_eq!(assistant.conversation.mode, ConversationMode::Assistant);
+    assert_eq!(assistant.conversation.character_id, None, "a persona is not a character");
+    assert_eq!(assistant.conversation.persona_id, Some(coder.id));
+    assert_eq!(assistant.persona.as_ref().unwrap().description, "A terse engineer.");
+
+    // The nav selects the mode's persona even after the header was switched.
+    f.engine.set_persona(roleplay.conversation.id, Some(coder.id)).unwrap();
+    let again = f.engine.open_last_roleplay().unwrap().unwrap();
+    assert_eq!(again.conversation.id, roleplay.conversation.id);
+    assert_eq!(again.conversation.persona_id, Some(player.id));
+
+    f.engine.set_persona(assistant.conversation.id, Some(player.id)).unwrap();
+    let assistant_again = f.engine.open_assistant(false).unwrap();
+    assert_eq!(assistant_again.conversation.id, assistant.conversation.id);
+    assert_eq!(assistant_again.conversation.persona_id, Some(coder.id));
+
+    let fresh = f.engine.new_chat_like(assistant.conversation.id).unwrap();
+    assert_eq!(fresh.conversation.mode, ConversationMode::Assistant);
+    assert_eq!(fresh.conversation.persona_id, Some(coder.id));
+    assert_eq!(fresh.conversation.character_id, None);
+}
+
+#[test]
+fn without_a_mode_persona_the_global_default_is_used_and_a_per_chat_choice_is_kept() {
+    let f = fixture(vec![]);
+    let global = add_persona(&f.db, "Alex");
+    let nova = add_character(&f.db, "Nova", None, &[]);
+    let roleplay = f.engine.open_character(nova.id, false).unwrap();
+    assert_eq!(roleplay.conversation.persona_id, Some(global.id));
+
+    let other = Persona { name: "Other".into(), ..Default::default() };
+    f.db.with(|c| persona_repo::upsert(c, &other)).unwrap();
+    f.engine.set_persona(roleplay.conversation.id, Some(other.id)).unwrap();
+    assert_eq!(f.engine.open_last_roleplay().unwrap().unwrap().conversation.persona_id, Some(other.id));
+    assert_eq!(f.engine.open_character(nova.id, false).unwrap().conversation.persona_id, Some(other.id));
+}
+
+#[test]
+fn a_deleted_mode_persona_falls_back_to_the_global_default() {
+    let f = fixture(vec![]);
+    let global = add_persona(&f.db, "Alex");
+    let gone = Persona { name: "Gone".into(), ..Default::default() };
+    f.db
+        .with(|c| {
+            persona_repo::upsert(c, &gone)?;
+            settings::save_default_personas(
+                c,
+                &settings::DefaultPersonas { roleplay_persona_id: None, assistant_persona_id: Some(gone.id) },
+            )?;
+            persona_repo::delete(c, gone.id)
+        })
+        .unwrap();
+    assert_eq!(f.engine.open_assistant(false).unwrap().conversation.persona_id, Some(global.id));
+}
+
+#[test]
 fn new_conversations_default_to_the_last_selected_provider_and_model() {
     let f = fixture(vec![]);
     f.db.with(|c| {
@@ -784,6 +866,29 @@ async fn the_assistant_prompt_and_search_override_reach_the_request() {
     let request = &f.provider.requests()[0];
     assert!(request.system_instruction.clone().unwrap().contains("Answer in French."));
     assert_eq!(request.enable_web_search, Some(true));
+}
+
+#[tokio::test]
+async fn the_assistant_persona_reaches_the_request_and_the_roleplay_persona_does_not() {
+    let f = fixture(vec![Script::Items(vec![chunk("ok"), finish("STOP")])]);
+    let coder = Persona { name: "Coder".into(), description: "Answers in one sentence.".into(), ..Default::default() };
+    f.db
+        .with(|c| {
+            persona_repo::upsert(c, &coder)?;
+            settings::save_default_personas(
+                c,
+                &settings::DefaultPersonas { roleplay_persona_id: None, assistant_persona_id: Some(coder.id) },
+            )
+        })
+        .unwrap();
+    let conv = f.engine.open_assistant(false).unwrap().conversation.id;
+    f.engine.set_model(conv, "fake", "fake-model").unwrap();
+
+    send(&f, conv, "hi").await.0.unwrap();
+
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap();
+    assert!(system.contains("Coder's persona: Answers in one sentence."));
+    assert!(!system.contains("fictional roleplay"));
 }
 
 #[test]

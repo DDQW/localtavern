@@ -86,6 +86,40 @@ pub fn get_most_recent_by_character(conn: &Connection, character_id: Uuid) -> Re
     most_recent_where(conn, "CharacterId = ?1", &character_id.to_string())
 }
 
+/// Conversations with this character in one mode, newest first. Roleplay and Assistant can share a
+/// character id without sharing a thread: each listing stays inside its own mode.
+pub fn get_by_character_and_mode(
+    conn: &Connection,
+    character_id: Uuid,
+    mode: ConversationMode,
+) -> Result<Vec<Conversation>> {
+    let mut stmt =
+        conn.prepare("SELECT * FROM Conversations WHERE CharacterId = ?1 AND Mode = ?2 ORDER BY UpdatedAt DESC;")?;
+    let list = stmt
+        .query_map(params![character_id.to_string(), mode.to_i32()], map_conversation)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(list)
+}
+
+pub fn get_most_recent_by_character_and_mode(
+    conn: &Connection,
+    character_id: Uuid,
+    mode: ConversationMode,
+) -> Result<Option<Conversation>> {
+    Ok(get_by_character_and_mode(conn, character_id, mode)?.into_iter().next())
+}
+
+/// Assistant chats that aren't bound to a character. The History picker of a plain Assistant chat
+/// uses this so it doesn't offer a character's assistant threads.
+pub fn get_assistants_without_character(conn: &Connection) -> Result<Vec<Conversation>> {
+    let mut stmt =
+        conn.prepare("SELECT * FROM Conversations WHERE Mode = ?1 AND CharacterId IS NULL ORDER BY UpdatedAt DESC;")?;
+    let list = stmt
+        .query_map(params![ConversationMode::Assistant.to_i32()], map_conversation)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(list)
+}
+
 pub fn get_most_recent_by_group_chat(conn: &Connection, group_chat_id: Uuid) -> Result<Option<Conversation>> {
     most_recent_where(conn, "GroupChatId = ?1", &group_chat_id.to_string())
 }
@@ -322,15 +356,34 @@ mod tests {
         let new = Conversation { character_id: Some(ch), mode: ConversationMode::Roleplay, ..Default::default() };
         upsert(&conn, &old).unwrap();
         upsert(&conn, &new).unwrap();
-        upsert(&conn, &Conversation::default()).unwrap(); // assistant, no character
+        let plain = Conversation::default(); // assistant, no character
+        upsert(&conn, &plain).unwrap();
+        let assistant_with_character = Conversation {
+            character_id: Some(ch),
+            mode: ConversationMode::Assistant,
+            updated_at: Utc::now() + Duration::minutes(1),
+            ..Default::default()
+        };
+        upsert(&conn, &assistant_with_character).unwrap();
 
-        assert_eq!(get_most_recent_by_character(&conn, ch).unwrap().unwrap().id, new.id);
-        assert_eq!(get_by_character(&conn, ch).unwrap().iter().map(|c| c.id).collect::<Vec<_>>(), [new.id, old.id]);
+        assert_eq!(get_most_recent_by_character(&conn, ch).unwrap().unwrap().id, assistant_with_character.id);
+        assert_eq!(
+            get_most_recent_by_character_and_mode(&conn, ch, ConversationMode::Roleplay).unwrap().unwrap().id,
+            new.id,
+            "an assistant chat with the same character is not that character's roleplay"
+        );
+        assert_eq!(
+            get_by_character_and_mode(&conn, ch, ConversationMode::Assistant).unwrap().iter().map(|c| c.id).collect::<Vec<_>>(),
+            [assistant_with_character.id]
+        );
+        assert_eq!(get_by_character(&conn, ch).unwrap().len(), 3);
         assert_eq!(get_by_mode(&conn, ConversationMode::Roleplay).unwrap().len(), 2);
-        assert_eq!(get_by_mode(&conn, ConversationMode::Assistant).unwrap().len(), 1);
+        assert_eq!(get_by_mode(&conn, ConversationMode::Assistant).unwrap().len(), 2);
+        assert_eq!(get_assistants_without_character(&conn).unwrap().iter().map(|c| c.id).collect::<Vec<_>>(), [plain.id]);
         assert_eq!(get_most_recent_roleplay(&conn).unwrap().unwrap().id, new.id);
+        assert_eq!(get_most_recent_assistant(&conn).unwrap().unwrap().id, assistant_with_character.id);
         assert!(get_most_recent_by_group_chat(&conn, Uuid::new_v4()).unwrap().is_none());
-        assert_eq!(get_all(&conn).unwrap().len(), 3);
+        assert_eq!(get_all(&conn).unwrap().len(), 4);
     }
 
     #[test]

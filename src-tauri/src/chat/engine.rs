@@ -27,14 +27,14 @@ use super::reply::{
     advance_world_state, append_instruction, check_blocked, extract_matched_emotion, format_prompt, random_unit,
     user_message,
 };
-use super::session::{build_session, default_persona, load_reply_context, ChatSession, ReplyContext};
+use super::session::{self, build_session, load_reply_context, ChatSession, ReplyContext};
 use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::group_chats::strategy_for;
 use crate::llm::{LlmMessage, LlmRequest, LlmRole};
 use crate::models::{
-    Character, ChatMessage, Conversation, ConversationMode, LlmUsage, MessageAttachment, MessageRole, PromptBlockType,
-    PromptPreset, WorldState,
+    Character, ChatMessage, Conversation, ConversationMode, LlmUsage, MessageAttachment, MessageRole, Persona,
+    PromptBlockType, PromptPreset, WorldState,
 };
 use crate::powershell::exec::{CommandRunner, ExecError, ExecutionResult, Pwsh};
 use crate::powershell::filter::ToolCallFilter;
@@ -180,6 +180,26 @@ fn nonempty(s: String) -> Option<String> {
     }
 }
 
+/// The character's opening line, with `{{user}}` / `{{char}}` filled in. No-op when the card has none.
+fn push_greeting(
+    conn: &Connection,
+    conversation_id: Uuid,
+    character: &Character,
+    persona: Option<&Persona>,
+) -> Result<()> {
+    let Some(first) = character.first_messages.first() else {
+        return Ok(());
+    };
+    let mut greeting = ChatMessage::new(
+        conversation_id,
+        MessageRole::Character,
+        prompting::apply_macros(first, persona, std::slice::from_ref(character)),
+    );
+    greeting.speaker_character_id = Some(character.id);
+    greeting.finalize_generation();
+    conversations::add_message(conn, &greeting)
+}
+
 impl ChatEngine {
     pub fn new(db: Db, providers: Arc<LlmProviderRegistry>, images_dir: PathBuf) -> Self {
         Self { inner: Arc::new(Inner { db, providers, images_dir, active: Mutex::new(HashMap::new()),
@@ -217,21 +237,22 @@ impl ChatEngine {
         })
     }
 
-    /// The dedicated Assistant view: resumes your most recent Assistant-mode conversation, or starts
-    /// a fresh one.
+    /// The Assistant view: resumes the latest Assistant chat, or starts one. When an assistant persona
+    /// is configured, the chat you land in (new or resumed) is switched to it.
     pub fn open_assistant(&self, force_new: bool) -> Result<ChatSession> {
         let id = self.db().with(|c| {
             if !force_new {
                 if let Some(existing) = conversations::get_most_recent_assistant(c)? {
+                    session::apply_mode_persona(c, existing.id, ConversationMode::Assistant)?;
                     return Ok(existing.id);
                 }
             }
-            let persona = default_persona(c)?;
+            let persona = session::persona_for_mode(c, ConversationMode::Assistant)?;
             let (provider_id, model) = self.default_provider_and_model(c)?;
             let conversation = Conversation {
                 title: "Assistant chat".into(),
                 mode: ConversationMode::Assistant,
-                persona_id: persona.map(|p| p.id),
+                persona_id: persona.as_ref().map(|p| p.id),
                 provider_id,
                 model,
                 ..Default::default()
@@ -242,17 +263,20 @@ impl ChatEngine {
         self.session(id)
     }
 
-    /// A 1:1 roleplay: resumes the latest conversation with this character, or starts one with the
-    /// character's greeting already in place.
+    /// A 1:1 roleplay: resumes the latest roleplay with this character, or starts one with the
+    /// character's greeting already in place. Assistant chats bound to the same character are ignored.
+    /// A new roleplay starts as the roleplay persona; resuming leaves a per-chat persona choice alone.
     pub fn open_character(&self, character_id: Uuid, force_new: bool) -> Result<ChatSession> {
         let id = self.db().with(|c| {
             if !force_new {
-                if let Some(existing) = conversations::get_most_recent_by_character(c, character_id)? {
+                if let Some(existing) =
+                    conversations::get_most_recent_by_character_and_mode(c, character_id, ConversationMode::Roleplay)?
+                {
                     return Ok(existing.id);
                 }
             }
             let character = characters::get(c, character_id)?.ok_or_else(|| Error::Other("Character not found.".into()))?;
-            let persona = default_persona(c)?;
+            let persona = session::persona_for_mode(c, ConversationMode::Roleplay)?;
             let (provider_id, model) = self.default_provider_and_model(c)?;
             let conversation = Conversation {
                 title: format!("Chat with {}", character.name),
@@ -264,28 +288,26 @@ impl ChatEngine {
                 ..Default::default()
             };
             conversations::upsert(c, &conversation)?;
-
-            if let Some(first) = character.first_messages.first() {
-                let mut greeting = ChatMessage::new(
-                    conversation.id,
-                    MessageRole::Character,
-                    prompting::apply_macros(first, persona.as_ref(), std::slice::from_ref(&character)),
-                );
-                greeting.speaker_character_id = Some(character.id);
-                greeting.finalize_generation();
-                conversations::add_message(c, &greeting)?;
-            }
+            push_greeting(c, conversation.id, &character, persona.as_ref())?;
             Ok(conversation.id)
         })?;
         self.session(id)
     }
 
-    /// The most recently active roleplay (1:1 or group), if there is one - what the "Roleplay" nav item opens.
+    /// The most recently active roleplay (1:1 or group), if there is one. When a roleplay persona is
+    /// configured, that chat is switched to it — this is what the Roleplay nav item opens.
     pub fn open_last_roleplay(&self) -> Result<Option<ChatSession>> {
-        match self.db().with(conversations::get_most_recent_roleplay)? {
-            Some(conversation) => self.session(conversation.id).map(Some),
-            None => Ok(None),
-        }
+        let Some(id) = self.db().with(|c| {
+            let Some(conversation) = conversations::get_most_recent_roleplay(c)? else {
+                return Ok(None);
+            };
+            session::apply_mode_persona(c, conversation.id, ConversationMode::Roleplay)?;
+            Ok(Some(conversation.id))
+        })?
+        else {
+            return Ok(None);
+        };
+        self.session(id).map(Some)
     }
 
     /// A group chat: resumes the latest conversation with this group, or starts one.
@@ -297,7 +319,7 @@ impl ChatEngine {
                 }
             }
             let group = group_chats::get(c, group_id)?.ok_or_else(|| Error::Other("Group chat not found.".into()))?;
-            let persona = default_persona(c)?;
+            let persona = session::persona_for_mode(c, ConversationMode::Roleplay)?;
             let (provider_id, model) = self.default_provider_and_model(c)?;
             let conversation = Conversation {
                 title: group.name.clone(),
@@ -318,18 +340,24 @@ impl ChatEngine {
         self.session(conversation_id)
     }
 
-    /// "New chat" in whatever scope is currently open (the Assistant, or the same character).
+    /// "New chat" stays in the mode of the chat that's open. Mode is what decides, not whether a
+    /// character happens to be attached — an assistant chat must not turn into a roleplay.
     pub fn new_chat_like(&self, conversation_id: Uuid) -> Result<ChatSession> {
         let conversation = self
             .db()
             .with(|c| conversations::get(c, conversation_id))?
             .ok_or_else(|| Error::Other("Conversation not found.".into()))?;
-        if let Some(character_id) = conversation.character_id {
-            self.open_character(character_id, true)
-        } else if let Some(group_id) = conversation.group_chat_id {
-            self.open_group(group_id, true)
-        } else {
-            self.open_assistant(true)
+        match conversation.mode {
+            ConversationMode::Assistant => self.open_assistant(true),
+            ConversationMode::Roleplay => {
+                if let Some(character_id) = conversation.character_id {
+                    self.open_character(character_id, true)
+                } else if let Some(group_id) = conversation.group_chat_id {
+                    self.open_group(group_id, true)
+                } else {
+                    Err(Error::Other("This roleplay isn't attached to a character or a group.".into()))
+                }
+            }
         }
     }
 

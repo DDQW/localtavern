@@ -1,7 +1,9 @@
 <script lang="ts">
   import { api, errorText } from "$lib/api";
   import type {
+    DefaultPersonas,
     GeminiOptions,
+    Persona,
     OllamaOptions,
     PowerShellOptions,
     ProviderInfo,
@@ -25,6 +27,8 @@
   let powershell = $state<PowerShellOptions | null>(null);
   let newPattern = $state("");
   let memories = $state<UserMemory[]>([]);
+  let personas = $state<Persona[]>([]);
+  let defaults = $state<DefaultPersonas>({ roleplayPersonaId: null, assistantPersonaId: null });
 
   /** What to know before signing in with a subscription (from the original app). */
   const SUBSCRIPTION_NOTES: Record<string, string> = {
@@ -66,6 +70,12 @@
         ollama = await api.getOllamaOptions();
         powershell = await api.getPowerShellOptions();
         memories = await api.listMemories();
+        personas = await api.listPersonas();
+        const loaded = await api.getDefaultPersonas();
+        const ids = new Set(personas.map((p) => p.id));
+        if (loaded.roleplayPersonaId && !ids.has(loaded.roleplayPersonaId)) loaded.roleplayPersonaId = null;
+        if (loaded.assistantPersonaId && !ids.has(loaded.assistantPersonaId)) loaded.assistantPersonaId = null;
+        defaults = loaded;
       } catch (e) {
         error = errorText(e);
       }
@@ -135,6 +145,22 @@
       return session.email ? `Signed in as ${session.email}` : "Signed in";
     }
     return provider.hasKey ? "Key saved" : "No key";
+  }
+
+  async function setDefault(which: "roleplay" | "assistant", id: string) {
+    const next: DefaultPersonas = {
+      roleplayPersonaId: which === "roleplay" ? id || null : defaults.roleplayPersonaId,
+      assistantPersonaId: which === "assistant" ? id || null : defaults.assistantPersonaId,
+    };
+    const previous = { ...defaults };
+    defaults = next;
+    try {
+      await api.saveDefaultPersonas(next);
+      status.defaults = "";
+    } catch (e) {
+      defaults = previous;
+      status.defaults = errorText(e);
+    }
   }
 
   async function savePowerShell() {
@@ -221,6 +247,34 @@
   {#if error}<p class="err">{error}</p>{/if}
 
   <div class="stack">
+    <article class="card block">
+      <h2>Default personas</h2>
+      <p class="muted small">
+        A persona is who you are in a chat. Roleplay and Assistant can each use a different one, so the model sees a different name and description and can react very differently. Opening that section selects its persona for the chat you land in. You can still switch the current chat from its header. None uses the persona marked default.
+      </p>
+      <div class="defaults">
+        <label class="field">
+          Roleplay
+          <select value={defaults.roleplayPersonaId ?? ""} onchange={(e) => setDefault("roleplay", e.currentTarget.value)}>
+            <option value="">None — the default persona</option>
+            {#each personas as persona (persona.id)}
+              <option value={persona.id}>{persona.name}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="field">
+          Assistant
+          <select value={defaults.assistantPersonaId ?? ""} onchange={(e) => setDefault("assistant", e.currentTarget.value)}>
+            <option value="">None — the default persona</option>
+            {#each personas as persona (persona.id)}
+              <option value={persona.id}>{persona.name}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
+      {#if status.defaults}<p class="err small" role="alert">{status.defaults}</p>{/if}
+    </article>
+
     {#each providers as provider (provider.id)}
       <article class="card block">
         <div class="titleline">
@@ -465,10 +519,24 @@
   }
 
   .safety,
-  .ollama {
+  .ollama,
+  .defaults {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     gap: 10px;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .field select {
+    color: var(--text);
+    font-size: 14px;
   }
 
   code {

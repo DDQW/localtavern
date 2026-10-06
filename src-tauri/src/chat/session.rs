@@ -62,6 +62,36 @@ pub fn default_persona(conn: &Connection) -> Result<Option<Persona>> {
     Ok(all.iter().find(|p| p.is_default).cloned().or_else(|| all.into_iter().next()))
 }
 
+/// The persona a new chat in `mode` starts as. A mode default wins when that persona still exists;
+/// otherwise the global default (the one marked default, or the first persona).
+pub fn persona_for_mode(conn: &Connection, mode: ConversationMode) -> Result<Option<Persona>> {
+    if let Some(id) = settings::default_persona_for_mode(conn, mode)? {
+        if let Some(persona) = personas::get(conn, id)? {
+            return Ok(Some(persona));
+        }
+    }
+    default_persona(conn)
+}
+
+/// Selects the mode's default persona on an existing chat. No-op when that mode has no default, or
+/// the persona was deleted, so a per-chat choice is left alone until a default is actually set.
+pub fn apply_mode_persona(conn: &Connection, conversation_id: Uuid, mode: ConversationMode) -> Result<()> {
+    let Some(id) = settings::default_persona_for_mode(conn, mode)? else {
+        return Ok(());
+    };
+    if personas::get(conn, id)?.is_none() {
+        return Ok(());
+    }
+    let Some(mut conversation) = conversations::get(conn, conversation_id)? else {
+        return Ok(());
+    };
+    if conversation.persona_id == Some(id) {
+        return Ok(());
+    }
+    conversation.persona_id = Some(id);
+    conversations::upsert(conn, &conversation)
+}
+
 pub fn load_reply_context(conn: &Connection, conversation_id: Uuid) -> Result<ReplyContext> {
     let conversation = conversations::get(conn, conversation_id)?
         .ok_or_else(|| Error::Other("Conversation not found.".into()))?;
@@ -100,12 +130,22 @@ pub fn load_reply_context(conn: &Connection, conversation_id: Uuid) -> Result<Re
 pub fn build_session(conn: &Connection, provider_ids: &[String], conversation_id: Uuid) -> Result<ChatSession> {
     let ctx = load_reply_context(conn, conversation_id)?;
 
-    let scope = if let Some(id) = ctx.conversation.character_id {
-        conversations::get_by_character(conn, id)?
-    } else if let Some(id) = ctx.conversation.group_chat_id {
-        conversations::get_by_group_chat(conn, id)?
-    } else {
-        conversations::get_by_mode(conn, ConversationMode::Assistant)?
+    // History stays inside the conversation's mode. An assistant bound to a character must not list
+    // that character's roleplays, and a plain assistant chat must not list character-bound ones.
+    let scope = match ctx.conversation.mode {
+        ConversationMode::Assistant => match ctx.conversation.character_id {
+            Some(id) => conversations::get_by_character_and_mode(conn, id, ConversationMode::Assistant)?,
+            None => conversations::get_assistants_without_character(conn)?,
+        },
+        ConversationMode::Roleplay => {
+            if let Some(id) = ctx.conversation.character_id {
+                conversations::get_by_character_and_mode(conn, id, ConversationMode::Roleplay)?
+            } else if let Some(id) = ctx.conversation.group_chat_id {
+                conversations::get_by_group_chat(conn, id)?
+            } else {
+                Vec::new()
+            }
+        }
     };
     let history = scope.iter().map(history_entry).collect();
 

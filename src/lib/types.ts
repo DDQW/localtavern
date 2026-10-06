@@ -170,6 +170,12 @@ export interface PowerShellOptions {
   allowlistPatterns: string[];
 }
 
+/** Who you are when Roleplay or Assistant opens. Independent: neither choice is used for the other mode. */
+export interface DefaultPersonas {
+  roleplayPersonaId: Uuid | null;
+  assistantPersonaId: Uuid | null;
+}
+
 export interface UserMemory {
   id: Uuid;
   content: string;

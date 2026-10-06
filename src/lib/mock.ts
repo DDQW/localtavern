@@ -9,6 +9,7 @@ import type {
   ChatMessage,
   ChatSession,
   Conversation,
+  DefaultPersonas,
   GeminiOptions,
   GroupChat,
   HistoryEntry,
@@ -226,7 +227,11 @@ function conversation(overrides: Partial<Conversation>): Conversation {
 function history(c: Conversation): HistoryEntry[] {
   return conversations
     .filter((x) =>
-      c.characterId ? x.characterId === c.characterId : c.groupChatId ? x.groupChatId === c.groupChatId : x.mode === c.mode && !x.characterId && !x.groupChatId,
+      c.characterId
+        ? x.characterId === c.characterId && x.mode === c.mode
+        : c.groupChatId
+          ? x.groupChatId === c.groupChatId
+          : x.mode === c.mode && !x.characterId && !x.groupChatId,
     )
     .map((x) => ({ id: x.id, label: `${x.title} · today`, updatedAt: x.updatedAt }));
 }
@@ -243,7 +248,7 @@ function session(id: Uuid): ChatSession {
     conversation: c,
     messages: structuredClone(messages.get(id) ?? []),
     characters: cast,
-    persona: personas[0],
+    persona: personas.find((p) => p.id === c.personaId) ?? personas.find((p) => p.isDefault) ?? personas[0] ?? null,
     personas,
     group: groups.find((g) => g.id === c.groupChatId) ?? null,
     preset: { id: c.mode === "assistant" ? "p1" : "p2", name: c.mode === "assistant" ? "Assistant (default)" : "Roleplay (default)", blocks: [] },
@@ -264,6 +269,20 @@ const sessions = new Map<string, SessionStatus>([
   ["chatgpt-subscription", { signedIn: true, email: "alex@example.com" }],
 ]);
 let powershell: PowerShellOptions = { enabled: false, autoMode: false, allowlistPatterns: ["Get-Date*"] };
+let defaultPersonas: DefaultPersonas = { roleplayPersonaId: null, assistantPersonaId: null };
+
+function personaFor(mode: Conversation["mode"]): Uuid | null {
+  const preferred = mode === "assistant" ? defaultPersonas.assistantPersonaId : defaultPersonas.roleplayPersonaId;
+  if (preferred && personas.some((p) => p.id === preferred)) return preferred;
+  return personas.find((p) => p.isDefault)?.id ?? personas[0]?.id ?? null;
+}
+
+/** Selects the mode's persona on a chat you land in from the nav. No-op when that mode has no default. */
+function applyModePersona(conversation: Conversation) {
+  const preferred = conversation.mode === "assistant" ? defaultPersonas.assistantPersonaId : defaultPersonas.roleplayPersonaId;
+  if (preferred && personas.some((p) => p.id === preferred)) conversation.personaId = preferred;
+}
+
 let memories: UserMemory[] = [
   { id: "m0000000-0000-4000-8000-000000000001", content: "Lives in Berlin.", createdAt: "2026-09-01T10:00:00Z" },
   { id: "m0000000-0000-4000-8000-000000000002", content: "Prefers Rust for side projects.", createdAt: "2026-09-02T10:00:00Z" },
@@ -313,33 +332,41 @@ export const mockApi: Api = {
 
   async openAssistant(forceNew) {
     const existing = [...conversations].reverse().find((c) => c.mode === "assistant");
-    return session(!forceNew && existing ? existing.id : conversation({}).id);
+    if (!forceNew && existing) {
+      applyModePersona(existing);
+      return session(existing.id);
+    }
+    return session(conversation({ personaId: personaFor("assistant") }).id);
   },
   async openCharacter(characterId, forceNew) {
-    const existing = [...conversations].reverse().find((c) => c.characterId === characterId);
+    const existing = [...conversations].reverse().find((c) => c.mode === "roleplay" && c.characterId === characterId);
     if (!forceNew && existing) return session(existing.id);
     const ch = characters.find((c) => c.id === characterId)!;
-    const c = conversation({ title: `Chat with ${ch.name}`, mode: "roleplay", characterId });
-    messages.get(c.id)!.push(message(c.id, "character", ch.firstMessages[0].replace("{{user}}", "Alex").replace("{{char}}", ch.name), { speakerCharacterId: ch.id }));
+    const user = personas.find((p) => p.id === personaFor("roleplay"))?.name || "Alex";
+    const c = conversation({ title: `Chat with ${ch.name}`, mode: "roleplay", characterId, personaId: personaFor("roleplay") });
+    messages.get(c.id)!.push(message(c.id, "character", ch.firstMessages[0].replace("{{user}}", user).replace("{{char}}", ch.name), { speakerCharacterId: ch.id }));
     return session(c.id);
   },
   async openGroup(groupId, forceNew) {
     const existing = [...conversations].reverse().find((c) => c.groupChatId === groupId);
     if (!forceNew && existing) return session(existing.id);
     const group = groups.find((g) => g.id === groupId)!;
-    return session(conversation({ title: group.name, mode: "roleplay", groupChatId: groupId }).id);
+    return session(conversation({ title: group.name, mode: "roleplay", groupChatId: groupId, personaId: personaFor("roleplay") }).id);
   },
   async openLastRoleplay() {
     const last = [...conversations].reverse().find((c) => c.mode === "roleplay");
-    return last ? session(last.id) : null;
+    if (!last) return null;
+    applyModePersona(last);
+    return session(last.id);
   },
   async resumeConversation(id) {
     return session(id);
   },
   async newChat(id) {
     const c = conversations.find((x) => x.id === id)!;
+    if (c.mode === "assistant") return mockApi.openAssistant(true);
     if (c.groupChatId) return mockApi.openGroup(c.groupChatId, true);
-    return c.characterId ? mockApi.openCharacter(c.characterId, true) : mockApi.openAssistant(true);
+    return mockApi.openCharacter(c.characterId!, true);
   },
   async deleteConversation(id) {
     conversations.splice(conversations.findIndex((c) => c.id === id), 1);
@@ -503,6 +530,15 @@ export const mockApi: Api = {
     sessions.set(providerId, { signedIn: false, email: null });
     providers.find((p) => p.id === providerId)!.hasKey = false;
     return structuredClone(sessions.get(providerId)!);
+  },
+  async getDefaultPersonas() {
+    return structuredClone(defaultPersonas);
+  },
+  async saveDefaultPersonas(next) {
+    for (const id of [next.roleplayPersonaId, next.assistantPersonaId]) {
+      if (id && !personas.some((p) => p.id === id)) throw new Error("Persona not found.");
+    }
+    defaultPersonas = structuredClone(next);
   },
   async getPowerShellOptions() {
     return structuredClone(powershell);

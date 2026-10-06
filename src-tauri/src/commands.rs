@@ -466,6 +466,16 @@ pub fn save_ollama_options(state: State<'_, AppState>, options: OllamaRequestOpt
     state.db.with(|c| settings::save_ollama_options(c, &options))
 }
 
+#[tauri::command]
+pub fn get_default_personas(state: State<'_, AppState>) -> Result<settings::DefaultPersonas> {
+    state.db.with(settings::load_default_personas)
+}
+
+#[tauri::command]
+pub fn save_default_personas(state: State<'_, AppState>, personas: settings::DefaultPersonas) -> Result<()> {
+    state.db.with(|c| settings::save_default_personas(c, &personas))
+}
+
 // ---- images ----
 
 /// Copies a picked image into the app's own storage so it survives the original moving.

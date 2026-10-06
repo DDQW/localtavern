@@ -19,7 +19,7 @@
   const isAssistant = $derived(conversation?.mode === "assistant");
   const singleCharacter = $derived(chat.isRoleplay && !chat.isGroup);
   const title = $derived(
-    chat.isRoleplay ? (session?.characters.map((c) => c.name).join(", ") || conversation?.title || "") : "Assistant",
+    chat.isRoleplay ? session?.characters.map((c) => c.name).join(", ") || conversation?.title || "" : "Assistant",
   );
   // A conversation might be pinned to a model the cached list no longer offers; keep it selectable.
   const models = $derived.by(() => {

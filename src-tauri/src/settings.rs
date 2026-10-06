@@ -5,18 +5,22 @@ use std::collections::{BTreeMap, HashMap};
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::db::Db;
 use crate::error::Result;
+use crate::models::ConversationMode;
 use crate::providers::gemini::{
     GeminiOptionsSource, GeminiRequestOptions, GeminiSafetyCategory, GeminiSafetyThreshold,
 };
 use crate::providers::ollama::{OllamaOptionsSource, OllamaRequestOptions};
-use crate::repo::app_settings;
+use crate::repo::{app_settings, personas};
 
 const GEMINI_KEY: &str = "gemini.requestOptions";
 const OLLAMA_KEY: &str = "ollama.requestOptions";
 const LAST_PROVIDER_KEY: &str = "app.provider.lastSelected";
+const DEFAULT_ROLEPLAY_PERSONA_KEY: &str = "app.persona.defaultRoleplay";
+const DEFAULT_ASSISTANT_PERSONA_KEY: &str = "app.persona.defaultAssistant";
 
 // ---- Gemini ----
 
@@ -177,6 +181,52 @@ pub fn cache_models(conn: &Connection, provider_id: &str, models: &[String]) -> 
     app_settings::set(conn, &format!("{provider_id}.models.cache"), &serde_json::to_string(models)?)
 }
 
+// ---- default persona per mode ----
+
+/// Who *you* are when Roleplay or Assistant opens. Independent: a persona chosen for one mode is
+/// never used for the other. `None` means "use the persona marked default".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DefaultPersonas {
+    pub roleplay_persona_id: Option<Uuid>,
+    pub assistant_persona_id: Option<Uuid>,
+}
+
+fn load_persona_id(conn: &Connection, key: &str) -> Result<Option<Uuid>> {
+    Ok(app_settings::get(conn, key)?.filter(|s| !s.is_empty()).and_then(|s| Uuid::parse_str(&s).ok()))
+}
+
+fn save_persona_id(conn: &Connection, key: &str, id: Option<Uuid>) -> Result<()> {
+    app_settings::set(conn, key, &id.map(|id| id.to_string()).unwrap_or_default())
+}
+
+pub fn load_default_personas(conn: &Connection) -> Result<DefaultPersonas> {
+    Ok(DefaultPersonas {
+        roleplay_persona_id: load_persona_id(conn, DEFAULT_ROLEPLAY_PERSONA_KEY)?,
+        assistant_persona_id: load_persona_id(conn, DEFAULT_ASSISTANT_PERSONA_KEY)?,
+    })
+}
+
+/// The persona explicitly chosen for `mode`, if one is saved. Does not fall back to the global default
+/// and does not check that the persona still exists.
+pub fn default_persona_for_mode(conn: &Connection, mode: ConversationMode) -> Result<Option<Uuid>> {
+    let key = match mode {
+        ConversationMode::Roleplay => DEFAULT_ROLEPLAY_PERSONA_KEY,
+        ConversationMode::Assistant => DEFAULT_ASSISTANT_PERSONA_KEY,
+    };
+    load_persona_id(conn, key)
+}
+
+pub fn save_default_personas(conn: &Connection, chosen: &DefaultPersonas) -> Result<()> {
+    for id in [chosen.roleplay_persona_id, chosen.assistant_persona_id].into_iter().flatten() {
+        if personas::get(conn, id)?.is_none() {
+            return Err(crate::error::Error::Other("Persona not found.".into()));
+        }
+    }
+    save_persona_id(conn, DEFAULT_ROLEPLAY_PERSONA_KEY, chosen.roleplay_persona_id)?;
+    save_persona_id(conn, DEFAULT_ASSISTANT_PERSONA_KEY, chosen.assistant_persona_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,5 +308,30 @@ mod tests {
         cache_models(&conn, "gemini", &["a".into(), "b".into()]).unwrap();
         assert_eq!(cached_models(&conn, "gemini").unwrap(), ["a", "b"]);
         assert_eq!(app_settings::get(&conn, "gemini.models.cache").unwrap().unwrap(), r#"["a","b"]"#);
+    }
+
+    #[test]
+    fn default_personas_are_stored_separately_and_unknown_ids_are_rejected() {
+        let conn = open_in_memory().unwrap();
+        assert_eq!(load_default_personas(&conn).unwrap(), DefaultPersonas::default());
+
+        let roleplay = crate::models::Persona { name: "Player".into(), ..Default::default() };
+        let assistant = crate::models::Persona { name: "Coder".into(), ..Default::default() };
+        personas::upsert(&conn, &roleplay).unwrap();
+        personas::upsert(&conn, &assistant).unwrap();
+
+        let chosen = DefaultPersonas { roleplay_persona_id: Some(roleplay.id), assistant_persona_id: Some(assistant.id) };
+        save_default_personas(&conn, &chosen).unwrap();
+        assert_eq!(load_default_personas(&conn).unwrap(), chosen);
+        assert_eq!(default_persona_for_mode(&conn, ConversationMode::Roleplay).unwrap(), Some(roleplay.id));
+        assert_eq!(default_persona_for_mode(&conn, ConversationMode::Assistant).unwrap(), Some(assistant.id));
+
+        let bogus = DefaultPersonas { roleplay_persona_id: Some(Uuid::new_v4()), assistant_persona_id: None };
+        assert!(save_default_personas(&conn, &bogus).is_err());
+        assert_eq!(load_default_personas(&conn).unwrap(), chosen, "a rejected save leaves the previous choice");
+
+        save_default_personas(&conn, &DefaultPersonas::default()).unwrap();
+        assert_eq!(default_persona_for_mode(&conn, ConversationMode::Roleplay).unwrap(), None);
+        assert_eq!(default_persona_for_mode(&conn, ConversationMode::Assistant).unwrap(), None);
     }
 }

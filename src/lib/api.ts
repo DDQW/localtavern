@@ -22,6 +22,7 @@ import type {
   SearchHit,
   StoryState,
   CharacterNotebookEntry,
+  DefaultPersonas,
   Uuid,
   WorldState,
   PowerShellOptions,
@@ -76,6 +77,9 @@ export interface Api {
   subscriptionSignIn(providerId: string): Promise<SessionStatus>;
   subscriptionCancelSignIn(providerId: string): Promise<void>;
   subscriptionSignOut(providerId: string): Promise<SessionStatus>;
+
+  getDefaultPersonas(): Promise<DefaultPersonas>;
+  saveDefaultPersonas(personas: DefaultPersonas): Promise<void>;
 
   getPowerShellOptions(): Promise<PowerShellOptions>;
   savePowerShellOptions(options: PowerShellOptions): Promise<void>;
@@ -169,6 +173,9 @@ const tauriApi: Api = {
   subscriptionSignIn: (providerId) => invoke("subscription_sign_in", { providerId }),
   subscriptionCancelSignIn: (providerId) => invoke("subscription_cancel_sign_in", { providerId }),
   subscriptionSignOut: (providerId) => invoke("subscription_sign_out", { providerId }),
+
+  getDefaultPersonas: () => invoke("get_default_personas"),
+  saveDefaultPersonas: (personas) => invoke("save_default_personas", { personas }),
 
   getPowerShellOptions: () => invoke("get_powershell_options"),
   savePowerShellOptions: (options) => invoke("save_powershell_options", { options }),
