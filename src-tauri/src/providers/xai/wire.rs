@@ -55,7 +55,8 @@ pub struct XaiListModelsResponse {
 }
 
 /// grok-build-* is a coding-agent model that takes no `reasoning_effort` at all, and xAI rejects
-/// "none" on grok-4.5+, so "Off" (and an unset level) both mean: omit the field.
+/// "none" on grok-4.5+, so "Off" means: omit the field. An unset level defaults to "high" (what
+/// Zed does too) - left to xAI's own default the Grok 4.x models reason noticeably less.
 pub fn to_xai_request(request: &LlmRequest) -> XaiChatCompletionRequest {
     let mut messages = Vec::new();
     if let Some(system) = request.system_instruction.as_deref().filter(|s| !s.is_empty()) {
@@ -71,8 +72,8 @@ pub fn to_xai_request(request: &LlmRequest) -> XaiChatCompletionRequest {
         match cfg.reasoning_effort {
             Some(ReasoningEffort::Low) => Some("low".to_string()),
             Some(ReasoningEffort::Medium) => Some("medium".to_string()),
-            Some(ReasoningEffort::High) => Some("high".to_string()),
-            _ => None,
+            Some(ReasoningEffort::High) | None => Some("high".to_string()),
+            Some(ReasoningEffort::Off) => None,
         }
     } else {
         None
@@ -133,7 +134,7 @@ mod tests {
             (Some(ReasoningEffort::Medium), Some("medium")),
             (Some(ReasoningEffort::High), Some("high")),
             (Some(ReasoningEffort::Off), None), // xAI rejects "none" on 4.5+, so omit
-            (None, None),
+            (None, Some("high")), // unset defaults to high rather than xAI's lower default
         ] {
             let mapped = to_xai_request(&request("grok-4.6", effort));
             assert_eq!(mapped.reasoning_effort.as_deref(), expected, "{effort:?}");
@@ -143,7 +144,9 @@ mod tests {
     #[test]
     fn omits_reasoning_effort_for_grok_build_models() {
         for model in ["grok-build-0.1", "GROK-BUILD-2"] {
-            assert!(to_xai_request(&request(model, Some(ReasoningEffort::High))).reasoning_effort.is_none(), "{model}");
+            for effort in [Some(ReasoningEffort::High), None] {
+                assert!(to_xai_request(&request(model, effort)).reasoning_effort.is_none(), "{model} {effort:?}");
+            }
         }
     }
 }
