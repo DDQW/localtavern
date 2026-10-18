@@ -21,6 +21,12 @@ pub fn to_provider_error(status: StatusCode, body: &str) -> ProviderError {
     ProviderError::with_status(message, kind, status.as_u16())
 }
 
+/// Ollama's 400 for a `think` value sent to a model without the thinking capability:
+/// `"<model>" does not support thinking`.
+pub fn is_thinking_unsupported(error: &ProviderError) -> bool {
+    error.http_status == Some(400) && error.message.contains("does not support thinking")
+}
+
 /// Ollama has no auth concept, so the one error worth calling out specially is "server not
 /// reachable" - a stopped or never-started local server, which is the common case rather than an
 /// edge case.

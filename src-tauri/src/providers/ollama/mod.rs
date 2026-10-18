@@ -64,18 +64,33 @@ impl LlmProvider for OllamaProvider {
     async fn stream_completion(&self, request: LlmRequest) -> Result<ChunkStream, ProviderError> {
         let options = self.options.current();
         let base_url = options.base_url.trim_end_matches('/').to_string();
-        let json = serde_json::to_string(&wire::to_ollama_request(&request, Some(options.context_size)))
-            .map_err(|e| ProviderError::unknown(format!("Failed to serialize Ollama request: {e}")))?;
+        let mut body = wire::to_ollama_request(&request, Some(options.context_size));
 
+        let response = match self.post_chat(&body, &base_url).await {
+            // A thinking level on a model whose template doesn't declare thinking (e.g. Gemma) is a
+            // hard 400. Retry without `think` so the model just answers in its default mode.
+            Err(e) if body.think.is_some() && errors::is_thinking_unsupported(&e) => {
+                body.think = None;
+                self.post_chat(&body, &base_url).await?
+            }
+            other => other?,
+        };
+        Ok(stream::read_chunks(response.bytes_stream()).boxed())
+    }
+}
+
+impl OllamaProvider {
+    async fn post_chat(&self, body: &wire::OllamaChatRequest, base_url: &str) -> Result<reqwest::Response, ProviderError> {
+        let json = serde_json::to_string(body)
+            .map_err(|e| ProviderError::unknown(format!("Failed to serialize Ollama request: {e}")))?;
         let http_request = self
             .client
             .post(format!("{base_url}/api/chat"))
             .header("content-type", "application/json")
             .body(json);
 
-        let response = self.send(http_request, &base_url).await?;
-        let response = ensure_success(response, errors::to_provider_error).await?;
-        Ok(stream::read_chunks(response.bytes_stream()).boxed())
+        let response = self.send(http_request, base_url).await?;
+        ensure_success(response, errors::to_provider_error).await
     }
 }
 
@@ -85,7 +100,7 @@ mod tests {
     use crate::llm::{LlmGenerationConfig, LlmMessage, LlmRole};
     use crate::providers::error::ProviderErrorKind;
     use crate::providers::LlmResponseChunk;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_string_contains, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn provider(base_url: &str) -> OllamaProvider {
@@ -128,6 +143,43 @@ mod tests {
         assert!(body.contains("\"model\":\"llama3\""), "{body}");
         assert!(body.contains("\"stream\":true"), "{body}");
         assert!(body.contains(&format!("\"num_ctx\":{}", wire::DEFAULT_CONTEXT_SIZE)), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_thinking_level_on_a_model_without_thinking_is_retried_without_think() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("\"think\""))
+            .respond_with(ResponseTemplate::new(400).set_body_raw(r#"{"error":"\"gemma4\" does not support thinking"}"#, "application/json"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw("{\"message\":{\"content\":\"Hi\"},\"done\":true}\n", "application/x-ndjson"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut req = request("gemma4", "Hello");
+        req.generation_config.reasoning_effort = Some(crate::models::ReasoningEffort::High);
+
+        let chunks: Vec<_> = provider(&server.uri()).stream_completion(req).await.unwrap().collect().await;
+
+        assert_eq!(chunks[0].as_ref().unwrap().delta_text, "Hi");
+    }
+
+    #[tokio::test]
+    async fn other_bad_requests_are_not_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_raw(r#"{"error":"invalid options"}"#, "application/json"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut req = request("gemma4", "Hello");
+        req.generation_config.reasoning_effort = Some(crate::models::ReasoningEffort::High);
+
+        let err = provider(&server.uri()).stream_completion(req).await.err().unwrap();
+        assert_eq!(err.message, "invalid options");
     }
 
     #[tokio::test]
