@@ -38,6 +38,12 @@
       "Uses your ChatGPT Plus/Pro/Business plan instead of an API key: signing in opens OpenAI in your browser. Requests count against your plan's Codex usage limits. Temperature/top-p aren't sent (these reasoning models reject them). Refreshed models show up in every chat's model picker.",
   };
 
+  /** Providers that can fetch their API key through a browser sign-in instead of pasting it. */
+  const BROWSER_SIGN_IN_NOTES: Record<string, string> = {
+    mistral:
+      "Signs in through your Mistral AI Studio account and saves the API key it issues, the same sign-in Mistral's own Vibe CLI uses. The key belongs to your AI Studio account, so usage is billed to (or limited by) that account's API plan, not necessarily your Le Chat/Vibe subscription.",
+  };
+
   const categories: { id: SafetyCategory; label: string }[] = [
     { id: "harassment", label: "Harassment" },
     { id: "hateSpeech", label: "Hate speech" },
@@ -125,6 +131,22 @@
     }
     signingIn[provider.id] = false;
     if (sessions[provider.id]?.signedIn) await refresh(provider);
+  }
+
+  /** Mistral: sign in through the browser and let it fill in the API key. */
+  async function browserSignIn(provider: ProviderInfo) {
+    signingIn[provider.id] = true;
+    status[provider.id] = "Waiting for you to approve access in the browser…";
+    try {
+      const updated = await api.browserKeySignIn(provider.id);
+      providers = providers.map((p) => (p.id === updated.id ? updated : p));
+      status[provider.id] = updated.hasKey ? "" : "Sign-in cancelled.";
+      signingIn[provider.id] = false;
+      if (updated.hasKey) await refresh(provider);
+    } catch (e) {
+      status[provider.id] = errorText(e);
+      signingIn[provider.id] = false;
+    }
   }
 
   async function signOut(provider: ProviderInfo) {
@@ -301,6 +323,17 @@
             <button class="primary" type="submit" disabled={busy[provider.id]}>{keys[provider.id] ? "Save key" : provider.hasKey ? "Remove key" : "Save key"}</button>
           </form>
           <p class="muted small">Stored in the Windows Credential Manager, never in the database. Leave the box empty and press the button to remove a saved key.</p>
+          {#if provider.browserSignIn}
+            <div class="keyrow">
+              <button onclick={() => browserSignIn(provider)} disabled={signingIn[provider.id]}>
+                {signingIn[provider.id] ? "Waiting for the browser…" : `Sign in with ${provider.name}`}
+              </button>
+              {#if signingIn[provider.id]}
+                <button onclick={() => api.subscriptionCancelSignIn(provider.id)}>Cancel</button>
+              {/if}
+            </div>
+            <p class="muted small">{BROWSER_SIGN_IN_NOTES[provider.id]}</p>
+          {/if}
         {/if}
 
         {#if provider.auth === "subscription"}

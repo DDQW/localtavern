@@ -157,6 +157,8 @@ export interface ProviderInfo {
   name: string;
   auth: "apiKey" | "subscription" | "local";
   hasKey: boolean;
+  /** An API-key provider whose key can also be fetched through a browser sign-in (Mistral). */
+  browserSignIn: boolean;
 }
 
 export interface SessionStatus {

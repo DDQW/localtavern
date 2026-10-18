@@ -14,8 +14,53 @@ use crate::models::LlmUsage;
 /// `reasoning_content` is a reasoning model's chain-of-thought, streamed separately from `content`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Delta {
-    pub content: Option<String>,
+    pub content: Option<Content>,
     pub reasoning_content: Option<String>,
+}
+
+/// `content` is a plain string almost everywhere, but Mistral's reasoning models stream it as a list
+/// of typed parts - `{"type":"text",...}` for the reply and `{"type":"thinking",...}` for the
+/// chain-of-thought.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum Content {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ContentPart {
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    pub text: Option<String>,
+    /// A thinking part nests its text one level down.
+    pub thinking: Option<Vec<ThinkingPart>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ThinkingPart {
+    pub text: Option<String>,
+}
+
+impl Content {
+    /// Splits into (visible reply text, reasoning text).
+    fn split(self) -> (String, String) {
+        match self {
+            Content::Text(text) => (text, String::new()),
+            Content::Parts(parts) => {
+                let (mut text, mut thought) = (String::new(), String::new());
+                for part in parts {
+                    if let Some(t) = part.text {
+                        text.push_str(&t);
+                    }
+                    for t in part.thinking.into_iter().flatten().filter_map(|t| t.text) {
+                        thought.push_str(&t);
+                    }
+                }
+                (text, thought)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -82,7 +127,11 @@ where
             };
 
             let (text, thought) = match choice.delta {
-                Some(d) => (d.content.unwrap_or_default(), d.reasoning_content.unwrap_or_default()),
+                Some(d) => {
+                    let (text, mut thought) = d.content.map(Content::split).unwrap_or_default();
+                    thought.push_str(&d.reasoning_content.unwrap_or_default());
+                    (text, thought)
+                }
                 None => Default::default(),
             };
 
@@ -198,5 +247,22 @@ mod tests {
         let err = collect("data: {not valid json\n\n", 4096).await.unwrap_err();
         assert_eq!(err.kind, ProviderErrorKind::Unknown);
         assert!(err.message.starts_with("Failed to parse Test stream chunk"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn splits_typed_content_parts_into_reply_and_thinking() {
+        let sse = concat!(
+            r#"data: {"choices":[{"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"hmm "}]}]}}]}"#, "\n\n",
+            r#"data: {"choices":[{"delta":{"content":[{"type":"text","text":"Hi"}]},"finish_reason":"stop"}]}"#, "\n\n",
+            "data: [DONE]\n\n",
+        );
+
+        let chunks = collect(sse, 4096).await.unwrap();
+
+        assert_eq!(chunks[0].delta_text, "");
+        assert_eq!(chunks[0].thought_delta_text, "hmm ");
+        assert_eq!(chunks[1].delta_text, "Hi");
+        assert_eq!(chunks[1].thought_delta_text, "");
+        assert!(chunks[1].is_final);
     }
 }

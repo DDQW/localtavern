@@ -60,6 +60,8 @@ pub struct ProviderInfo {
     /// How the provider is set up: an API key ("apiKey"), a subscription login ("subscription") or just a local server ("local").
     pub auth: &'static str,
     pub has_key: bool,
+    /// An API-key provider that can also fetch its key through a browser sign-in (Mistral).
+    pub browser_sign_in: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,6 +85,7 @@ fn provider_info(state: &AppState, id: &str) -> ProviderInfo {
             Some(session) => session.status().signed_in,
             None => id == "ollama" || state.secrets.try_get_api_key(id).is_some(),
         },
+        browser_sign_in: id == crate::providers::mistral::PROVIDER_ID,
     }
 }
 
@@ -343,6 +346,41 @@ pub fn set_api_key(state: State<'_, AppState>, provider_id: String, key: String)
         state.secrets.delete_api_key(&provider_id)?;
     } else {
         state.secrets.save_api_key(&provider_id, key)?;
+    }
+    Ok(provider_info(&state, &provider_id))
+}
+
+/// Signs in through the browser and stores the API key it hands back, as if it had been pasted. Only
+/// providers with a key-issuing sign-in (Mistral) support this. A cancelled sign-in changes nothing.
+/// Cancel it with `subscription_cancel_sign_in`.
+#[tauri::command]
+pub async fn browser_key_sign_in(app: AppHandle, state: State<'_, AppState>, provider_id: String) -> Result<ProviderInfo> {
+    if provider_id != crate::providers::mistral::PROVIDER_ID {
+        return Err(Error::Other("That provider has no browser sign-in.".into()));
+    }
+    let cancel = CancellationToken::new();
+    {
+        let mut in_flight = state.sign_ins.lock().unwrap();
+        if in_flight.contains_key(&provider_id) {
+            return Err(Error::Other("A sign-in is already in progress.".into()));
+        }
+        in_flight.insert(provider_id.clone(), cancel.clone());
+    }
+
+    let result = crate::providers::mistral::signin::BrowserSignIn::new(crate::providers::http::build_client())
+        .sign_in(
+            |url| {
+                app.opener().open_url(url, None::<&str>).map_err(|e| {
+                    crate::providers::ProviderError::unknown(format!("Couldn't open your browser for sign-in: {e}")).user_facing()
+                })
+            },
+            &cancel,
+        )
+        .await;
+    state.sign_ins.lock().unwrap().remove(&provider_id);
+
+    if let Some(key) = result? {
+        state.secrets.save_api_key(&provider_id, &key)?;
     }
     Ok(provider_info(&state, &provider_id))
 }

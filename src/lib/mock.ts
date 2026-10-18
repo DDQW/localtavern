@@ -138,11 +138,12 @@ const groups: GroupChat[] = [
 ];
 
 const providers: ProviderInfo[] = [
-  { id: "gemini", name: "Gemini", auth: "apiKey", hasKey: true },
-  { id: "deepseek", name: "DeepSeek", auth: "apiKey", hasKey: false },
-  { id: "xai-subscription", name: "SuperGrok", auth: "subscription", hasKey: false },
-  { id: "chatgpt-subscription", name: "ChatGPT", auth: "subscription", hasKey: true },
-  { id: "ollama", name: "Ollama", auth: "local", hasKey: true },
+  { id: "gemini", name: "Gemini", auth: "apiKey", hasKey: true, browserSignIn: false },
+  { id: "deepseek", name: "DeepSeek", auth: "apiKey", hasKey: false, browserSignIn: false },
+  { id: "mistral", name: "Mistral", auth: "apiKey", hasKey: false, browserSignIn: true },
+  { id: "xai-subscription", name: "SuperGrok", auth: "subscription", hasKey: false, browserSignIn: false },
+  { id: "chatgpt-subscription", name: "ChatGPT", auth: "subscription", hasKey: true, browserSignIn: false },
+  { id: "ollama", name: "Ollama", auth: "local", hasKey: true, browserSignIn: false },
 ];
 
 const models: Record<string, string[]> = {
@@ -634,6 +635,12 @@ export const mockApi: Api = {
   async setApiKey(providerId, key) {
     const p = providers.find((x) => x.id === providerId)!;
     p.hasKey = key.trim().length > 0;
+    return structuredClone(p);
+  },
+  async browserKeySignIn(providerId) {
+    await sleep(1200);
+    const p = providers.find((x) => x.id === providerId)!;
+    p.hasKey = true;
     return structuredClone(p);
   },
   async getGeminiOptions(): Promise<GeminiOptions> {

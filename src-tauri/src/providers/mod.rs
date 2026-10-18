@@ -8,6 +8,7 @@ pub mod error;
 pub mod gemini;
 pub mod http;
 pub mod keys;
+pub mod mistral;
 pub mod oauth;
 pub mod ollama;
 pub mod openai;

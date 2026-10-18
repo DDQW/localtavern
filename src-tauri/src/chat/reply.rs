@@ -91,6 +91,7 @@ pub fn provider_display_name(provider_id: &str) -> &str {
     match provider_id {
         "gemini" => "Gemini",
         "deepseek" => "DeepSeek",
+        "mistral" => "Mistral",
         "xai-subscription" => "SuperGrok",
         "chatgpt-subscription" => "ChatGPT",
         "ollama" => "Ollama",

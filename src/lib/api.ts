@@ -90,6 +90,8 @@ export interface Api {
   clearMemories(): Promise<void>;
 
   setApiKey(providerId: string, key: string): Promise<ProviderInfo>;
+  /** Browser sign-in that stores the API key it returns. Cancel with `subscriptionCancelSignIn`. */
+  browserKeySignIn(providerId: string): Promise<ProviderInfo>;
   getGeminiOptions(): Promise<GeminiOptions>;
   saveGeminiOptions(options: GeminiOptions): Promise<void>;
   getOllamaOptions(): Promise<OllamaOptions>;
@@ -186,6 +188,7 @@ const tauriApi: Api = {
   clearMemories: () => invoke("clear_memories"),
 
   setApiKey: (providerId, key) => invoke("set_api_key", { providerId, key }),
+  browserKeySignIn: (providerId) => invoke("browser_key_sign_in", { providerId }),
   getGeminiOptions: () => invoke("get_gemini_options"),
   saveGeminiOptions: (options) => invoke("save_gemini_options", { options }),
   getOllamaOptions: () => invoke("get_ollama_options"),

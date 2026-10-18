@@ -29,6 +29,7 @@ use crate::commands::AppState;
 use crate::db::Db;
 use crate::providers::deepseek::DeepSeekProvider;
 use crate::providers::gemini::GeminiProvider;
+use crate::providers::mistral::MistralProvider;
 use crate::providers::oauth::{OAuthPkceClient, OAuthSession};
 use crate::providers::openai::ChatGptSubscriptionProvider;
 use crate::providers::xai::XaiSubscriptionProvider;
@@ -61,6 +62,7 @@ fn build_state(data_dir: PathBuf) -> Result<AppState, Box<dyn std::error::Error>
     let registry = Arc::new(LlmProviderRegistry::new(vec![
         Arc::new(GeminiProvider::new(client.clone(), secrets.clone(), Arc::new(DbGeminiOptions(db.clone())))),
         Arc::new(DeepSeekProvider::new(client.clone(), secrets.clone())),
+        Arc::new(MistralProvider::new(client.clone(), secrets.clone())),
         Arc::new(XaiSubscriptionProvider::new(client.clone(), xai.clone())),
         Arc::new(ChatGptSubscriptionProvider::new(client.clone(), chatgpt.clone())),
         Arc::new(OllamaProvider::new(client.clone(), Arc::new(DbOllamaOptions(db.clone())))),
@@ -116,6 +118,7 @@ pub fn run() {
             commands::list_models,
             commands::refresh_models,
             commands::set_api_key,
+            commands::browser_key_sign_in,
             commands::get_powershell_options,
             commands::save_powershell_options,
             commands::resolve_tool_approval,
