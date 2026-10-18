@@ -8,10 +8,6 @@ use crate::llm::{LlmRequest, LlmRole};
 pub struct MistralMessage {
     pub role: String,
     pub content: String,
-    /// Mistral only accepts a conversation ending in an assistant turn when that turn is marked as a
-    /// prefix to continue (this is what "Continue" sends).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prefix: Option<bool>,
 }
 
 /// No `stream_options`: Mistral already reports usage on the final chunk, and doesn't document the
@@ -55,18 +51,23 @@ pub struct MistralListModelsResponse {
     pub data: Option<Vec<MistralModelInfo>>,
 }
 
+/// Matches the app's `[System note: ...]` convention, which roleplay prompts tell the model to follow silently.
+const NEXT_REPLY_NOTE: &str = "[System note: Write the next reply.]";
+
 pub fn to_mistral_request(request: &LlmRequest) -> MistralChatCompletionRequest {
     let mut messages = Vec::new();
     if let Some(system) = request.system_instruction.as_deref().filter(|s| !s.is_empty()) {
-        messages.push(MistralMessage { role: "system".into(), content: system.into(), prefix: None });
+        messages.push(MistralMessage { role: "system".into(), content: system.into() });
     }
     messages.extend(request.history.iter().map(|m| MistralMessage {
         role: if m.role == LlmRole::User { "user" } else { "assistant" }.into(),
         content: m.text.clone(),
-        prefix: None,
     }));
-    if let Some(last) = messages.last_mut().filter(|m| m.role == "assistant") {
-        last.prefix = Some(true);
+    // Mistral rejects a conversation that ends on an assistant turn (the next group member's reply
+    // follows straight after the previous one's). Its `prefix` flag would accept it, but then the
+    // model carries on writing that previous message instead of starting a new one.
+    if messages.last().is_some_and(|m| m.role == "assistant") {
+        messages.push(MistralMessage { role: "user".into(), content: NEXT_REPLY_NOTE.into() });
     }
 
     let cfg = &request.generation_config;
@@ -119,21 +120,19 @@ mod tests {
         assert_eq!(mapped.top_p, Some(0.9));
         assert_eq!(mapped.max_tokens, Some(256));
         assert_eq!(mapped.stop, Some(vec!["END".to_string()]));
-        assert!(mapped.messages.iter().all(|m| m.prefix.is_none()));
     }
 
     #[test]
-    fn a_trailing_assistant_turn_is_marked_as_a_prefix_to_continue() {
+    fn a_trailing_assistant_turn_gets_a_user_note_asking_for_the_next_reply() {
         let mapped = to_mistral_request(&request(
             None,
-            vec![LlmMessage::new(LlmRole::User, "hi"), LlmMessage::new(LlmRole::Model, "Once upon")],
+            vec![LlmMessage::new(LlmRole::User, "hi"), LlmMessage::new(LlmRole::Model, "Alice: Hello!")],
             LlmGenerationConfig::default(),
         ));
 
-        assert_eq!(mapped.messages[0].prefix, None);
-        assert_eq!(mapped.messages[1].prefix, Some(true));
-        let json = serde_json::to_string(&mapped).unwrap();
-        assert!(json.contains("\"prefix\":true"), "{json}");
+        let roles: Vec<_> = mapped.messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "assistant", "user"]);
+        assert_eq!(mapped.messages[2].content, NEXT_REPLY_NOTE);
     }
 
     #[test]
