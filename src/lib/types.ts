@@ -2,7 +2,8 @@
 
 export type Uuid = string;
 
-export type MessageRole = "user" | "character" | "system" | "tool";
+/** "image" is a generated picture: shown in the chat, never sent to the model. */
+export type MessageRole = "user" | "character" | "system" | "tool" | "image";
 export type ConversationMode = "roleplay" | "assistant";
 
 export interface MessageAlternate {
@@ -97,8 +98,34 @@ export interface Character {
   /** YYYY-MM-DD */
   birthDate: string | null;
   schedule: Schedule | null;
+  pictureStyle: PictureStyle;
+  outfits: Outfit[];
+  actionPictures: ActionPicture[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** What every picture of a character shares, so a set looks like one person. */
+export interface PictureStyle {
+  /** Permanent physical features as image-prompt text (no clothing). */
+  baseLook: string;
+  /** What they wear when no other outfit is chosen. */
+  defaultOutfit: string;
+  /** -1 until the first picture is drawn. */
+  seed: number;
+}
+
+/** A costume with its own expression pack; a chat can put the character in it. */
+export interface Outfit {
+  id: Uuid;
+  name: string;
+  clothing: string;
+  expressions: ExpressionImage[];
+}
+
+export interface ActionPicture {
+  action: string;
+  imagePath: string;
 }
 
 export interface Persona {
@@ -133,6 +160,8 @@ export interface WorldState {
   /** e.g. "DE-BY", for regional holidays. */
   regionCode: string | null;
   customHolidays: CustomHoliday[];
+  /** Character id -> outfit id; characters not listed wear their default. */
+  outfits: Record<Uuid, Uuid>;
 }
 
 /** Every year on month/day, or once when `year` is set. */
@@ -461,4 +490,65 @@ export interface GroupChat {
   characterIds: Uuid[];
   activationMode: GroupActivationMode;
   allowSelfResponses: boolean;
+}
+
+// ---- picture generation ----
+
+export type ImageBackend = "a1111" | "comfyUi";
+export type PromptStyle = "tags" | "natural";
+/** What to draw: SillyTavern's modes. */
+export type ImageMode = "character" | "face" | "persona" | "scene" | "lastMessage";
+
+export interface ImageBackendConfig {
+  url: string;
+  model: string;
+  sampler: string;
+  scheduler: string;
+}
+
+export interface ImageGenSettings {
+  backend: ImageBackend;
+  a1111: ImageBackendConfig;
+  comfy: ImageBackendConfig;
+  /** ComfyUI workflow in API format with %prompt%-style placeholders; empty = built-in. */
+  comfyWorkflow: string;
+  width: number;
+  height: number;
+  steps: number;
+  cfgScale: number;
+  /** -1 = random each time. */
+  seed: number;
+  promptPrefix: string;
+  negativePrompt: string;
+  promptStyle: PromptStyle;
+  reviewPrompt: boolean;
+}
+
+export interface ImageBackendOptions {
+  models: string[];
+  samplers: string[];
+  schedulers: string[];
+}
+
+/** A picture prompt ready for review; editable before rendering. */
+export interface ImagePromptDraft {
+  mode: ImageMode;
+  prompt: string;
+  negativePrompt: string;
+  width: number;
+  height: number;
+  characterId: Uuid | null;
+}
+
+/** One picture of a character's set. */
+export type CharacterShot = { kind: "mood"; emotion: string } | { kind: "action"; action: string };
+
+export interface LookDraft {
+  baseLook: string;
+  defaultOutfit: string;
+}
+
+export interface CharacterPicture {
+  path: string;
+  seed: number;
 }

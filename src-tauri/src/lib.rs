@@ -4,6 +4,8 @@ pub mod db;
 pub mod error;
 pub mod group_chats;
 pub mod holidays;
+pub mod image_commands;
+pub mod imagegen;
 pub mod import;
 pub mod library;
 pub mod llm;
@@ -87,6 +89,7 @@ pub fn run() {
         .setup(|app| {
             let data_dir = resolve_data_dir(app)?;
             app.manage(build_state(data_dir)?);
+            app.manage(image_commands::ImageJobs::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -170,6 +173,16 @@ pub fn run() {
             commands::list_group_chats,
             commands::save_group_chat,
             commands::delete_group_chat,
+            image_commands::get_image_settings,
+            image_commands::save_image_settings,
+            image_commands::image_backend_options,
+            image_commands::describe_character_look,
+            image_commands::draw_character_picture,
+            image_commands::stop_character_picture,
+            image_commands::image_prompt,
+            image_commands::generate_image,
+            image_commands::stop_image,
+            image_commands::delete_picture,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

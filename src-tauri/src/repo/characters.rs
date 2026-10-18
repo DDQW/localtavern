@@ -22,6 +22,9 @@ fn map(row: &Row) -> rusqlite::Result<Character> {
         appearance: rows::opt_blob(row, "AppearanceJson")?,
         birth_date: rows::opt_date(row, "BirthDate")?,
         schedule: rows::opt_blob(row, "ScheduleJson")?,
+        picture_style: rows::opt_blob(row, "PictureStyleJson")?.unwrap_or_default(),
+        outfits: rows::blob(row, "OutfitsJson")?,
+        action_pictures: rows::blob(row, "ActionPicturesJson")?,
         created_at: rows::datetime(row, "CreatedAt")?,
         updated_at: rows::datetime(row, "UpdatedAt")?,
     })
@@ -62,13 +65,13 @@ pub fn upsert(conn: &Connection, c: &Character) -> Result<()> {
     let id = c.id.to_string();
     tx.execute(
         "INSERT INTO Characters
-            (Id, Name, AvatarPath, Description, Personality, Scenario, FirstMessagesJson, ExampleDialogue, TagsJson, ExpressionsJson, GalleryImagePathsJson, CreatedAt, UpdatedAt, AppearanceJson, BirthDate, ScheduleJson)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            (Id, Name, AvatarPath, Description, Personality, Scenario, FirstMessagesJson, ExampleDialogue, TagsJson, ExpressionsJson, GalleryImagePathsJson, CreatedAt, UpdatedAt, AppearanceJson, BirthDate, ScheduleJson, PictureStyleJson, OutfitsJson, ActionPicturesJson)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
          ON CONFLICT(Id) DO UPDATE SET
             Name = ?2, AvatarPath = ?3, Description = ?4, Personality = ?5, Scenario = ?6,
             FirstMessagesJson = ?7, ExampleDialogue = ?8, TagsJson = ?9, ExpressionsJson = ?10,
             GalleryImagePathsJson = ?11, UpdatedAt = ?13, AppearanceJson = ?14, BirthDate = ?15,
-            ScheduleJson = ?16;",
+            ScheduleJson = ?16, PictureStyleJson = ?17, OutfitsJson = ?18, ActionPicturesJson = ?19;",
         params![
             id,
             c.name,
@@ -86,6 +89,9 @@ pub fn upsert(conn: &Connection, c: &Character) -> Result<()> {
             c.appearance.as_ref().map(json::to_blob).transpose()?,
             date::format_opt(c.birth_date),
             c.schedule.as_ref().map(json::to_blob).transpose()?,
+            json::to_blob(&c.picture_style)?,
+            json::to_blob(&c.outfits)?,
+            json::to_blob(&c.action_pictures)?,
         ],
     )?;
     tx.execute("DELETE FROM CharacterLorebooks WHERE CharacterId = ?1;", [&id])?;
@@ -135,6 +141,33 @@ mod tests {
         assert_eq!(loaded.expressions, c.expressions);
         assert_eq!(loaded.linked_lorebook_ids, vec![book.id]);
         assert_eq!(loaded.avatar_path, c.avatar_path);
+    }
+
+    #[test]
+    fn round_trips_picture_style_outfits_and_action_pictures() {
+        use crate::models::{ActionPicture, Outfit, PictureStyle};
+        let conn = open_in_memory().unwrap();
+        let c = Character {
+            name: "Nova".into(),
+            picture_style: PictureStyle { base_look: "1girl".into(), default_outfit: "jacket".into(), seed: 42 },
+            outfits: vec![Outfit {
+                id: Uuid::new_v4(),
+                name: "Gown".into(),
+                clothing: "red gown".into(),
+                expressions: vec![ExpressionImage { emotion: "happy".into(), image_path: "gown-happy.png".into() }],
+            }],
+            action_pictures: vec![ActionPicture { action: "reading".into(), image_path: "r.png".into() }],
+            ..Default::default()
+        };
+        upsert(&conn, &c).unwrap();
+        let loaded = get(&conn, c.id).unwrap().unwrap();
+        assert_eq!(loaded.picture_style, c.picture_style);
+        assert_eq!(loaded.outfits, c.outfits);
+        assert_eq!(loaded.action_pictures, c.action_pictures);
+
+        // Characters saved before pictures existed load with an empty style.
+        conn.execute("UPDATE Characters SET PictureStyleJson = NULL;", []).unwrap();
+        assert_eq!(get(&conn, c.id).unwrap().unwrap().picture_style, PictureStyle::default());
     }
 
     #[test]

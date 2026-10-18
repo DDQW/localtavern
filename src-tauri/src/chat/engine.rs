@@ -50,6 +50,10 @@ use crate::providers::{LlmGeneratedImage, LlmProviderRegistry, ProviderError};
 use crate::repo::{characters, conversations, group_chats, notebook, quest_log, summaries, user_memories};
 use crate::settings;
 
+#[path = "pictures.rs"]
+mod pictures;
+pub use pictures::ImagePromptDraft;
+
 /// How often streamed text is pushed to the UI. Rendering faster than the display refreshes buys
 /// nothing, so deltas accumulate and go out on a timer (SillyTavern's "streaming_fps").
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(33);
@@ -1080,7 +1084,7 @@ present, keep it as its own final paragraph, still naming whose details they are
         if let Some(group) = &ctx.group {
             // Who answers depends on the group's activation mode; an empty answer means "let the
             // user pick" (manual mode) - the UI offers the group's members.
-            let history = self.db().with(|c| conversations::get_messages(c, conversation_id))?;
+            let history = self.db().with(|c| session::chat_history(c, conversation_id))?;
             let latest_user_text =
                 history.iter().rev().find(|m| m.role == MessageRole::User).map(|m| m.text.clone()).unwrap_or_default();
             let speakers = strategy_for(group.activation_mode).select_next_speakers(group, &ctx.characters, &history, &latest_user_text);

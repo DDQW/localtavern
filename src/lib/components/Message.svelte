@@ -12,6 +12,14 @@
   const isUser = $derived(message.role === "user");
   const isCharacter = $derived(message.role === "character");
   const isTool = $derived(message.role === "tool");
+  const isPicture = $derived(message.role === "image");
+  const ofCharacter = $derived(isPicture && chat.session?.characters.some((c) => c.id === message.speakerCharacterId));
+  let pictureStatus = $state("");
+
+  async function usePicture(as: "avatar" | "gallery") {
+    pictureStatus = await chat.usePicture(message, as);
+    if (pictureStatus) setTimeout(() => (pictureStatus = ""), 2500);
+  }
   const swipeLabel = $derived(`${message.activeAlternateIndex + 1}/${Math.max(message.alternates.length, 1)}`);
   const canSwipePrevious = $derived(message.activeAlternateIndex > 0);
   const waiting = $derived(message.streaming && message.text.length === 0 && !message.reasoningText);
@@ -32,7 +40,18 @@
 <article class="msg" class:user={isUser} class:streaming={message.streaming}>
   <Avatar name={speaker.name} path={speaker.avatarPath} />
 
-  {#if !message.editing && !message.streaming}
+  {#if isPicture}
+    <div class="tools" role="toolbar" aria-label="Picture actions">
+      <button class="ghost" onclick={() => chat.drawAgain(message)} disabled={!!chat.picture} title="Draw it again with the same prompt">Again</button>
+      <button class="ghost" onclick={() => chat.redrawPicture(message)} disabled={!!chat.picture} title="Edit the prompt, then draw it again">Edit prompt</button>
+      {#if ofCharacter}
+        <button class="ghost" onclick={() => usePicture("avatar")}>Set as avatar</button>
+        <button class="ghost" onclick={() => usePicture("gallery")}>Add to gallery</button>
+      {/if}
+      <button class="ghost" onclick={copy}>{copied ? "Copied" : "Copy prompt"}</button>
+      <button class="ghost danger" onclick={() => chat.remove(message)}>Delete</button>
+    </div>
+  {:else if !message.editing && !message.streaming}
     <div class="tools" role="toolbar" aria-label="Message actions">
       <button class="ghost" onclick={() => chat.beginEdit(message)}>Edit</button>
       <button class="ghost" onclick={copy}>{copied ? "Copied" : "Copy"}</button>
@@ -43,6 +62,7 @@
   <div class="body">
     <div class="meta">
       <strong>{speaker.name}</strong>
+      {#if isPicture && message.speakerCharacterId}<span class="muted tokens">picture</span>{/if}
       {#if message.usage?.totalTokens}<span class="muted tokens">{message.usage.totalTokens} tokens</span>{/if}
     </div>
 
@@ -53,7 +73,18 @@
       </details>
     {/if}
 
-    {#if message.editing}
+    {#if isPicture}
+      {#each message.attachments as attachment (attachment.imagePath)}
+        <button class="picture" onclick={() => (lightbox.src = fileUrl(attachment.imagePath))} aria-label="View picture full size">
+          <img src={fileUrl(attachment.imagePath)} alt={message.text} />
+        </button>
+      {/each}
+      {#if pictureStatus}<p class="muted status" role="status">{pictureStatus}</p>{/if}
+      <details class="fold">
+        <summary>Prompt</summary>
+        <div class="plain muted">{message.text}</div>
+      </details>
+    {:else if message.editing}
       <textarea
         class="edit"
         rows="4"
@@ -74,7 +105,7 @@
       <div class="content"><Markdown text={message.text} dialogue={chat.isRoleplay} />{#if message.streaming}<span class="caret"></span>{/if}</div>
     {/if}
 
-    {#if message.attachments.length > 0}
+    {#if message.attachments.length > 0 && !isPicture}
       <div class="attachments">
         {#each message.attachments as attachment (attachment.imagePath)}
           <button class="thumb" onclick={() => (lightbox.src = fileUrl(attachment.imagePath))} aria-label="View picture">
@@ -92,7 +123,7 @@
       </div>
     {/if}
 
-    {#if message.rawPromptText}
+    {#if message.rawPromptText && !isPicture}
       <details class="fold">
         <summary>Prompt sent to model</summary>
         <pre class="plain mono">{message.rawPromptText}</pre>
@@ -252,6 +283,29 @@
     max-height: 160px;
     max-width: 220px;
     object-fit: cover;
+  }
+
+  .picture {
+    display: block;
+    margin-top: 4px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    line-height: 0;
+    background: var(--panel-2);
+    max-width: 100%;
+  }
+
+  .picture img {
+    max-width: 100%;
+    max-height: 520px;
+    object-fit: contain;
+  }
+
+  .status {
+    margin: 4px 0 0;
+    font-size: 12px;
   }
 
   .tools {

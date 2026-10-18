@@ -15,6 +15,6 @@ pub mod session;
 mod engine_tests;
 
 pub use authoring::LoreDraftRequest;
-pub use engine::{ChatEngine, HolidayOverview, ToolDecision};
+pub use engine::{ChatEngine, HolidayOverview, ImagePromptDraft, ToolDecision};
 pub use events::{ChatEvent, EventSink};
 pub use session::ChatSession;

@@ -5,13 +5,12 @@
   import AiDraft from "$lib/components/AiDraft.svelte";
   import AppearanceSection from "$lib/components/AppearanceSection.svelte";
   import ScheduleSection from "$lib/components/ScheduleSection.svelte";
+  import CharacterPictures from "$lib/components/CharacterPictures.svelte";
   import Avatar from "$lib/components/Avatar.svelte";
   import { fileUrl } from "$lib/media";
-  import { pickFolder, pickImages, pickSaveJson } from "$lib/pick";
+  import { pickImages, pickSaveJson } from "$lib/pick";
   import type { Character, Lorebook } from "$lib/types";
   import { newId, nowIso, splitList } from "$lib/util";
-
-  const SUGGESTED_EMOTIONS = ["neutral", "happy", "sad", "angry", "surprised", "scared", "disgusted", "love"];
 
   let form = $state<Character | null>(null);
   let tagsText = $state("");
@@ -43,6 +42,9 @@
       appearance: null,
       birthDate: null,
       schedule: null,
+      pictureStyle: { baseLook: "", defaultOutfit: "", seed: -1 },
+      outfits: [],
+      actionPictures: [],
       createdAt: now,
       updatedAt: now,
     };
@@ -172,58 +174,6 @@
     removedImages.push(path);
   }
 
-  function addExpression() {
-    if (!form) return;
-    const used = new Set(form.expressions.map((e) => e.emotion.trim().toLowerCase()));
-    form.expressions.push({ emotion: SUGGESTED_EMOTIONS.find((e) => !used.has(e)) ?? "", imagePath: "" });
-  }
-
-  async function chooseExpressionImage(index: number) {
-    if (!form) return;
-    try {
-      const [picked] = await pickImages(false);
-      if (!picked) return;
-      const previous = form.expressions[index].imagePath;
-      form.expressions[index].imagePath = await api.storeImage(picked);
-      if (previous) removedImages.push(previous);
-    } catch (e) {
-      error = errorText(e);
-    }
-  }
-
-  function removeExpression(index: number) {
-    if (!form) return;
-    const [removed] = form.expressions.splice(index, 1);
-    if (removed?.imagePath) removedImages.push(removed.imagePath);
-  }
-
-  /** SillyTavern sprite folder: one image per emotion, named after the emotion. */
-  async function importSprites() {
-    if (!form) return;
-    error = "";
-    try {
-      const folder = await pickFolder();
-      if (!folder) return;
-      const imported = await api.importExpressionFolder(folder);
-      if (imported.length === 0) {
-        notice = "No pictures found in that folder.";
-        return;
-      }
-      for (const sprite of imported) {
-        const existing = form.expressions.find((e) => e.emotion.trim().toLowerCase() === sprite.emotion);
-        if (existing) {
-          if (existing.imagePath) removedImages.push(existing.imagePath);
-          existing.imagePath = sprite.imagePath;
-        } else {
-          form.expressions.push(sprite);
-        }
-      }
-      notice = `Imported ${imported.length} expression${imported.length === 1 ? "" : "s"}.`;
-    } catch (e) {
-      error = errorText(e);
-    }
-  }
-
   function toggleLorebook(id: string, on: boolean) {
     if (!form) return;
     form.linkedLorebookIds = on ? [...form.linkedLorebookIds, id] : form.linkedLorebookIds.filter((x) => x !== id);
@@ -342,30 +292,7 @@
         </label>
       {/each}
 
-      <h2>Expressions</h2>
-      <p class="muted small">
-        A portrait per emotion, swapped in during chat. The model is asked to end each reply with an emotion tag chosen from these
-        names, so any name works.
-      </p>
-      {#each form.expressions as expression, i (i)}
-        <div class="expression">
-          <input bind:value={expression.emotion} list="emotions" placeholder="emotion" aria-label="Emotion name" />
-          {#if expression.imagePath}
-            <img src={fileUrl(expression.imagePath)} alt="" class="thumb" />
-          {:else}
-            <span class="thumb empty muted">none</span>
-          {/if}
-          <button type="button" onclick={() => chooseExpressionImage(i)}>Choose picture…</button>
-          <button type="button" class="ghost danger" onclick={() => removeExpression(i)} aria-label="Remove expression">✕</button>
-        </div>
-      {/each}
-      <datalist id="emotions">
-        {#each SUGGESTED_EMOTIONS as emotion (emotion)}<option value={emotion}></option>{/each}
-      </datalist>
-      <div class="btnrow">
-        <button type="button" onclick={addExpression}>＋ Add expression</button>
-        <button type="button" onclick={importSprites} title="A folder with one picture per emotion, named like happy.png">Import sprite folder…</button>
-      </div>
+      <CharacterPictures bind:character={form} discard={(path) => removedImages.push(path)} />
 
       <h2>Gallery</h2>
       <div class="gallery">
@@ -431,29 +358,9 @@
     align-items: flex-start;
   }
 
-  .expression {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
 
-  .expression input {
-    width: 160px;
-  }
 
-  .thumb {
-    width: 44px;
-    height: 44px;
-    object-fit: cover;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border);
-  }
 
-  .thumb.empty {
-    display: grid;
-    place-items: center;
-    font-size: 11px;
-  }
 
   .gallery {
     display: flex;

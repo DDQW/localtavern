@@ -5,6 +5,7 @@
   import Composer from "./Composer.svelte";
   import Message from "./Message.svelte";
   import StoryPanel from "./StoryPanel.svelte";
+  import PictureDialog from "./PictureDialog.svelte";
   import ToolApprovalDialog from "./ToolApprovalDialog.svelte";
 
   const PAGE = 60;
@@ -17,6 +18,8 @@
   const hidden = $derived(Math.max(0, chat.messages.length - visible));
   const shown = $derived(chat.messages.slice(hidden));
   const lastSummarized = $derived(chat.lastSummarizedIndex);
+  // Swipes belong to the newest reply, even when pictures were drawn after it.
+  const lastTurnId = $derived(chat.lastTurn?.id);
 
   function onscroll() {
     if (!scroller) return;
@@ -74,7 +77,7 @@
 
       {#each shown as message, i (message.id)}
         <div class:summarized={hidden + i <= lastSummarized}>
-          <Message {message} latest={hidden + i === chat.messages.length - 1} />
+          <Message {message} latest={message.id === lastTurnId} />
         </div>
         {#if hidden + i === lastSummarized && chat.context?.summary}
           <details class="summary">
@@ -97,6 +100,7 @@
 </div>
 
 <ToolApprovalDialog />
+<PictureDialog />
 
 <style>
   .chat {

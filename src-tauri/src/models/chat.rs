@@ -10,8 +10,11 @@ pub enum MessageRole {
     System,
     /// A PowerShell tool call's result, fed back to the model as if the user had reported it.
     Tool,
+    /// A generated picture (text = the prompt it was drawn from). Shown in the chat but never sent
+    /// to the model: see [`crate::chat::session::load_reply_context`].
+    Image,
 }
-int_enum!(MessageRole { User = 0, Character = 1, System = 2, Tool = 3 });
+int_enum!(MessageRole { User = 0, Character = 1, System = 2, Tool = 3, Image = 4 });
 
 /// One generated variant of a message - "swiping" cycles through these without losing the others.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

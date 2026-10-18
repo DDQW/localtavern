@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use super::presets;
 use crate::error::{Error, Result};
-use crate::models::{Character, ChatMessage, Conversation, ConversationMode, GroupChat, Persona, PromptPreset};
+use crate::models::{Character, ChatMessage, Conversation, ConversationMode, GroupChat, MessageRole, Persona, PromptPreset};
 use crate::repo::{characters, conversations, group_chats, lorebooks, personas, user_memories};
 use crate::settings;
 
@@ -106,14 +106,15 @@ pub fn load_reply_context(conn: &Connection, conversation_id: Uuid) -> Result<Re
         None => None,
     };
 
-    let mut cast = Vec::new();
-    if let Some(id) = conversation.character_id {
-        cast.extend(characters::get(conn, id)?);
-    } else if let Some(group) = &group {
-        for id in &group.character_ids {
-            cast.extend(characters::get(conn, *id)?);
-        }
-    }
+    // The model sees each character in the outfit this story has them in.
+    let outfits = conversation.world_state.as_ref().map(|w| &w.outfits);
+    let cast: Vec<Character> = load_cast(conn, &conversation, group.as_ref())?
+        .into_iter()
+        .map(|c| {
+            let outfit = outfits.and_then(|o| o.get(&c.id)).copied();
+            c.dressed(outfit)
+        })
+        .collect();
 
     let mut lorebook_ids: Vec<Uuid> = cast.iter().flat_map(|c| c.linked_lorebook_ids.iter().copied()).collect();
     lorebook_ids.sort();
@@ -123,12 +124,37 @@ pub fn load_reply_context(conn: &Connection, conversation_id: Uuid) -> Result<Re
         books.extend(lorebooks::get(conn, id)?);
     }
 
-    let messages = conversations::get_messages(conn, conversation_id)?;
+    let messages = chat_history(conn, conversation_id)?;
     Ok(ReplyContext { group, conversation, preset, persona, characters: cast, lorebooks: books, messages })
 }
 
+/// The conversation's character(s) as stored.
+fn load_cast(conn: &Connection, conversation: &Conversation, group: Option<&GroupChat>) -> Result<Vec<Character>> {
+    let mut cast = Vec::new();
+    if let Some(id) = conversation.character_id {
+        cast.extend(characters::get(conn, id)?);
+    } else if let Some(group) = group {
+        for id in &group.character_ids {
+            cast.extend(characters::get(conn, *id)?);
+        }
+    }
+    Ok(cast)
+}
+
+/// The conversation as the model sees it: every message except generated pictures, which are only
+/// for the user to look at (and would otherwise be re-uploaded to vision models on every turn).
+pub fn chat_history(conn: &Connection, conversation_id: Uuid) -> Result<Vec<ChatMessage>> {
+    let mut messages = conversations::get_messages(conn, conversation_id)?;
+    messages.retain(|m| m.role != MessageRole::Image);
+    Ok(messages)
+}
+
 pub fn build_session(conn: &Connection, provider_ids: &[String], conversation_id: Uuid) -> Result<ChatSession> {
-    let ctx = load_reply_context(conn, conversation_id)?;
+    let mut ctx = load_reply_context(conn, conversation_id)?;
+    // The chat view shows everything, pictures included, and gets the characters as stored (it
+    // picks the outfit's portraits itself, so switching outfits needs no reload).
+    ctx.messages = conversations::get_messages(conn, conversation_id)?;
+    ctx.characters = load_cast(conn, &ctx.conversation, ctx.group.as_ref())?;
 
     // History stays inside the conversation's mode. An assistant bound to a character must not list
     // that character's roleplays, and a plain assistant chat must not list character-bound ones.

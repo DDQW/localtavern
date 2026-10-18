@@ -13,6 +13,46 @@ pub struct ExpressionImage {
     pub image_path: String,
 }
 
+/// How pictures of the character are drawn, so every mood, outfit and pose looks like the same
+/// person: the same permanent features and the same seed each time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PictureStyle {
+    /// Permanent physical features as image-prompt text (no clothing).
+    pub base_look: String,
+    /// What they wear when no other outfit is chosen.
+    pub default_outfit: String,
+    /// Shared by all of the character's pictures; -1 until the first one is drawn.
+    pub seed: i64,
+}
+
+impl Default for PictureStyle {
+    fn default() -> Self {
+        Self { base_look: String::new(), default_outfit: String::new(), seed: -1 }
+    }
+}
+
+/// A costume: its clothing and its own expression pack. A chat that puts the character in it shows
+/// these portraits instead of the default ones (SillyTavern's `/costume`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Outfit {
+    pub id: Uuid,
+    pub name: String,
+    /// The clothing, as image-prompt text; also what the model is told they're wearing.
+    pub clothing: String,
+    #[serde(default)]
+    pub expressions: Vec<ExpressionImage>,
+}
+
+/// A picture of the character doing something ("reading by the fire").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionPicture {
+    pub action: String,
+    pub image_path: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Character {
@@ -35,6 +75,12 @@ pub struct Character {
     pub birth_date: Option<NaiveDate>,
     /// Weekly routine and home country; `None` when never filled in.
     pub schedule: Option<Schedule>,
+    #[serde(default)]
+    pub picture_style: PictureStyle,
+    #[serde(default)]
+    pub outfits: Vec<Outfit>,
+    #[serde(default)]
+    pub action_pictures: Vec<ActionPicture>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -58,8 +104,35 @@ impl Default for Character {
             appearance: None,
             birth_date: None,
             schedule: None,
+            picture_style: PictureStyle::default(),
+            outfits: Vec::new(),
+            action_pictures: Vec::new(),
             created_at: now,
             updated_at: now,
         }
+    }
+}
+
+impl Character {
+    /// The character as a chat with `outfit_id` chosen sees them: the outfit's expression pack (when
+    /// it has one) replaces the default, and the description says what they're wearing. An unknown
+    /// or absent outfit leaves them as they are.
+    pub fn dressed(mut self, outfit_id: Option<Uuid>) -> Self {
+        let Some(outfit) = outfit_id.and_then(|id| self.outfits.iter().find(|o| o.id == id)).cloned() else {
+            return self;
+        };
+        if outfit.expressions.iter().any(|e| !e.image_path.is_empty()) {
+            self.expressions = outfit.expressions.clone();
+        }
+        let clothing = outfit.clothing.trim();
+        let wearing = if clothing.is_empty() { outfit.name.trim() } else { clothing };
+        if !wearing.is_empty() {
+            let note = format!("Currently wearing: {wearing}");
+            self.description =
+                if self.description.trim().is_empty() { note } else { format!("{}
+
+{note}", self.description.trim_end()) };
+        }
+        self
     }
 }

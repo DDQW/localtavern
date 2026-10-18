@@ -15,6 +15,9 @@ import type {
   GeminiOptions,
   GroupChat,
   HistoryEntry,
+  ImageGenSettings,
+  ImageMode,
+  ImagePromptDraft,
   Lorebook,
   PowerShellOptions,
   PromptPresetFull,
@@ -76,6 +79,9 @@ const characters: Character[] = ["Nova", "Mira", "Dorian"].map((name, i) => ({
   appearance: null,
   birthDate: null,
   schedule: null,
+  pictureStyle: { baseLook: "", defaultOutfit: "", seed: -1 },
+  outfits: [],
+  actionPictures: [],
   createdAt: now(),
   updatedAt: now(),
 }));
@@ -222,6 +228,7 @@ function conversation(overrides: Partial<Conversation>): Conversation {
       countryCode: "DE",
       regionCode: "DE-BY",
       customHolidays: [],
+      outfits: {},
     },
   });
   messages.get(r.id)!.push(
@@ -880,4 +887,139 @@ export const mockApi: Api = {
   async deleteGroupChat(id) {
     groups.splice(groups.findIndex((g) => g.id === id), 1);
   },
+
+  async getImageSettings() {
+    return structuredClone(imageSettings);
+  },
+  async saveImageSettings(next) {
+    imageSettings = structuredClone(next);
+    return structuredClone(imageSettings);
+  },
+  async imageBackendOptions(settings) {
+    await sleep(400);
+    const url = settings.backend === "a1111" ? settings.a1111.url : settings.comfy.url;
+    if (!url.includes("127.0.0.1") && !url.includes("localhost")) throw `Couldn't reach the server at ${url} - is it running?`;
+    return settings.backend === "a1111"
+      ? { models: ["sdxl_base_1.0.safetensors [31e35c80fc]", "ponyDiffusionV6XL.safetensors [67ab2fd8ec]"], samplers: ["Euler a", "Euler", "DPM++ 2M", "DPM++ SDE"], schedulers: ["Automatic", "Karras", "Exponential"] }
+      : { models: ["sdxl_base_1.0.safetensors", "illustriousXL.safetensors"], samplers: ["euler", "euler_ancestral", "dpmpp_2m"], schedulers: ["normal", "karras", "sgm_uniform"] };
+  },
+  async describeCharacterLook(character) {
+    await sleep(700);
+    if (!character.description.trim()) throw "Write a description first - the look is taken from it.";
+    return { baseLook: "1girl, young woman, slender, pale skin, long silver hair, blue eyes, freckles", defaultOutfit: "navy flight jacket, white shirt, dark trousers, boots" };
+  },
+  async drawCharacterPicture(character, shot, outfitId) {
+    const style = character.pictureStyle;
+    if (!style.baseLook.trim()) throw "Fill in the base look first (or let the AI write it from the description).";
+    const outfit = character.outfits.find((o) => o.id === outfitId);
+    const clothing = outfit ? outfit.clothing || outfit.name : style.defaultOutfit;
+    const what = shot.kind === "mood" ? `${shot.emotion}` : shot.action;
+    imageRunning.set(character.id, true);
+    for (let i = 0; i < 8; i++) {
+      await sleep(100);
+      if (!imageRunning.get(character.id)) {
+        imageRunning.delete(character.id);
+        return null;
+      }
+    }
+    imageRunning.delete(character.id);
+    const square = shot.kind === "mood";
+    const draft: ImagePromptDraft = {
+      mode: square ? "face" : "character",
+      prompt: `${what}, ${clothing}`,
+      negativePrompt: "",
+      width: square ? 512 : 416,
+      height: square ? 512 : 608,
+      characterId: character.id,
+    };
+    return { path: mockPicture(draft), seed: style.seed >= 0 ? style.seed : Math.floor(Math.random() * 2 ** 32) };
+  },
+  async stopCharacterPicture(characterId) {
+    imageRunning.set(characterId, false);
+  },
+  async imagePrompt(conversationId, mode, characterId) {
+    running.set(conversationId, true);
+    await sleep(700);
+    const stopped = !running.get(conversationId);
+    running.delete(conversationId);
+    if (stopped) return null;
+    const c = conversations.find((x) => x.id === conversationId)!;
+    const cast = c.characterId ? characters.filter((x) => x.id === c.characterId) : [];
+    const subject = mode === "character" || mode === "face" ? (cast.find((x) => x.id === characterId) ?? cast[0]) : undefined;
+    if ((mode === "character" || mode === "face") && !subject) throw "This chat has no character to draw.";
+    const square = mode === "face";
+    const landscape = mode === "scene" || mode === "lastMessage";
+    const descriptions: Record<ImageMode, string> = {
+      character: "full body portrait, young woman, silver hair, blue eyes, navy flight jacket, star charts, standing on a ship bridge",
+      face: "close-up portrait, young woman, silver hair, freckles, blue eyes, curious smile",
+      persona: "full body portrait, man, short dark hair, grey coat, scarf",
+      scene: "scenery, research vessel bridge, night, starfield through windows, two people at a chart table",
+      lastMessage: "scenery, observation deck, nebula glow, woman pointing at a star map",
+    };
+    const prefix = subject?.pictureStyle.baseLook ?? "";
+    const draft: ImagePromptDraft = {
+      mode,
+      prompt: [imageSettings.promptPrefix, prefix, descriptions[mode]].filter((p) => p && p.trim()).join(", "),
+      negativePrompt: imageSettings.negativePrompt,
+      width: square ? 1024 : landscape ? Math.max(imageSettings.width, imageSettings.height) : imageSettings.width,
+      height: square ? 1024 : landscape ? Math.min(imageSettings.width, imageSettings.height) : imageSettings.height,
+      characterId: subject?.id ?? null,
+    };
+    return draft;
+  },
+  async generateImage(conversationId, draft) {
+    imageRunning.set(conversationId, true);
+    for (let i = 0; i < 15; i++) {
+      await sleep(100);
+      if (!imageRunning.get(conversationId)) {
+        imageRunning.delete(conversationId);
+        return null;
+      }
+    }
+    imageRunning.delete(conversationId);
+    const picture = message(conversationId, "image", draft.prompt.trim(), {
+      speakerCharacterId: draft.characterId,
+      rawPromptText: JSON.stringify(draft),
+      attachments: [{ imagePath: mockPicture(draft), mimeType: "image/svg+xml" }],
+    });
+    messages.get(conversationId)!.push(picture);
+    return structuredClone(picture);
+  },
+  async stopImage(conversationId) {
+    imageRunning.set(conversationId, false);
+  },
+  async deletePicture(messageId) {
+    for (const list of messages.values()) {
+      const i = list.findIndex((m) => m.id === messageId && m.role === "image");
+      if (i >= 0) list.splice(i, 1);
+    }
+  },
 };
+
+let imageSettings: ImageGenSettings = {
+  backend: "a1111",
+  a1111: { url: "http://127.0.0.1:7860", model: "", sampler: "Euler a", scheduler: "" },
+  comfy: { url: "http://127.0.0.1:8188", model: "", sampler: "euler", scheduler: "normal" },
+  comfyWorkflow: "",
+  width: 832,
+  height: 1216,
+  steps: 25,
+  cfgScale: 7,
+  seed: -1,
+  promptPrefix: "best quality, highly detailed",
+  negativePrompt: "lowres, bad anatomy, bad hands, extra fingers, blurry, watermark, text, signature",
+  promptStyle: "tags",
+  reviewPrompt: true,
+};
+const imageRunning = new Map<Uuid, boolean>();
+
+/** A stand-in "render": a gradient at the draft's aspect ratio with its first tags written on it. */
+function mockPicture(draft: ImagePromptDraft): string {
+  const hue = Math.floor(Math.random() * 360);
+  const label = draft.prompt.split(",").slice(0, 3).join(",").replace(/[<>&"]/g, "");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${draft.width}" height="${draft.height}" viewBox="0 0 ${draft.width} ${draft.height}">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${hue},55%,35%)"/><stop offset="1" stop-color="hsl(${(hue + 80) % 360},60%,18%)"/></linearGradient></defs>
+<rect width="100%" height="100%" fill="url(#g)"/>
+<text x="50%" y="50%" fill="white" font-family="sans-serif" font-size="${Math.round(draft.width / 24)}" text-anchor="middle">${label}</text></svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
