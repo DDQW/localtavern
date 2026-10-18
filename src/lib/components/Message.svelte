@@ -71,7 +71,7 @@
     {:else if isTool}
       <pre class="toolout" aria-label="PowerShell output">{message.text}</pre>
     {:else}
-      <div class="content"><Markdown text={message.text} />{#if message.streaming}<span class="caret"></span>{/if}</div>
+      <div class="content"><Markdown text={message.text} dialogue={chat.isRoleplay} />{#if message.streaming}<span class="caret"></span>{/if}</div>
     {/if}
 
     {#if message.attachments.length > 0}

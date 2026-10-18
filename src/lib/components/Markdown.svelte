@@ -4,9 +4,9 @@
   import { lightbox } from "$lib/lightbox.svelte";
   import { renderMarkdown } from "$lib/markdown";
 
-  let { text }: { text: string } = $props();
+  let { text, dialogue = false }: { text: string; dialogue?: boolean } = $props();
 
-  const html = $derived(renderMarkdown(text));
+  const html = $derived(renderMarkdown(text, dialogue));
 
   async function onclick(event: MouseEvent) {
     const target = event.target as HTMLElement;
@@ -83,6 +83,11 @@
 
   .md :global(li) {
     margin: 0.15em 0;
+  }
+
+  /* Spoken dialogue (see dialogue.ts). Actions in *asterisks* are plain italics. */
+  .md :global(.md-quote) {
+    color: var(--accent);
   }
 
   .md :global(blockquote) {

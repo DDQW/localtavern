@@ -8,6 +8,8 @@
 import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
 import MarkdownIt from "markdown-it";
+import type { MarkdownIt as Markdown, Token } from "markdown-it";
+import { dialoguePlugin } from "./dialogue";
 import { AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, fileUrl, isLocalPath } from "./media";
 
 function escapeHtml(text: string): string {
@@ -30,9 +32,7 @@ function highlight(code: string, language: string): string {
   );
 }
 
-const md = new MarkdownIt({ html: false, linkify: true, breaks: true, highlight });
-
-md.renderer.rules.image = (tokens, idx) => {
+function renderImage(tokens: Token[], idx: number): string {
   const token = tokens[idx];
   const src = String(token.attrGet("src") ?? "");
   const alt = token.content || src;
@@ -49,7 +49,18 @@ md.renderer.rules.image = (tokens, idx) => {
     return `<a class="md-remote-image" href="${escapeHtml(src)}" rel="noopener noreferrer">🖼 ${escapeHtml(alt)}</a>`;
   }
   return escapeHtml(alt);
-};
+}
+
+function createRenderer(dialogue: boolean): Markdown {
+  const md = new MarkdownIt({ html: false, linkify: true, breaks: true, highlight });
+  if (dialogue) md.use(dialoguePlugin);
+  md.renderer.rules.image = renderImage;
+  return md;
+}
+
+const plain = createRenderer(false);
+// Roleplay only: in assistant answers quotation marks are usually just quoting, not speech.
+const roleplay = createRenderer(true);
 
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A") {
@@ -63,7 +74,8 @@ const SANITIZE = {
   ADD_ATTR: ["controls", "preload", "loading", "data-copy-code", "target"],
 };
 
-/** Renders message text to sanitized HTML. */
-export function renderMarkdown(text: string): string {
+/** Renders message text to sanitized HTML; `dialogue` colours quoted speech (roleplay chats). */
+export function renderMarkdown(text: string, dialogue = false): string {
+  const md = dialogue ? roleplay : plain;
   return DOMPurify.sanitize(md.render(text), SANITIZE) as unknown as string;
 }
