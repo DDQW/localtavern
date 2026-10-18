@@ -8,9 +8,9 @@ use uuid::Uuid;
 use super::{images, load_reply_context, user_message, AssembleOptions, ChatEngine};
 use crate::error::{Error, Result};
 use crate::imagegen::prompts::{self, ImageMode};
-use crate::imagegen::{self, GeneratedImage, ImageGenSettings};
-use crate::llm::{LlmMessage, LlmRole};
-use crate::models::{ChatMessage, MessageAttachment, MessageRole, PromptBlockType};
+use crate::imagegen::{GeneratedImage, ImageGenSettings, PromptStyle};
+use crate::llm::{LlmMessage, LlmRequest, LlmRole};
+use crate::models::{Character, ChatMessage, MessageAttachment, MessageRole, PromptBlockType};
 use crate::prompting::roles;
 use crate::repo::conversations;
 
@@ -130,17 +130,14 @@ impl ChatEngine {
             return Err(Error::Other("The model returned an empty description - try again.".into()));
         }
 
-        // A character's own prefix (a LoRA, a fixed look) applies to their pictures, and to scenes
-        // in a one-on-one chat where they're surely in frame.
-        let prefixed = match (mode, drawn) {
-            (_, Some(character)) => Some(character.id),
-            (ImageMode::Scene | ImageMode::LastMessage, None) if ctx.characters.len() == 1 => Some(ctx.characters[0].id),
+        // A character's base look (set in the character editor) keeps their pictures looking like
+        // them; it also goes into scenes of a one-on-one chat, where they're surely in frame.
+        let looked = match (mode, drawn) {
+            (_, Some(character)) => Some(character),
+            (ImageMode::Scene | ImageMode::LastMessage, None) if ctx.characters.len() == 1 => ctx.characters.first(),
             _ => None,
         };
-        let character_prefix = match prefixed {
-            Some(id) => self.db().with(|c| imagegen::settings::character_prefix(c, id))?,
-            None => String::new(),
-        };
+        let character_prefix = looked.map(|c| c.picture_style.base_look.clone()).unwrap_or_default();
 
         let (width, height) = prompts::size_for(mode, settings.width, settings.height);
         Ok(Some(ImagePromptDraft {
@@ -186,5 +183,46 @@ impl ChatEngine {
             images::delete_if_owned(&self.inner.images_dir, std::path::Path::new(&attachment.image_path));
         }
         Ok(())
+    }
+
+    /// Has the last-selected model turn a character's description into the two prompt lines every
+    /// picture of them shares: permanent features ("base look") and their usual clothing.
+    pub async fn describe_look(&self, character: &Character, style: PromptStyle) -> Result<(String, String)> {
+        let description = character.description.trim();
+        if description.is_empty() {
+            return Err(Error::Other("Write a description first - the look is taken from it.".into()));
+        }
+        let (provider_id, model) = self.db().with(|c| self.default_provider_and_model(c))?;
+        if model.trim().is_empty() {
+            return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
+        }
+        let format = match style {
+            PromptStyle::Tags => "comma-separated image-generator tags (e.g. \"1girl, long silver hair, blue eyes, freckles\")",
+            PromptStyle::Natural => "one short plain sentence each",
+        };
+        let name = if character.name.trim().is_empty() { "the character" } else { character.name.trim() };
+        let prompt = format!(
+            "From this description of {name}, write two lines for an image generator, as {format}.
+LOOK: only permanent physical features - species or race, gender, apparent age, build, skin, face, hair (colour, length, style), eyes, and distinctive marks. No clothing, no name, no personality.
+OUTFIT: what they usually wear, if the description says; otherwise a fitting everyday outfit.
+Reply with exactly those two lines, starting with LOOK: and OUTFIT:.
+
+Description:
+{description}"
+        );
+        let request = LlmRequest {
+            model,
+            system_instruction: None,
+            history: vec![LlmMessage::new(LlmRole::User, prompt)],
+            generation_config: Default::default(),
+            enable_web_search: None,
+        };
+        let provider = self.inner.providers.get(&provider_id).map_err(|e| Error::Other(user_message(&e)))?;
+        let response = provider.get_completion(request).await.map_err(|e| Error::Other(user_message(&e)))?;
+        let (look, outfit) = prompts::parse_look(&response.delta_text);
+        if look.is_empty() {
+            return Err(Error::Other("The model returned an empty description - try again.".into()));
+        }
+        Ok((look, outfit))
     }
 }

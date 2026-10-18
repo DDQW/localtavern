@@ -91,6 +91,14 @@ pub async fn generate(
     }
 }
 
+/// A seed every backend accepts (ComfyUI rejects -1) that also survives a round trip through
+/// JavaScript numbers.
+pub fn random_seed() -> i64 {
+    let mut bytes = [0u8; 8];
+    let _ = getrandom::fill(&mut bytes);
+    (u64::from_le_bytes(bytes) & ((1 << 48) - 1)) as i64
+}
+
 /// Image servers return PNG unless told otherwise, but A1111 follows its "save as" setting, so the
 /// type comes from the bytes themselves.
 pub fn sniff_mime(data: &[u8]) -> &'static str {

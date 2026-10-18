@@ -36,7 +36,9 @@ async fn the_model_describes_the_character_and_the_draft_gets_prefixes_and_size(
     let nova = f.engine.resume(conv).unwrap().characters[0].clone();
     no_clock(&f, conv); // after resume, which gives a clock-less roleplay one again
     send(&f, conv, "hi").await.0.unwrap();
-    f.db.with(|c| crate::imagegen::settings::set_character_prefix(c, nova.id, "<lora:nova:0.8>")).unwrap();
+    let mut styled = nova.clone();
+    styled.picture_style.base_look = "<lora:nova:0.8>".into();
+    f.db.with(|c| characters::upsert(c, &styled)).unwrap();
 
     let draft = f.engine.image_prompt(conv, ImageMode::Character, None, &settings()).await.unwrap().unwrap();
     assert_eq!(draft.prompt, "best quality, <lora:nova:0.8>, full body portrait, silver hair, blue coat");
@@ -189,4 +191,62 @@ async fn the_request_stays_last_even_with_the_world_clocks_note() {
     let mentions = history.iter().filter(|m| m.text.contains("Pause the roleplay")).count();
     assert_eq!(mentions, 1, "and only once");
     assert!(history.windows(2).all(|w| !(w[0].role == LlmRole::User && w[1].role == LlmRole::User && w[0].text.is_empty())));
+}
+
+fn with_gown(f: &Fixture) -> (Character, Uuid) {
+    let mut nova = add_character(&f.db, "Nova", None, &["happy", "sad"]);
+    nova.description = "A star-mapper.".into();
+    let gown = crate::models::Outfit {
+        id: Uuid::new_v4(),
+        name: "Ball gown".into(),
+        clothing: "red ball gown, long gloves".into(),
+        expressions: vec![
+            crate::models::ExpressionImage { emotion: "happy".into(), image_path: "gown-happy.png".into() },
+            crate::models::ExpressionImage { emotion: "blushing".into(), image_path: "gown-blush.png".into() },
+        ],
+    };
+    let id = gown.id;
+    nova.outfits.push(gown);
+    f.db.with(|c| characters::upsert(c, &nova)).unwrap();
+    (nova, id)
+}
+
+#[tokio::test]
+async fn a_chosen_outfit_is_what_the_model_is_told_and_whose_moods_it_picks_from() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Shall we dance? [emotion: blushing]"), finish("STOP")]),
+    ]);
+    let (nova, gown) = with_gown(&f);
+    let conv = ready_character(&f, &nova);
+    let mut world = f.engine.resume(conv).unwrap().conversation.world_state.unwrap();
+    world.outfits.insert(nova.id, gown);
+    f.engine.set_world_state(conv, world).unwrap();
+
+    send(&f, conv, "You look lovely.").await.0.unwrap();
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap_or_default();
+    assert!(system.contains("Currently wearing: red ball gown, long gloves"), "{system}");
+    assert!(system.contains("happy, blushing"), "the emotion list is the gown's: {system}");
+
+    let reply = messages(&f, conv).into_iter().find(|m| m.role == MessageRole::Character).unwrap();
+    assert_eq!(reply.text, "Shall we dance?");
+    assert_eq!(reply.detected_emotion.as_deref(), Some("blushing"), "a mood only the gown has is recognised");
+
+    let session = f.engine.resume(conv).unwrap();
+    assert_eq!(session.characters[0].expressions.len(), 2, "the chat view gets the character as stored");
+    assert_eq!(session.characters[0].expressions[0].image_path, "happy.png");
+    assert_eq!(session.characters[0].description, "A star-mapper.");
+}
+
+#[test]
+fn dressing_falls_back_to_the_defaults() {
+    let f = fixture(vec![]);
+    let (nova, gown) = with_gown(&f);
+    assert_eq!(nova.clone().dressed(None), nova, "no outfit chosen");
+    assert_eq!(nova.clone().dressed(Some(Uuid::new_v4())), nova, "an outfit that was deleted");
+
+    let mut bare = nova.clone();
+    bare.outfits[0].expressions.clear();
+    let dressed = bare.dressed(Some(gown));
+    assert_eq!(dressed.expressions, nova.expressions, "an outfit without pictures keeps the default portraits");
+    assert!(dressed.description.ends_with("Currently wearing: red ball gown, long gloves"));
 }

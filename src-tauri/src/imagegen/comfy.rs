@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
 
-use super::{excerpt, sniff_mime, unreachable, BackendOptions, GeneratedImage, ImageRequest};
+use super::{excerpt, random_seed, sniff_mime, unreachable, BackendOptions, GeneratedImage, ImageRequest};
 use crate::error::{Error, Result};
 
 const SERVER: &str = "ComfyUI";
@@ -26,13 +26,6 @@ pub const DEFAULT_WORKFLOW: &str = r#"{
   "8": { "class_type": "VAEDecode", "inputs": { "samples": ["3", 0], "vae": ["4", 2] } },
   "9": { "class_type": "SaveImage", "inputs": { "filename_prefix": "LocalTavern", "images": ["8", 0] } }
 }"#;
-
-/// A seed ComfyUI accepts (it rejects -1) that also survives a round trip through JavaScript.
-fn random_seed() -> i64 {
-    let mut bytes = [0u8; 8];
-    let _ = getrandom::fill(&mut bytes);
-    (u64::from_le_bytes(bytes) & ((1 << 48) - 1)) as i64
-}
 
 /// Fills a workflow's placeholders. A string that is exactly a numeric placeholder (`"%seed%"`)
 /// becomes a JSON number; placeholders inside longer strings are replaced as text.

@@ -79,6 +79,9 @@ const characters: Character[] = ["Nova", "Mira", "Dorian"].map((name, i) => ({
   appearance: null,
   birthDate: null,
   schedule: null,
+  pictureStyle: { baseLook: "", defaultOutfit: "", seed: -1 },
+  outfits: [],
+  actionPictures: [],
   createdAt: now(),
   updatedAt: now(),
 }));
@@ -225,6 +228,7 @@ function conversation(overrides: Partial<Conversation>): Conversation {
       countryCode: "DE",
       regionCode: "DE-BY",
       customHolidays: [],
+      outfits: {},
     },
   });
   messages.get(r.id)!.push(
@@ -899,11 +903,39 @@ export const mockApi: Api = {
       ? { models: ["sdxl_base_1.0.safetensors [31e35c80fc]", "ponyDiffusionV6XL.safetensors [67ab2fd8ec]"], samplers: ["Euler a", "Euler", "DPM++ 2M", "DPM++ SDE"], schedulers: ["Automatic", "Karras", "Exponential"] }
       : { models: ["sdxl_base_1.0.safetensors", "illustriousXL.safetensors"], samplers: ["euler", "euler_ancestral", "dpmpp_2m"], schedulers: ["normal", "karras", "sgm_uniform"] };
   },
-  async getCharacterImagePrefix(characterId) {
-    return characterPrefixes.get(characterId) ?? "";
+  async describeCharacterLook(character) {
+    await sleep(700);
+    if (!character.description.trim()) throw "Write a description first - the look is taken from it.";
+    return { baseLook: "1girl, young woman, slender, pale skin, long silver hair, blue eyes, freckles", defaultOutfit: "navy flight jacket, white shirt, dark trousers, boots" };
   },
-  async setCharacterImagePrefix(characterId, prefix) {
-    characterPrefixes.set(characterId, prefix.trim());
+  async drawCharacterPicture(character, shot, outfitId) {
+    const style = character.pictureStyle;
+    if (!style.baseLook.trim()) throw "Fill in the base look first (or let the AI write it from the description).";
+    const outfit = character.outfits.find((o) => o.id === outfitId);
+    const clothing = outfit ? outfit.clothing || outfit.name : style.defaultOutfit;
+    const what = shot.kind === "mood" ? `${shot.emotion}` : shot.action;
+    imageRunning.set(character.id, true);
+    for (let i = 0; i < 8; i++) {
+      await sleep(100);
+      if (!imageRunning.get(character.id)) {
+        imageRunning.delete(character.id);
+        return null;
+      }
+    }
+    imageRunning.delete(character.id);
+    const square = shot.kind === "mood";
+    const draft: ImagePromptDraft = {
+      mode: square ? "face" : "character",
+      prompt: `${what}, ${clothing}`,
+      negativePrompt: "",
+      width: square ? 512 : 416,
+      height: square ? 512 : 608,
+      characterId: character.id,
+    };
+    return { path: mockPicture(draft), seed: style.seed >= 0 ? style.seed : Math.floor(Math.random() * 2 ** 32) };
+  },
+  async stopCharacterPicture(characterId) {
+    imageRunning.set(characterId, false);
   },
   async imagePrompt(conversationId, mode, characterId) {
     running.set(conversationId, true);
@@ -924,7 +956,7 @@ export const mockApi: Api = {
       scene: "scenery, research vessel bridge, night, starfield through windows, two people at a chart table",
       lastMessage: "scenery, observation deck, nebula glow, woman pointing at a star map",
     };
-    const prefix = subject ? characterPrefixes.get(subject.id) : "";
+    const prefix = subject?.pictureStyle.baseLook ?? "";
     const draft: ImagePromptDraft = {
       mode,
       prompt: [imageSettings.promptPrefix, prefix, descriptions[mode]].filter((p) => p && p.trim()).join(", "),
@@ -979,7 +1011,6 @@ let imageSettings: ImageGenSettings = {
   promptStyle: "tags",
   reviewPrompt: true,
 };
-const characterPrefixes = new Map<Uuid, string>();
 const imageRunning = new Map<Uuid, boolean>();
 
 /** A stand-in "render": a gradient at the draft's aspect ratio with its first tags written on it. */

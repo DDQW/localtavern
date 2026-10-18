@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use super::png;
 use crate::error::{Error, Result};
-use crate::models::{Appearance, Character, Schedule, Lorebook, WorldInfoEntry, WorldInfoPosition};
+use crate::models::{Appearance, Character, Lorebook, Outfit, PictureStyle, Schedule, WorldInfoEntry, WorldInfoPosition};
 
 /// A character plus the lorebook its card embedded (already linked from the character), if any.
 /// The caller just needs to persist both.
@@ -58,6 +58,9 @@ struct LocalTavernExtension {
     appearance: Option<Appearance>,
     birth_date: Option<chrono::NaiveDate>,
     schedule: Option<Schedule>,
+    /// Picture prompts travel with the card; the pictures themselves (local files) don't.
+    picture_style: Option<PictureStyle>,
+    outfits: Vec<Outfit>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +108,8 @@ pub fn map_card_json(json: &str) -> Result<CharacterImportResult> {
         appearance: ours.appearance,
         birth_date: ours.birth_date,
         schedule: ours.schedule,
+        picture_style: ours.picture_style.unwrap_or_default(),
+        outfits: ours.outfits,
         personality: data.personality.unwrap_or_default(),
         scenario: data.scenario.unwrap_or_default(),
         first_messages,
@@ -182,6 +187,12 @@ pub fn export_card_json(character: &Character, lorebook: Option<&Lorebook>) -> R
                 appearance: character.appearance.clone(),
                 birth_date: character.birth_date,
                 schedule: character.schedule.clone(),
+                picture_style: Some(character.picture_style.clone()),
+                outfits: character
+                    .outfits
+                    .iter()
+                    .map(|o| Outfit { expressions: Vec::new(), ..o.clone() })
+                    .collect(),
             }
         })),
     };
@@ -382,6 +393,28 @@ mod tests {
         assert_eq!(reimported.first_messages, original.first_messages);
         assert_eq!(reimported.example_dialogue, original.example_dialogue);
         assert_eq!(reimported.tags, original.tags);
+    }
+
+    #[test]
+    fn picture_prompts_and_outfits_travel_without_their_pictures() {
+        use crate::models::{ExpressionImage, PictureStyle};
+        let original = Character {
+            name: "Nova".into(),
+            picture_style: PictureStyle { base_look: "1girl, silver hair".into(), default_outfit: "jacket".into(), seed: 7 },
+            outfits: vec![Outfit {
+                id: uuid::Uuid::new_v4(),
+                name: "Gown".into(),
+                clothing: "red gown".into(),
+                expressions: vec![ExpressionImage { emotion: "happy".into(), image_path: "C:\\pics\\happy.png".into() }],
+            }],
+            ..Default::default()
+        };
+        let json = export_card_json(&original, None).unwrap();
+        assert!(!json.contains("happy.png"), "local file paths stay home");
+        let reimported = map_card_json(&json).unwrap().character;
+        assert_eq!(reimported.picture_style, original.picture_style);
+        assert_eq!((reimported.outfits[0].name.as_str(), reimported.outfits[0].clothing.as_str()), ("Gown", "red gown"));
+        assert!(reimported.outfits[0].expressions.is_empty());
     }
 
     #[test]

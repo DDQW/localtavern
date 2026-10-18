@@ -121,9 +121,140 @@ pub fn combine(prefix: &str, character_prefix: &str, description: &str) -> Strin
         .join(", ")
 }
 
+/// What one picture in a character's set shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum CharacterShot {
+    /// A portrait for the expression pack.
+    Mood { emotion: String },
+    /// The character doing something, full body.
+    Action { action: String },
+}
+
+/// Visual tags for an emotion name. Names beyond the common ones still work ("smug" → "smug
+/// expression"), since a pack's emotion keys are free-form.
+pub fn mood_tags(emotion: &str) -> String {
+    let key = emotion.trim().to_lowercase();
+    let tags = match key.as_str() {
+        "neutral" | "calm" => "neutral expression, calm, relaxed",
+        "happy" | "joy" => "happy, smiling",
+        "sad" | "sadness" => "sad, downcast eyes, slight frown",
+        "angry" | "anger" => "angry, furrowed brows, glaring",
+        "surprised" | "surprise" => "surprised, wide eyes, open mouth",
+        "scared" | "fear" | "afraid" => "scared, fearful expression, wide eyes",
+        "disgusted" | "disgust" => "disgusted, grimace, wrinkled nose",
+        "love" | "loving" => "loving gaze, soft smile, blushing",
+        "embarrassed" => "embarrassed, blushing, looking away",
+        "laughing" | "amused" | "amusement" => "laughing, eyes closed, open mouth smile",
+        "crying" => "crying, tears streaming",
+        "excited" | "excitement" => "excited, beaming smile, sparkling eyes",
+        "confused" | "confusion" => "confused, tilted head, raised eyebrow",
+        "thinking" | "curious" | "curiosity" => "thoughtful, hand on chin, curious look",
+        "tired" | "sleepy" => "tired, drowsy, half-closed eyes",
+        "smug" => "smug, smirk, half-lidded eyes",
+        "nervous" | "anxious" | "nervousness" => "nervous, worried expression, sweat drop",
+        "flirty" | "desire" => "flirty, sultry look, playful smile",
+        "pain" | "hurt" => "pained expression, wincing",
+        "proud" | "pride" => "proud, confident smile, chin up",
+        _ => return if key.is_empty() { String::new() } else { format!("{key} expression") },
+    };
+    tags.to_string()
+}
+
+/// The prompt for one picture of a character's set: prefix, permanent look, clothing, then the
+/// shot itself. Moods are upper-body portraits on a plain background so a set reads as a set.
+pub fn character_picture_prompt(prefix: &str, base_look: &str, clothing: &str, shot: &CharacterShot) -> String {
+    let shot_text = match shot {
+        CharacterShot::Mood { emotion } => {
+            format!("upper body portrait, looking at viewer, {}, simple background", mood_tags(emotion))
+        }
+        CharacterShot::Action { action } => format!("full body, {}", action.trim()),
+    };
+    let leading = combine(prefix, base_look, clothing);
+    combine(&leading, "", &shot_text)
+}
+
+/// Mood portraits are square (they become the round chat avatar); actions use the portrait size.
+pub fn character_picture_size(shot: &CharacterShot, width: u32, height: u32) -> (u32, u32) {
+    match shot {
+        CharacterShot::Mood { .. } => size_for(ImageMode::Face, width, height),
+        CharacterShot::Action { .. } => (width, height),
+    }
+}
+
+/// Splits the model's "LOOK: … / OUTFIT: …" answer. Without the labels, everything is the look.
+pub fn parse_look(raw: &str) -> (String, String) {
+    let text = clean_think(raw);
+    let mut look = String::new();
+    let mut outfit = String::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let lower = line.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("look:").map(|_| &line[5..]) {
+            look = clean_model_prompt(rest);
+        } else if let Some(rest) = lower.strip_prefix("outfit:").map(|_| &line[7..]) {
+            outfit = clean_model_prompt(rest);
+        }
+    }
+    if look.is_empty() && outfit.is_empty() {
+        look = clean_model_prompt(&text);
+    }
+    (look, outfit)
+}
+
+fn clean_think(raw: &str) -> String {
+    let text = raw.trim();
+    match text.rfind("</think>") {
+        Some(end) => text[end + "</think>".len()..].trim().to_string(),
+        None => text.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mood_tags_cover_the_suggested_emotions_and_any_other_name() {
+        for emotion in ["neutral", "happy", "sad", "angry", "surprised", "scared", "disgusted", "love"] {
+            let tags = mood_tags(emotion);
+            assert!(!tags.is_empty() && !tags.ends_with(" expression") || emotion == "neutral", "{emotion}: {tags}");
+        }
+        assert_eq!(mood_tags(" Happy "), "happy, smiling");
+        assert_eq!(mood_tags("Bored"), "bored expression");
+        assert_eq!(mood_tags(" "), "");
+    }
+
+    #[test]
+    fn character_pictures_put_the_look_and_clothing_before_the_shot() {
+        let mood = CharacterShot::Mood { emotion: "happy".into() };
+        assert_eq!(
+            character_picture_prompt("best quality", "1girl, silver hair", "navy flight jacket", &mood),
+            "best quality, 1girl, silver hair, navy flight jacket, upper body portrait, looking at viewer, happy, smiling, simple background"
+        );
+        let action = CharacterShot::Action { action: " reading by the fire ".into() };
+        assert_eq!(character_picture_prompt("", "1girl", "", &action), "1girl, full body, reading by the fire");
+        assert_eq!(character_picture_size(&mood, 832, 1216), (1024, 1024));
+        assert_eq!(character_picture_size(&action, 832, 1216), (832, 1216));
+    }
+
+    #[test]
+    fn shots_use_a_tagged_json_shape() {
+        let shot: CharacterShot = serde_json::from_str(r#"{"kind":"mood","emotion":"sad"}"#).unwrap();
+        assert_eq!(shot, CharacterShot::Mood { emotion: "sad".into() });
+        let shot: CharacterShot = serde_json::from_str(r#"{"kind":"action","action":"waving"}"#).unwrap();
+        assert_eq!(shot, CharacterShot::Action { action: "waving".into() });
+    }
+
+    #[test]
+    fn parses_look_and_outfit_lines() {
+        assert_eq!(
+            parse_look("Sure!
+LOOK: 1girl, silver hair, blue eyes
+Outfit: \"navy flight jacket, boots\""),
+            ("1girl, silver hair, blue eyes".to_string(), "navy flight jacket, boots".to_string())
+        );
+        assert_eq!(parse_look("<think>x</think>tall man, beard"), ("tall man, beard".to_string(), String::new()));
+    }
 
     #[test]
     fn instructions_name_the_subject_and_ask_for_the_chosen_format() {

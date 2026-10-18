@@ -70,6 +70,10 @@ pub struct WorldState {
     /// Extra or fictional holidays for this story.
     #[serde(default)]
     pub custom_holidays: Vec<CustomHoliday>,
+    /// Which outfit each character is wearing in this story (character id -> outfit id); a
+    /// character not listed wears their default.
+    #[serde(default)]
+    pub outfits: std::collections::BTreeMap<Uuid, Uuid>,
 }
 
 /// A holiday the user added to a story: every year on `month`/`day`, or once when `year` is set.
@@ -101,6 +105,7 @@ impl WorldState {
             country_code: None,
             region_code: None,
             custom_holidays: Vec::new(),
+            outfits: Default::default(),
         }
     }
 }

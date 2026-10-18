@@ -98,8 +98,34 @@ export interface Character {
   /** YYYY-MM-DD */
   birthDate: string | null;
   schedule: Schedule | null;
+  pictureStyle: PictureStyle;
+  outfits: Outfit[];
+  actionPictures: ActionPicture[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** What every picture of a character shares, so a set looks like one person. */
+export interface PictureStyle {
+  /** Permanent physical features as image-prompt text (no clothing). */
+  baseLook: string;
+  /** What they wear when no other outfit is chosen. */
+  defaultOutfit: string;
+  /** -1 until the first picture is drawn. */
+  seed: number;
+}
+
+/** A costume with its own expression pack; a chat can put the character in it. */
+export interface Outfit {
+  id: Uuid;
+  name: string;
+  clothing: string;
+  expressions: ExpressionImage[];
+}
+
+export interface ActionPicture {
+  action: string;
+  imagePath: string;
 }
 
 export interface Persona {
@@ -134,6 +160,8 @@ export interface WorldState {
   /** e.g. "DE-BY", for regional holidays. */
   regionCode: string | null;
   customHolidays: CustomHoliday[];
+  /** Character id -> outfit id; characters not listed wear their default. */
+  outfits: Record<Uuid, Uuid>;
 }
 
 /** Every year on month/day, or once when `year` is set. */
@@ -510,4 +538,17 @@ export interface ImagePromptDraft {
   width: number;
   height: number;
   characterId: Uuid | null;
+}
+
+/** One picture of a character's set. */
+export type CharacterShot = { kind: "mood"; emotion: string } | { kind: "action"; action: string };
+
+export interface LookDraft {
+  baseLook: string;
+  defaultOutfit: string;
+}
+
+export interface CharacterPicture {
+  path: string;
+  seed: number;
 }

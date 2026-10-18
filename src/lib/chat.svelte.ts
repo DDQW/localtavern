@@ -224,6 +224,13 @@ class ChatStore {
     return cast.find((c) => c.id === message.speakerCharacterId) ?? (cast.length === 1 ? cast[0] : undefined);
   }
 
+  /** The expression pack a character shows in this chat: their outfit's, or the default one. */
+  expressionsFor(character: Character) {
+    const outfitId = this.session?.conversation.worldState?.outfits?.[character.id];
+    const outfit = character.outfits.find((o) => o.id === outfitId);
+    return outfit?.expressions.some((e) => e.imagePath) ? outfit.expressions : character.expressions;
+  }
+
   speaker(message: ChatMessage): Speaker {
     const persona: Persona | null = this.session?.persona ?? null;
     if (message.role === "user") return { name: persona?.name || "You", avatarPath: persona?.avatarPath ?? null };
@@ -233,9 +240,10 @@ class ChatStore {
 
     const character = this.characterFor(message);
     if (!character) return { name: "Assistant", avatarPath: null };
-    // A character with an expression pack shows the portrait matching the reply's detected emotion.
+    // A character with an expression pack shows the portrait matching the reply's detected emotion,
+    // from the outfit this story has them in when that outfit has its own pictures.
     const expression = message.detectedEmotion
-      ? character.expressions.find((e) => e.emotion === message.detectedEmotion)
+      ? this.expressionsFor(character).find((e) => e.emotion === message.detectedEmotion)
       : undefined;
     return { name: character.name, avatarPath: expression?.imagePath ?? character.avatarPath };
   }
@@ -633,7 +641,7 @@ class ChatStore {
     const current = this.session?.conversation.worldState;
     if (!id || !current || this.busy) return;
     try {
-      const saved = await api.setWorldState(id, { ...current, ...patch });
+      const saved = await api.setWorldState(id, { ...$state.snapshot(current), ...patch });
       if (this.conversationId === id && this.session) this.session.conversation.worldState = saved;
     } catch (e) {
       this.error = errorText(e);

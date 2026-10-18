@@ -4,16 +4,11 @@
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::error::Result;
 use crate::repo::app_settings;
 
 const SETTINGS_KEY: &str = "imagegen.settings";
-
-fn character_prefix_key(character_id: Uuid) -> String {
-    format!("imagegen.characterPrefix.{character_id}")
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -139,16 +134,6 @@ pub fn save(conn: &Connection, settings: ImageGenSettings) -> Result<ImageGenSet
     Ok(settings)
 }
 
-/// Tags put in front of every picture of this character (a LoRA, a fixed look). Kept here rather
-/// than on the card so it stays a local, image-only setting.
-pub fn character_prefix(conn: &Connection, character_id: Uuid) -> Result<String> {
-    Ok(app_settings::get(conn, &character_prefix_key(character_id))?.unwrap_or_default())
-}
-
-pub fn set_character_prefix(conn: &Connection, character_id: Uuid, prefix: &str) -> Result<()> {
-    app_settings::set(conn, &character_prefix_key(character_id), prefix.trim())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,14 +171,5 @@ mod tests {
         assert_eq!(s.a1111.url, "http://box:7860");
         assert_eq!(s.comfy.url, "http://127.0.0.1:8188");
         assert_eq!(ImageGenSettings { width: 1001, ..Default::default() }.sanitized().width, 1000);
-    }
-
-    #[test]
-    fn character_prefixes_are_per_character() {
-        let conn = open_in_memory().unwrap();
-        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
-        set_character_prefix(&conn, a, " <lora:alice:0.8>, red hair ").unwrap();
-        assert_eq!(character_prefix(&conn, a).unwrap(), "<lora:alice:0.8>, red hair");
-        assert_eq!(character_prefix(&conn, b).unwrap(), "");
     }
 }

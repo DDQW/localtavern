@@ -34,6 +34,9 @@ import type {
   ImageGenSettings,
   ImageMode,
   ImagePromptDraft,
+  CharacterPicture,
+  CharacterShot,
+  LookDraft,
   DefaultPersonas,
   Uuid,
   WorldState,
@@ -153,8 +156,11 @@ export interface Api {
   saveImageSettings(settings: ImageGenSettings): Promise<ImageGenSettings>;
   /** Checkpoints/samplers/schedulers from the server in `settings` (which needn't be saved yet). */
   imageBackendOptions(settings: ImageGenSettings): Promise<ImageBackendOptions>;
-  getCharacterImagePrefix(characterId: Uuid): Promise<string>;
-  setCharacterImagePrefix(characterId: Uuid, prefix: string): Promise<void>;
+  /** The chat model's base look + usual clothing for a character, from its description. */
+  describeCharacterLook(character: Character): Promise<LookDraft>;
+  /** Draws one mood/action picture of the character as edited; null when stopped. */
+  drawCharacterPicture(character: Character, shot: CharacterShot, outfitId: Uuid | null): Promise<CharacterPicture | null>;
+  stopCharacterPicture(characterId: Uuid): Promise<void>;
   /** The chat model's description for a picture; null when stopped (stopGeneration). */
   imagePrompt(conversationId: Uuid, mode: ImageMode, characterId: Uuid | null): Promise<ImagePromptDraft | null>;
   /** Renders a draft and adds it to the chat; null when stopped (stopImage). */
@@ -277,8 +283,9 @@ const tauriApi: Api = {
   getImageSettings: () => invoke("get_image_settings"),
   saveImageSettings: (settings) => invoke("save_image_settings", { settings }),
   imageBackendOptions: (settings) => invoke("image_backend_options", { settings }),
-  getCharacterImagePrefix: (characterId) => invoke("get_character_image_prefix", { characterId }),
-  setCharacterImagePrefix: (characterId, prefix) => invoke("set_character_image_prefix", { characterId, prefix }),
+  describeCharacterLook: (character) => invoke("describe_character_look", { character }),
+  drawCharacterPicture: (character, shot, outfitId) => invoke("draw_character_picture", { character, shot, outfitId }),
+  stopCharacterPicture: (characterId) => invoke("stop_character_picture", { characterId }),
   imagePrompt: (conversationId, mode, characterId) => invoke("image_prompt", { conversationId, mode, characterId }),
   generateImage: (conversationId, draft) => invoke("generate_image", { conversationId, draft }),
   stopImage: (conversationId) => invoke("stop_image", { conversationId }),

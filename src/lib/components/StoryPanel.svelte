@@ -7,6 +7,16 @@
   const world = $derived(chat.session?.conversation.worldState ?? null);
   const story = $derived(chat.story);
   const cast = $derived(chat.session?.characters ?? []);
+  const dressable = $derived(cast.filter((c) => c.outfits.length > 0));
+
+  /** Puts a character in an outfit for this story ("" = their default clothes). */
+  function setOutfit(characterId: string, outfitId: string) {
+    if (!world) return;
+    const outfits = { ...(world.outfits ?? {}) };
+    if (outfitId) outfits[characterId] = outfitId;
+    else delete outfits[characterId];
+    void chat.updateWorld({ outfits });
+  }
 
   const when = $derived.by(() => {
     if (!world) return "";
@@ -146,6 +156,25 @@
           Auto-drift weather over time
         </label>
       </div>
+
+      {#if dressable.length > 0}
+        <h3>Outfits</h3>
+        <div class="clock" class:locked>
+          {#each dressable as character (character.id)}
+            <label class="field">
+              {character.name} wears
+              <select
+                value={world.outfits?.[character.id] ?? ""}
+                disabled={locked}
+                onchange={(e) => setOutfit(character.id, e.currentTarget.value)}
+              >
+                <option value="">Default clothes</option>
+                {#each character.outfits as outfit (outfit.id)}<option value={outfit.id}>{outfit.name || "Unnamed outfit"}</option>{/each}
+              </select>
+            </label>
+          {/each}
+        </div>
+      {/if}
 
       <h3>Setting</h3>
       <div class="clock" class:locked>
