@@ -11,6 +11,7 @@ use tauri_plugin_opener::OpenerExt;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::chat::compaction::ContextStatus;
 use crate::chat::{images, ChatEngine, ChatEvent, ChatSession, EventSink, ToolDecision};
 use crate::db::Db;
 use crate::error::{Error, Result};
@@ -249,6 +250,27 @@ pub async fn swipe_next(
 pub async fn continue_message(state: State<'_, AppState>, conversation_id: Uuid, on_event: Channel<ChatEvent>) -> Result<()> {
     let engine = state.engine.clone();
     engine.continue_message(conversation_id, Arc::new(ChannelSink(on_event))).await
+}
+
+/// How full the conversation's context window is (for the meter above the chat).
+#[tauri::command]
+pub async fn context_status(state: State<'_, AppState>, conversation_id: Uuid) -> Result<ContextStatus> {
+    let engine = state.engine.clone();
+    engine.context_status(conversation_id).await
+}
+
+/// Summarizes all but the newest messages, so they stop taking up the model's context.
+#[tauri::command]
+pub async fn compact_conversation(state: State<'_, AppState>, conversation_id: Uuid) -> Result<ContextStatus> {
+    let engine = state.engine.clone();
+    engine.compact(conversation_id).await
+}
+
+/// Undoes compaction: every message is sent in full again.
+#[tauri::command]
+pub async fn clear_conversation_summary(state: State<'_, AppState>, conversation_id: Uuid) -> Result<ContextStatus> {
+    let engine = state.engine.clone();
+    engine.clear_summary(conversation_id).await
 }
 
 /// A drafted user message (`None` when stopped); the UI puts it in the input box.

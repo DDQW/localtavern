@@ -8,7 +8,9 @@ import type {
   CharacterNotebookEntry,
   ChatMessage,
   ChatSession,
+  ContextStatus,
   Conversation,
+  ConversationSummary,
   DefaultPersonas,
   GeminiOptions,
   GroupChat,
@@ -290,6 +292,33 @@ let memories: UserMemory[] = [
 ];
 const approvals = new Map<string, (decision: { allow: boolean; alwaysPattern: string | null }) => void>();
 const notebooks = new Map<Uuid, CharacterNotebookEntry[]>();
+const summaries = new Map<Uuid, ConversationSummary>();
+/** Ollama-sized, so the demo meter fills up quickly. */
+const MOCK_WINDOW = 8192;
+const KEEP_RECENT = 6;
+
+function uncovered(conversationId: Uuid): ChatMessage[] {
+  const list = messages.get(conversationId) ?? [];
+  const summary = summaries.get(conversationId);
+  if (!summary) return list;
+  return list.slice(list.findIndex((m) => m.id === summary.coversThroughMessageId) + 1);
+}
+
+function contextStatus(conversationId: Uuid): ContextStatus {
+  const summary = summaries.get(conversationId) ?? null;
+  const rest = uncovered(conversationId);
+  const chars = rest.reduce((n, m) => n + m.text.length, 0) + (summary?.text.length ?? 0) + 2400;
+  return {
+    window: MOCK_WINDOW,
+    windowSource: "provider",
+    used: Math.ceil(chars / 4),
+    estimated: true,
+    summary: summary ? structuredClone(summary) : null,
+    summarizedCount: (messages.get(conversationId)?.length ?? 0) - rest.length,
+    compactableCount: Math.max(0, rest.length - KEEP_RECENT),
+    autoCompactPercent: 80,
+  };
+}
 
 async function stream(conversationId: Uuid, target: ChatMessage, onEvent: EventHandler, reply: string, replacing: boolean) {
   const reasoning = "Thinking about how best to answer…";
@@ -423,6 +452,12 @@ export const mockApi: Api = {
       list.push(user);
       onEvent({ type: "messageAdded", message: structuredClone(user) });
     }
+    const status = contextStatus(conversationId);
+    if (status.compactableCount > 0 && status.used * 100 >= status.window! * status.autoCompactPercent) {
+      onEvent({ type: "compacting", conversationId });
+      await mockApi.compactConversation(conversationId);
+      onEvent({ type: "compacted", conversationId });
+    }
     const c = conversations.find((x) => x.id === conversationId)!;
     const reply = message(conversationId, "character", "", { speakerCharacterId: c.characterId });
     list.push(reply);
@@ -509,6 +544,29 @@ export const mockApi: Api = {
     if (target.alternates.length) target.alternates[target.activeAlternateIndex].text = target.text;
     onEvent({ type: "messageUpdated", message: structuredClone(target) });
     onEvent({ type: "finished" });
+  },
+  async contextStatus(conversationId) {
+    return contextStatus(conversationId);
+  },
+  async compactConversation(conversationId) {
+    const rest = uncovered(conversationId);
+    const condense = rest.slice(0, Math.max(0, rest.length - KEEP_RECENT));
+    if (condense.length === 0) throw new Error("Nothing to compact yet - the newest messages are always kept in full.");
+    await sleep(900);
+    const previous = summaries.get(conversationId)?.text;
+    const last = condense.at(-1)!;
+    summaries.set(conversationId, {
+      conversationId,
+      text: `${previous ? previous + " " : ""}Alex and the crew talked through ${condense.length} messages' worth of plans for the voyage.`,
+      coversThroughMessageId: last.id,
+      coversThroughTimestamp: last.timestamp,
+      updatedAt: now(),
+    });
+    return contextStatus(conversationId);
+  },
+  async clearConversationSummary(conversationId) {
+    summaries.delete(conversationId);
+    return contextStatus(conversationId);
   },
   async impersonate(conversationId) {
     running.set(conversationId, true);

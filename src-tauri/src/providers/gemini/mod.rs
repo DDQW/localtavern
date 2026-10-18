@@ -89,6 +89,16 @@ impl LlmProvider for GeminiProvider {
             .collect())
     }
 
+    async fn context_window(&self, model: &str) -> Option<i32> {
+        let key = self.require_key().ok()?;
+        let url = format!("{}{}", self.base_url, utf8_percent_encode(model, MODEL_SEGMENT));
+        let response = send(self.client.get(url).header("x-goog-api-key", key), "Gemini").await.ok()?;
+        let response = ensure_success(response, errors::to_provider_error).await.ok()?;
+        let info: wire::GeminiModelInfo = serde_json::from_str(&response.text().await.ok()?).ok()?;
+        // The prompt (the whole conversation) must fit the input limit; the reply has its own.
+        info.input_token_limit
+    }
+
     async fn stream_completion(&self, request: LlmRequest) -> Result<ChunkStream, ProviderError> {
         let key = self.require_key()?;
         let options = self.options.current();

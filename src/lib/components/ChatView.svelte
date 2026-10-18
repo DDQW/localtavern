@@ -16,6 +16,7 @@
 
   const hidden = $derived(Math.max(0, chat.messages.length - visible));
   const shown = $derived(chat.messages.slice(hidden));
+  const lastSummarized = $derived(chat.lastSummarizedIndex);
 
   function onscroll() {
     if (!scroller) return;
@@ -72,7 +73,18 @@
       {/if}
 
       {#each shown as message, i (message.id)}
-        <Message {message} latest={hidden + i === chat.messages.length - 1} />
+        <div class:summarized={hidden + i <= lastSummarized}>
+          <Message {message} latest={hidden + i === chat.messages.length - 1} />
+        </div>
+        {#if hidden + i === lastSummarized && chat.context?.summary}
+          <details class="summary">
+            <summary>
+              ▲ {lastSummarized + 1} earlier messages are summarized — the model sees this summary instead of them
+            </summary>
+            <p>{chat.context.summary.text}</p>
+            <button class="ghost" onclick={() => chat.clearSummary()} disabled={chat.busy}>Undo compaction</button>
+          </details>
+        {/if}
       {/each}
     </div>
 
@@ -114,5 +126,28 @@
   .earlier {
     text-align: center;
     margin-bottom: 12px;
+  }
+
+  .summarized {
+    opacity: 0.55;
+  }
+
+  .summary {
+    margin: 10px 8px 16px;
+    padding: 8px 12px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .summary summary {
+    cursor: pointer;
+  }
+
+  .summary p {
+    white-space: pre-wrap;
+    color: var(--text);
+    margin: 8px 0;
   }
 </style>

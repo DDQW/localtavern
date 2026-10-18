@@ -39,6 +39,12 @@ pub trait LlmProvider: Send + Sync {
     /// must cache a prior successful result themselves.
     async fn list_models(&self) -> Result<Vec<String>, ProviderError>;
 
+    /// How many tokens of prompt plus reply `model` can hold, when the provider says. `None` when it
+    /// doesn't report one (or the lookup failed) - callers then fall back to the preset's limit.
+    async fn context_window(&self, _model: &str) -> Option<i32> {
+        None
+    }
+
     /// Starts a streamed completion. Auth and HTTP-status failures are returned here, before any
     /// chunk; failures mid-stream arrive as `Err` items.
     async fn stream_completion(&self, request: LlmRequest) -> Result<ChunkStream, ProviderError>;

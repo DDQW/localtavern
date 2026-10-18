@@ -20,6 +20,7 @@ use rusqlite::Connection;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use super::compaction::{self, ContextStatus, Names};
 use super::events::{ChatEvent, EventSink};
 use super::extraction::{Exchange, Extractor};
 use super::images;
@@ -33,7 +34,7 @@ use crate::error::{Error, Result};
 use crate::group_chats::strategy_for;
 use crate::llm::{LlmMessage, LlmRequest, LlmRole};
 use crate::models::{
-    Character, ChatMessage, Conversation, ConversationMode, LlmUsage, MessageAttachment, MessageRole, Persona,
+    Character, ChatMessage, Conversation, ConversationMode, ConversationSummary, LlmUsage, MessageAttachment, MessageRole, Persona,
     PromptBlockType, PromptPreset, WorldState,
 };
 use crate::powershell::exec::{CommandRunner, ExecError, ExecutionResult, Pwsh};
@@ -44,7 +45,7 @@ use crate::prompting::{
     self, emotion_tag, roles, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext,
 };
 use crate::providers::{LlmGeneratedImage, LlmProviderRegistry, ProviderError};
-use crate::repo::{characters, conversations, group_chats, notebook, quest_log, user_memories};
+use crate::repo::{characters, conversations, group_chats, notebook, quest_log, summaries, user_memories};
 use crate::settings;
 
 /// How often streamed text is pushed to the UI. Rendering faster than the display refreshes buys
@@ -650,6 +651,152 @@ impl ChatEngine {
         Ok(Some(response.delta_text.trim().to_string()))
     }
 
+    // ------------------------------------------------------------------ context window
+
+    /// The model's window: the provider's own limit, or the preset's history limit, whichever is
+    /// smaller (the preset trims history to its limit, so compacting before that loses nothing).
+    async fn context_window(&self, ctx: &ReplyContext) -> (Option<i32>, Option<&'static str>) {
+        let provider = match self.inner.providers.get(&ctx.conversation.provider_id) {
+            Ok(p) => p.context_window(&ctx.conversation.model).await.filter(|w| *w > 0),
+            Err(_) => None,
+        };
+        let preset = ctx.preset.max_context_tokens.filter(|w| *w > 0);
+        match (provider, preset) {
+            (Some(p), Some(h)) if h < p => (Some(h), Some("preset")),
+            (Some(p), _) => (Some(p), Some("provider")),
+            (None, Some(h)) => (Some(h), Some("preset")),
+            (None, None) => (None, None),
+        }
+    }
+
+    /// How full the next request would be. Uses the provider's count from the last reply when it
+    /// is newer than the summary and not below the text estimate (Ollama, for one, leaves cached
+    /// prompt tokens out of its count).
+    pub async fn context_status(&self, conversation_id: Uuid) -> Result<ContextStatus> {
+        let ctx = self.db().with(|c| load_reply_context(c, conversation_id))?;
+        self.status_for(&ctx).await
+    }
+
+    async fn status_for(&self, ctx: &ReplyContext) -> Result<ContextStatus> {
+        let (window, window_source) = self.context_window(ctx).await;
+        let summary = self.db().with(|c| summaries::get(c, ctx.conversation.id))?;
+        let uncovered = summary.as_ref().map(|s| s.uncovered(&ctx.messages)).unwrap_or(&ctx.messages);
+
+        let speaker = (ctx.characters.len() == 1).then(|| &ctx.characters[0]);
+        let request = self.assemble(ctx, &ctx.messages, AssembleOptions { speaker, reply_tags: true, ..Default::default() })?;
+        let estimate = compaction::estimate_request_tokens(&request);
+        let reported = uncovered
+            .iter()
+            .rev()
+            .find(|m| m.role == MessageRole::Character && m.usage.is_some())
+            .filter(|m| summary.as_ref().is_none_or(|s| m.timestamp > s.updated_at))
+            .and_then(|m| m.usage)
+            .and_then(|u| u.total_tokens.or_else(|| Some(u.prompt_tokens? + u.completion_tokens.unwrap_or(0))));
+        let (used, estimated) = match reported {
+            Some(tokens) if tokens >= estimate => (tokens, false),
+            _ => (estimate, true),
+        };
+
+        Ok(ContextStatus {
+            window,
+            window_source,
+            used,
+            estimated,
+            summarized_count: ctx.messages.len() - uncovered.len(),
+            compactable_count: compaction::to_condense(uncovered).len(),
+            summary,
+            auto_compact_percent: compaction::AUTO_COMPACT_PERCENT,
+        })
+    }
+
+    /// Summarizes everything but the newest messages into the conversation's running summary.
+    pub async fn compact(&self, conversation_id: Uuid) -> Result<ContextStatus> {
+        let (token, _guard) = self.claim(conversation_id)?;
+        let ctx = self.db().with(|c| load_reply_context(c, conversation_id))?;
+        if self.compact_inner(&ctx, &token).await?.is_none() && !token.is_cancelled() {
+            return Err(Error::Other("Nothing to compact yet - the newest messages are always kept in full.".into()));
+        }
+        self.context_status(conversation_id).await
+    }
+
+    /// Drops the summary, so every message is sent in full again.
+    pub async fn clear_summary(&self, conversation_id: Uuid) -> Result<ContextStatus> {
+        let (_token, _guard) = self.claim(conversation_id)?;
+        self.db().with(|c| summaries::clear(c, conversation_id))?;
+        self.context_status(conversation_id).await
+    }
+
+    /// Before a reply: compacts when the request would nearly fill the window. A failed compaction
+    /// is reported but doesn't stop the reply.
+    async fn auto_compact(&self, conversation_id: Uuid, sink: &Arc<dyn EventSink>, token: &CancellationToken) -> Result<()> {
+        let ctx = self.db().with(|c| load_reply_context(c, conversation_id))?;
+        let status = self.status_for(&ctx).await?;
+        if status.compactable_count == 0 || !compaction::needs_compaction(status.used, status.window) {
+            return Ok(());
+        }
+        sink.emit(ChatEvent::Compacting { conversation_id });
+        if let Err(error) = self.compact_inner(&ctx, token).await {
+            sink.emit(ChatEvent::Error { message: format!("Couldn't compact the chat: {error}"), kind: None });
+        }
+        sink.emit(ChatEvent::Compacted { conversation_id });
+        Ok(())
+    }
+
+    /// Condenses the messages not yet summarized (minus the newest few) into the summary, in as
+    /// many passes as the window needs. `None` when there was nothing to condense, or when stopped.
+    async fn compact_inner(&self, ctx: &ReplyContext, token: &CancellationToken) -> Result<Option<ConversationSummary>> {
+        let conversation = &ctx.conversation;
+        if conversation.model.trim().is_empty() {
+            return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
+        }
+        let previous = self.db().with(|c| summaries::get(c, conversation.id))?;
+        let uncovered = previous.as_ref().map(|s| s.uncovered(&ctx.messages)).unwrap_or(&ctx.messages);
+        let condense = compaction::to_condense(uncovered);
+        let Some(last) = condense.last() else {
+            return Ok(None);
+        };
+
+        let (window, _) = self.context_window(ctx).await;
+        let names = Names {
+            user: roles::user_name(ctx.persona.as_ref()),
+            characters: &ctx.characters,
+            roleplay: conversation.mode == ConversationMode::Roleplay,
+        };
+        let provider = self.inner.providers.get(&conversation.provider_id).map_err(|e| Error::Other(user_message(&e)))?;
+
+        let mut text = previous.map(|s| s.text);
+        for transcript in compaction::transcripts(condense, &names, window) {
+            let request = LlmRequest {
+                model: conversation.model.clone(),
+                system_instruction: None,
+                history: vec![LlmMessage::new(LlmRole::User, compaction::summary_prompt(text.as_deref(), &transcript, &names))],
+                generation_config: Default::default(),
+                enable_web_search: None,
+            };
+            let outcome = tokio::select! {
+                biased;
+                _ = token.cancelled() => return Ok(None),
+                outcome = provider.get_completion(request) => outcome,
+            };
+            let response = outcome.map_err(|e| Error::Other(user_message(&e)))?;
+            let summary = response.delta_text.trim();
+            if summary.is_empty() {
+                return Err(Error::Other("The model returned an empty summary.".into()));
+            }
+            text = Some(summary.to_string());
+        }
+
+        let summary = ConversationSummary {
+            conversation_id: conversation.id,
+            text: text.unwrap_or_default(),
+            covers_through_message_id: last.id,
+            covers_through_timestamp: last.timestamp,
+            updated_at: Utc::now(),
+        };
+        self.db().with(|c| summaries::set(c, &summary))?;
+        Ok(Some(summary))
+    }
+
     /// Claims the conversation's single generation slot; fails if a reply is already in flight.
     fn claim(&self, conversation_id: Uuid) -> Result<(CancellationToken, ActiveGuard<'_>)> {
         let token = CancellationToken::new();
@@ -709,6 +856,11 @@ impl ChatEngine {
             sink.emit(ChatEvent::MessageAdded { message: user });
         }
 
+        self.auto_compact(conversation_id, &sink, &token).await?;
+        if token.is_cancelled() {
+            return Ok(());
+        }
+
         if let Some(group) = &ctx.group {
             // Who answers depends on the group's activation mode; an empty answer means "let the
             // user pick" (manual mode) - the UI offers the group's members.
@@ -735,15 +887,20 @@ impl ChatEngine {
     /// tag while a world clock runs).
     fn assemble(&self, ctx: &ReplyContext, history: &[ChatMessage], options: AssembleOptions<'_>) -> Result<LlmRequest> {
         let conversation = &ctx.conversation;
-        let (memories, notebook_entries, quests) = self.db().with(|c| {
+        let (memories, notebook_entries, quests, summary) = self.db().with(|c| {
             let memories = if conversation.mode == ConversationMode::Assistant { user_memories::get_all(c)? } else { vec![] };
             let (notes, quests) = if conversation.mode == ConversationMode::Roleplay {
                 (notebook::get_by_conversation(c, conversation.id)?, quest_log::get_by_conversation(c, conversation.id)?)
             } else {
                 (vec![], vec![])
             };
-            Ok((memories, notes, quests))
+            Ok((memories, notes, quests, summaries::get(c, conversation.id)?))
         })?;
+        // A compacted chat sends its summary in place of the messages it covers.
+        let history = match &summary {
+            Some(s) => s.uncovered(history),
+            None => history,
+        };
 
         let world_text = (conversation.mode == ConversationMode::Roleplay)
             .then(|| conversation.world_state.as_ref().map(world_state::format))
@@ -766,6 +923,11 @@ impl ChatEngine {
         }
 
         let mut request = prompting::assemble(&pctx, &KeywordWorldInfoScanner);
+
+        if let Some(summary) = &summary {
+            let roleplay = conversation.mode == ConversationMode::Roleplay;
+            append_instruction(&mut request, &compaction::summary_instruction(&summary.text, roleplay));
+        }
 
         // Not left to the preset: its system prompt is the user's to rewrite, and these must hold whatever it says.
         if conversation.mode == ConversationMode::Roleplay && !options.as_user {

@@ -61,6 +61,11 @@ impl LlmProvider for OllamaProvider {
         Ok(parsed.models.unwrap_or_default().into_iter().map(|m| m.name).collect())
     }
 
+    /// Whatever the model could hold, Ollama only gives it the `num_ctx` this app sends.
+    async fn context_window(&self, _model: &str) -> Option<i32> {
+        Some(self.options.current().context_size)
+    }
+
     async fn stream_completion(&self, request: LlmRequest) -> Result<ChunkStream, ProviderError> {
         let options = self.options.current();
         let base_url = options.base_url.trim_end_matches('/').to_string();

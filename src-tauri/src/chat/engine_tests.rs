@@ -38,11 +38,13 @@ enum Script {
 struct FakeProvider {
     scripts: Mutex<VecDeque<Script>>,
     requests: Mutex<Vec<LlmRequest>>,
+    /// What `context_window` reports (`None`: unknown, like most providers).
+    window: Mutex<Option<i32>>,
 }
 
 impl FakeProvider {
     fn new(scripts: Vec<Script>) -> Arc<Self> {
-        Arc::new(Self { scripts: Mutex::new(scripts.into()), requests: Mutex::new(vec![]) })
+        Arc::new(Self { scripts: Mutex::new(scripts.into()), requests: Mutex::new(vec![]), window: Mutex::new(None) })
     }
 
     fn requests(&self) -> Vec<LlmRequest> {
@@ -58,6 +60,10 @@ impl LlmProvider for FakeProvider {
 
     async fn list_models(&self) -> std::result::Result<Vec<String>, ProviderError> {
         Ok(vec!["fake-model".into()])
+    }
+
+    async fn context_window(&self, _model: &str) -> Option<i32> {
+        *self.window.lock().unwrap()
     }
 
     async fn stream_completion(&self, request: LlmRequest) -> std::result::Result<ChunkStream, ProviderError> {
@@ -2044,4 +2050,176 @@ async fn swiping_or_continuing_never_offers_the_tool() {
     let reply = messages(&f, conv)[1].id;
     f.engine.swipe_next(conv, reply, Arc::new(VecSink::default())).await.unwrap();
     assert!(!f.provider.requests()[1].system_instruction.clone().unwrap_or_default().contains("powershell"));
+}
+
+// ---- context window and compaction ----
+
+/// A roleplay with `count` alternating player/character messages already in it ("m0", "m1", ...).
+fn roleplay_with_history(f: &Fixture, count: usize, filler: usize) -> (Uuid, Vec<ChatMessage>) {
+    let nova = add_character(&f.db, "Nova", None, &[]);
+    let conv = ready_character(f, &nova);
+    no_clock(f, conv);
+    for i in 0..count {
+        let mut m = if i % 2 == 0 {
+            ChatMessage::new(conv, MessageRole::User, format!("m{i} {}", "x".repeat(filler)))
+        } else {
+            let mut reply = ChatMessage::new(conv, MessageRole::Character, format!("m{i} {}", "x".repeat(filler)));
+            reply.speaker_character_id = Some(nova.id);
+            reply
+        };
+        m.timestamp = chrono::Utc::now() + chrono::Duration::milliseconds(i as i64);
+        f.db.with(|c| conversations::add_message(c, &m)).unwrap();
+    }
+    (conv, messages(f, conv))
+}
+
+fn history_texts(request: &LlmRequest) -> Vec<String> {
+    request.history.iter().map(|m| m.text.clone()).collect()
+}
+
+#[tokio::test]
+async fn compacting_summarizes_all_but_the_newest_messages_and_later_replies_send_the_summary_instead() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Alex and Nova met at the inn."), finish("STOP")]),
+        Script::Items(vec![chunk("Welcome back."), finish("STOP")]),
+    ]);
+    add_persona(&f.db, "Alex");
+    let (conv, history) = roleplay_with_history(&f, 10, 0);
+
+    let status = f.engine.compact(conv).await.unwrap();
+
+    let ask = &f.provider.requests()[0].history[0].text;
+    assert!(ask.contains("You are compacting the history"), "{ask}");
+    assert!(ask.contains("Alex:\nm0") && ask.contains("Nova:\nm1") && ask.contains("m3"), "{ask}");
+    assert!(!ask.contains("m4"), "the newest six stay out of the summary: {ask}");
+    assert_eq!(status.summarized_count, 4);
+    assert_eq!(status.compactable_count, 0);
+    let summary = status.summary.unwrap();
+    assert_eq!(summary.text, "Alex and Nova met at the inn.");
+    assert_eq!(summary.covers_through_message_id, history[3].id);
+    // The chat itself keeps every message.
+    assert_eq!(messages(&f, conv).len(), 10);
+
+    send(&f, conv, "hi").await.0.unwrap();
+    let reply = &f.provider.requests()[1];
+    let system = reply.system_instruction.clone().unwrap_or_default();
+    assert!(system.contains("The story so far (older messages are no longer shown; this summary replaces them):\nAlex and Nova met at the inn."), "{system}");
+    let sent = history_texts(reply);
+    assert!(sent.iter().all(|t| !t.starts_with("m0") && !t.starts_with("m3")), "{sent:?}");
+    assert!(sent[0].starts_with("m4") && sent.last().unwrap() == "hi", "{sent:?}");
+}
+
+#[tokio::test]
+async fn compacting_again_merges_the_earlier_summary_and_clearing_sends_everything_again() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("First part."), finish("STOP")]),
+        Script::Items(vec![chunk("First and second part."), finish("STOP")]),
+    ]);
+    let (conv, _) = roleplay_with_history(&f, 8, 0);
+    f.engine.compact(conv).await.unwrap();
+    for i in 8..12 {
+        let m = ChatMessage::new(conv, MessageRole::User, format!("m{i}"));
+        f.db.with(|c| conversations::add_message(c, &m)).unwrap();
+    }
+
+    let status = f.engine.compact(conv).await.unwrap();
+
+    let ask = &f.provider.requests()[1].history[0].text;
+    assert!(ask.contains("Summary of everything before these messages:\nFirst part."), "{ask}");
+    assert!(ask.contains("m2") && ask.contains("m5") && !ask.contains("m1\n") && !ask.contains("m6"), "{ask}");
+    assert_eq!(status.summary.unwrap().text, "First and second part.");
+    assert_eq!(status.summarized_count, 6);
+
+    let cleared = f.engine.clear_summary(conv).await.unwrap();
+    assert!(cleared.summary.is_none());
+    assert_eq!(cleared.summarized_count, 0);
+    assert_eq!(cleared.compactable_count, 6);
+}
+
+#[tokio::test]
+async fn there_is_nothing_to_compact_in_a_short_chat() {
+    let f = fixture(vec![]);
+    let (conv, _) = roleplay_with_history(&f, 4, 0);
+    let err = f.engine.compact(conv).await.unwrap_err();
+    assert!(err.to_string().contains("Nothing to compact"), "{err}");
+    assert!(f.provider.requests().is_empty());
+}
+
+#[tokio::test]
+async fn a_request_nearing_the_window_is_compacted_before_the_reply() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Summary."), finish("STOP")]),
+        Script::Items(vec![chunk("Reply."), finish("STOP")]),
+    ]);
+    // Ten 400-character messages are about 1000 tokens: well past 80% of a 1000-token window.
+    let (conv, _) = roleplay_with_history(&f, 10, 400);
+    *f.provider.window.lock().unwrap() = Some(1000);
+
+    let before = f.engine.context_status(conv).await.unwrap();
+    assert_eq!((before.window, before.window_source), (Some(1000), Some("provider")));
+    assert!(before.estimated && before.used > 1000, "{before:?}");
+
+    let (result, events) = send(&f, conv, "hi").await;
+    result.unwrap();
+
+    assert!(events.iter().any(|e| matches!(e, ChatEvent::Compacting { .. })), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, ChatEvent::Compacted { .. })), "{events:?}");
+    let requests = f.provider.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].history[0].text.contains("You are compacting"));
+    assert!(requests[1].system_instruction.clone().unwrap_or_default().contains("Summary."));
+    // The user's new message is among the newest six, so it was sent in full, not summarized.
+    assert_eq!(requests[1].history.last().unwrap().text, "hi");
+
+    let after = f.engine.context_status(conv).await.unwrap();
+    assert!(after.used < before.used, "{after:?}");
+}
+
+#[tokio::test]
+async fn a_small_chat_is_never_compacted_and_a_failed_compaction_still_replies() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Reply."), finish("STOP")]),
+        Script::FailToStart(ProviderError::new("boom", ProviderErrorKind::Unknown)),
+        Script::Items(vec![chunk("Reply anyway."), finish("STOP")]),
+    ]);
+    let (conv, _) = roleplay_with_history(&f, 2, 0);
+    *f.provider.window.lock().unwrap() = Some(100_000);
+    let (_, events) = send(&f, conv, "hi").await;
+    assert!(!events.iter().any(|e| matches!(e, ChatEvent::Compacting { .. })));
+
+    for i in 0..10 {
+        let m = ChatMessage::new(conv, MessageRole::User, format!("long {i} {}", "y".repeat(400)));
+        f.db.with(|c| conversations::add_message(c, &m)).unwrap();
+    }
+    *f.provider.window.lock().unwrap() = Some(1000);
+    let (result, events) = send(&f, conv, "again").await;
+
+    result.unwrap();
+    assert!(error_messages(&events).iter().any(|m| m.starts_with("Couldn't compact the chat")), "{events:?}");
+    assert_eq!(messages(&f, conv).last().unwrap().text, "Reply anyway.");
+}
+
+#[tokio::test]
+async fn the_status_prefers_the_providers_count_unless_it_is_below_the_estimate() {
+    let f = fixture(vec![]);
+    let (conv, history) = roleplay_with_history(&f, 2, 0);
+    let mut reply = history[1].clone();
+    reply.usage = Some(LlmUsage { prompt_tokens: Some(4000), completion_tokens: Some(200), total_tokens: Some(4200) });
+    f.db.with(|c| {
+        c.execute("UPDATE ChatMessages SET PromptTokens = 4000, CompletionTokens = 200, TotalTokens = 4200 WHERE Id = ?1;", [reply.id.to_string()])?;
+        Ok(())
+    })
+    .unwrap();
+
+    let status = f.engine.context_status(conv).await.unwrap();
+    assert_eq!((status.used, status.estimated), (4200, false));
+
+    f.db.with(|c| {
+        c.execute("UPDATE ChatMessages SET PromptTokens = 1, CompletionTokens = 1, TotalTokens = 2 WHERE Id = ?1;", [reply.id.to_string()])?;
+        Ok(())
+    })
+    .unwrap();
+    let status = f.engine.context_status(conv).await.unwrap();
+    assert!(status.estimated && status.used > 2, "{status:?}");
+    assert_eq!(status.window, None);
 }

@@ -15,6 +15,7 @@
   --accent-text: #0d1220;
   --danger: #ff7b7b;
   --danger-bg: #3a1f22;
+  --warn: #e8b04a;
   --user-bg: #222a3c;
   --code-bg: #0d1017;
   --shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
@@ -42,6 +43,7 @@
     --accent-text: #ffffff;
     --danger: #c53030;
     --danger-bg: #fdeaea;
+  --warn: #b7791f;
     --user-bg: #e6edff;
     --shadow: 0 6px 24px rgba(20, 30, 60, 0.12);
   }

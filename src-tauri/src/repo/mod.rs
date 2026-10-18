@@ -11,4 +11,5 @@ pub mod notebook;
 pub mod personas;
 pub mod prompt_presets;
 pub mod quest_log;
+pub mod summaries;
 pub mod user_memories;

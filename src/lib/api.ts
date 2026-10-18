@@ -21,6 +21,7 @@ import type {
   ProviderInfo,
   SearchHit,
   StoryState,
+  ContextStatus,
   CharacterNotebookEntry,
   DefaultPersonas,
   Uuid,
@@ -57,6 +58,11 @@ export interface Api {
   continueMessage(conversationId: Uuid, onEvent: EventHandler): Promise<void>;
   /** A drafted user message for the input box; null when stopped. */
   impersonate(conversationId: Uuid): Promise<string | null>;
+  contextStatus(conversationId: Uuid): Promise<ContextStatus>;
+  /** Summarizes all but the newest messages so they stop filling the context window. */
+  compactConversation(conversationId: Uuid): Promise<ContextStatus>;
+  /** Undoes compaction: every message is sent in full again. */
+  clearConversationSummary(conversationId: Uuid): Promise<ContextStatus>;
   swipePrevious(messageId: Uuid): Promise<ChatMessage>;
   stopGeneration(conversationId: Uuid): Promise<void>;
   editMessage(messageId: Uuid, text: string): Promise<ChatMessage>;
@@ -155,6 +161,9 @@ const tauriApi: Api = {
     streaming("pick_speaker", { conversationId, characterId }, onEvent),
   continueMessage: (conversationId, onEvent) => streaming("continue_message", { conversationId }, onEvent),
   impersonate: (conversationId) => invoke("impersonate", { conversationId }),
+  contextStatus: (conversationId) => invoke("context_status", { conversationId }),
+  compactConversation: (conversationId) => invoke("compact_conversation", { conversationId }),
+  clearConversationSummary: (conversationId) => invoke("clear_conversation_summary", { conversationId }),
   swipePrevious: (messageId) => invoke("swipe_previous", { messageId }),
   stopGeneration: (conversationId) => invoke("stop_generation", { conversationId }),
   editMessage: (messageId, text) => invoke("edit_message", { messageId, text }),

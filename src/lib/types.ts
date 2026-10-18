@@ -214,6 +214,33 @@ export interface CharacterNotebookEntry {
   createdAt: string;
 }
 
+/** A compacted chat's summary: it replaces, in prompts, every message up to coversThroughMessageId. */
+export interface ConversationSummary {
+  conversationId: Uuid;
+  text: string;
+  coversThroughMessageId: Uuid;
+  coversThroughTimestamp: string;
+  updatedAt: string;
+}
+
+/** How full the conversation's context window is. */
+export interface ContextStatus {
+  /** Tokens the model can hold, if known. */
+  window: number | null;
+  /** "provider": the model's own limit (Ollama: the configured context size); "preset": the preset's max history tokens. */
+  windowSource: "provider" | "preset" | null;
+  /** Tokens the next request would use. */
+  used: number;
+  /** used is estimated from the text, not the provider's own count. */
+  estimated: boolean;
+  summary: ConversationSummary | null;
+  /** Messages the summary stands in for. */
+  summarizedCount: number;
+  /** Messages a compaction now would condense (0: nothing to compact). */
+  compactableCount: number;
+  autoCompactPercent: number;
+}
+
 export interface StoryState {
   quests: QuestLogEntry[];
   notebook: CharacterNotebookEntry[];
@@ -255,6 +282,8 @@ export type ChatEvent =
   | { type: "messageRemoved"; messageId: Uuid }
   | { type: "worldStateChanged"; conversationId: Uuid; worldState: WorldState }
   | { type: "titleChanged"; conversationId: Uuid; title: string }
+  | { type: "compacting"; conversationId: Uuid }
+  | { type: "compacted"; conversationId: Uuid }
   | { type: "storyChanged"; conversationId: Uuid }
   | { type: "toolApproval"; requestId: Uuid; command: string; elevate: boolean }
   | { type: "error"; message: string; kind: ErrorKind | null }

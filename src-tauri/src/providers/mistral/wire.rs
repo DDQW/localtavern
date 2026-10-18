@@ -37,6 +37,7 @@ pub struct MistralCapabilities {
 pub struct MistralModelInfo {
     pub id: String,
     pub capabilities: Option<MistralCapabilities>,
+    pub max_context_length: Option<i32>,
 }
 
 impl MistralModelInfo {

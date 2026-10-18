@@ -242,6 +242,7 @@ pub struct GeminiErrorResponse {
 pub struct GeminiModelInfo {
     pub name: String,
     pub supported_generation_methods: Option<Vec<String>>,
+    pub input_token_limit: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]

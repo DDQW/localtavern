@@ -7,6 +7,7 @@ import type {
   ChatMessage,
   ChatSession,
   Character,
+  ContextStatus,
   Persona,
   StoryState,
   ToolApproval,
@@ -36,6 +37,10 @@ class ChatStore {
   pendingAttachments = $state<string[]>([]);
   /** A PowerShell command the assistant is waiting for permission to run. */
   approval = $state<ToolApproval | null>(null);
+  /** How full the model's context window is; null until loaded. */
+  context = $state<ContextStatus | null>(null);
+  /** Older messages are being summarized (by hand, or automatically before a reply). */
+  compacting = $state(false);
 
   get conversationId(): Uuid | null {
     return this.session?.conversation.id ?? null;
@@ -77,7 +82,10 @@ class ChatStore {
     this.busy = false;
     this.approval = null;
     this.story = null;
+    this.context = null;
+    this.compacting = false;
     void this.refreshStory();
+    void this.refreshContext();
   }
 
   private async open(action: Promise<ChatSession | null>): Promise<boolean> {
@@ -129,6 +137,56 @@ class ChatStore {
     } catch {
       // The side panel is a nicety; never let it break the chat.
     }
+  }
+
+  async refreshContext() {
+    const id = this.conversationId;
+    if (!id) return;
+    try {
+      const context = await api.contextStatus(id);
+      if (this.conversationId === id) this.context = context;
+    } catch {
+      // Only the meter depends on it.
+    }
+  }
+
+  /** Summarizes all but the newest messages into the chat's running summary. */
+  async compact() {
+    const id = this.conversationId;
+    if (!id || this.busy) return;
+    this.error = "";
+    this.busy = this.compacting = true;
+    try {
+      const context = await api.compactConversation(id);
+      if (this.conversationId === id) this.context = context;
+    } catch (e) {
+      if (this.conversationId === id) this.error = errorText(e);
+    } finally {
+      if (this.conversationId === id) this.busy = this.compacting = false;
+    }
+  }
+
+  /** Undoes compaction: the model sees every message in full again. */
+  async clearSummary() {
+    const id = this.conversationId;
+    if (!id || this.busy) return;
+    try {
+      const context = await api.clearConversationSummary(id);
+      if (this.conversationId === id) this.context = context;
+    } catch (e) {
+      this.error = errorText(e);
+    }
+  }
+
+  /** Index of the last message the summary covers (the model no longer sees it in full), or -1. */
+  get lastSummarizedIndex(): number {
+    const summary = this.context?.summary;
+    if (!summary) return -1;
+    const cut = this.messages.findIndex((m) => m.id === summary.coversThroughMessageId);
+    if (cut >= 0) return cut;
+    // That message was deleted; its timestamp still marks the spot.
+    const cutoff = Date.parse(summary.coversThroughTimestamp);
+    return this.messages.findLastIndex((m) => Date.parse(m.timestamp) <= cutoff);
   }
 
   // ---- lookups ----
@@ -208,6 +266,13 @@ class ChatStore {
       case "storyChanged":
         void this.refreshStory();
         break;
+      case "compacting":
+        this.compacting = true;
+        break;
+      case "compacted":
+        this.compacting = false;
+        void this.refreshContext();
+        break;
       case "titleChanged":
         if (this.session) this.session.conversation.title = event.title;
         break;
@@ -221,7 +286,9 @@ class ChatStore {
         this.approval = null;
         for (const m of this.messages) m.streaming = false;
         this.busy = false;
+        this.compacting = false;
         void this.refreshStory();
+        void this.refreshContext();
         break;
     }
   }
@@ -358,6 +425,7 @@ class ChatStore {
     try {
       await api.deleteMessage(message.id);
       this.messages = this.messages.filter((m) => m.id !== message.id);
+      void this.refreshContext();
     } catch (e) {
       this.error = errorText(e);
     }
@@ -403,6 +471,8 @@ class ChatStore {
     try {
       const updated = await change;
       if (this.session && this.session.conversation.id === updated.id) this.session.conversation = updated;
+      // A different model or preset can mean a different window.
+      void this.refreshContext();
     } catch (e) {
       this.error = errorText(e);
     }

@@ -24,6 +24,10 @@ pub enum ChatEvent {
     MessageRemoved { message_id: Uuid },
     WorldStateChanged { conversation_id: Uuid, world_state: WorldState },
     TitleChanged { conversation_id: Uuid, title: String },
+    /// The request was getting too big for the model, so older messages are being summarized first.
+    Compacting { conversation_id: Uuid },
+    /// A compaction finished (or failed - an `Error` says so); the context meter is out of date.
+    Compacted { conversation_id: Uuid },
     /// Background extraction finished: the quest log and character notebooks may have changed.
     StoryChanged { conversation_id: Uuid },
     /// The assistant wants to run a PowerShell command and needs the user's decision - answered

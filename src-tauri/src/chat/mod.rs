@@ -1,6 +1,7 @@
 //! The chat engine and everything it needs: conversation sessions, streaming events, preset
 //! resolution, reply post-processing and local image storage.
 
+pub mod compaction;
 pub mod engine;
 pub mod events;
 mod extraction;

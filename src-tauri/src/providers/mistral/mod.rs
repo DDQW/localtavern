@@ -6,7 +6,8 @@ mod errors;
 pub mod signin;
 pub mod wire;
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -24,11 +25,33 @@ pub struct MistralProvider {
     client: reqwest::Client,
     api_keys: Arc<dyn ApiKeyProvider>,
     base_url: String,
+    /// Context lengths from the last model listing, by model id.
+    context_windows: Mutex<HashMap<String, i32>>,
 }
 
 impl MistralProvider {
     pub fn new(client: reqwest::Client, api_keys: Arc<dyn ApiKeyProvider>) -> Self {
-        Self { client, api_keys, base_url: DEFAULT_BASE_URL.to_string() }
+        Self { client, api_keys, base_url: DEFAULT_BASE_URL.to_string(), context_windows: Mutex::default() }
+    }
+
+    async fn fetch_models(&self) -> Result<Vec<wire::MistralModelInfo>, ProviderError> {
+        let key = self.require_key()?;
+        let request = self.client.get(format!("{}/models", self.base_url)).bearer_auth(key);
+
+        let response = send(request, "Mistral").await?;
+        let response = ensure_success(response, errors::to_provider_error).await?;
+        let body = response.text().await.map_err(|e| transport_error("Mistral", &e))?;
+
+        let parsed: wire::MistralListModelsResponse = serde_json::from_str(&body)
+            .map_err(|e| ProviderError::unknown(format!("Failed to parse Mistral model list: {e}")))?;
+        let models = parsed.data.unwrap_or_default();
+        let mut windows = self.context_windows.lock().unwrap();
+        for model in &models {
+            if let Some(length) = model.max_context_length.filter(|l| *l > 0) {
+                windows.insert(model.id.clone(), length);
+            }
+        }
+        Ok(models)
     }
 
     /// Points the provider at another server (tests use a local mock).
@@ -52,20 +75,20 @@ impl LlmProvider for MistralProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
-        let key = self.require_key()?;
-        let request = self.client.get(format!("{}/models", self.base_url)).bearer_auth(key);
-
-        let response = send(request, "Mistral").await?;
-        let response = ensure_success(response, errors::to_provider_error).await?;
-        let body = response.text().await.map_err(|e| transport_error("Mistral", &e))?;
-
-        let parsed: wire::MistralListModelsResponse = serde_json::from_str(&body)
-            .map_err(|e| ProviderError::unknown(format!("Failed to parse Mistral model list: {e}")))?;
-        let mut ids: Vec<String> = parsed.data.unwrap_or_default().into_iter().filter(|m| m.can_chat()).map(|m| m.id).collect();
+        let models = self.fetch_models().await?;
+        let mut ids: Vec<String> = models.into_iter().filter(|m| m.can_chat()).map(|m| m.id).collect();
         // The listing repeats a model under its dated id and its "-latest" alias.
         ids.sort();
         ids.dedup();
         Ok(ids)
+    }
+
+    async fn context_window(&self, model: &str) -> Option<i32> {
+        if let Some(length) = self.context_windows.lock().unwrap().get(model) {
+            return Some(*length);
+        }
+        self.fetch_models().await.ok()?;
+        self.context_windows.lock().unwrap().get(model).copied()
     }
 
     async fn stream_completion(&self, request: LlmRequest) -> Result<ChunkStream, ProviderError> {
@@ -186,6 +209,25 @@ mod tests {
         let models = provider(&server, Some("key")).list_models().await.unwrap();
 
         assert_eq!(models, ["codestral-latest", "mistral-small-latest"]);
+    }
+
+    #[tokio::test]
+    async fn context_window_comes_from_the_model_listing_and_is_cached() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                r#"{"data":[{"id":"mistral-small-latest","max_context_length":131072},{"id":"no-length"}]}"#,
+                "application/json",
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let p = provider(&server, Some("key"));
+
+        assert_eq!(p.context_window("mistral-small-latest").await, Some(131072));
+        assert_eq!(p.context_window("mistral-small-latest").await, Some(131072));
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
     #[tokio::test]

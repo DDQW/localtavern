@@ -3,6 +3,7 @@
   import { api } from "$lib/api";
   import { chat } from "$lib/chat.svelte";
   import type { Character } from "$lib/types";
+  import ContextMeter from "./ContextMeter.svelte";
 
   let providers = $state<{ id: string; name: string }[]>([]);
   let allCharacters = $state<Character[]>([]);
@@ -49,6 +50,7 @@
         <span class="muted subtitle">{conversation.title}</span>
       {/if}
       <span class="spacer"></span>
+      <ContextMeter />
       {#if isAssistant}
         <button class="ghost" onclick={() => (showPrompt = !showPrompt)} aria-expanded={showPrompt}>System prompt</button>
       {/if}
