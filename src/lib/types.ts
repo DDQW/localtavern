@@ -97,6 +97,7 @@ export interface Character {
   appearanceText: string;
   /** YYYY-MM-DD */
   birthDate: string | null;
+  schedule: Schedule | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -129,6 +130,70 @@ export interface WorldState {
   weatherNotes: string | null;
   defaultAdvanceMinutesPerMessage: number;
   autoDriftWeatherEnabled: boolean;
+  /** ISO 3166-1 alpha-2, e.g. "DE": where the story is set (picks the public holidays). */
+  countryCode: string | null;
+  /** e.g. "DE-BY", for regional holidays. */
+  regionCode: string | null;
+  customHolidays: CustomHoliday[];
+}
+
+/** Every year on month/day, or once when `year` is set. */
+export interface CustomHoliday {
+  name: string;
+  month: number;
+  day: number;
+  year: number | null;
+}
+
+export interface Country {
+  countryCode: string;
+  name: string;
+}
+
+export interface DatedHoliday {
+  /** YYYY-MM-DD */
+  date: string;
+  name: string;
+  dayOff: boolean;
+}
+
+export interface HolidayOverview {
+  countryName: string | null;
+  regions: string[];
+  holidays: DatedHoliday[];
+}
+
+export type DayKind = "work" | "school" | "shift" | "off";
+
+export interface ScheduleBlock {
+  /** HH:MM; an end before the start runs past midnight. */
+  start: string;
+  end: string;
+  activity: string;
+  place: string | null;
+}
+
+export interface DayPlan {
+  kind: DayKind;
+  blocks: ScheduleBlock[];
+}
+
+export interface Schedule {
+  homeCountry: string | null;
+  homeRegion: string | null;
+  /** Monday to Sunday. */
+  days: DayPlan[];
+  holiday: DayPlan;
+  observesHolidays: boolean;
+  notes: string | null;
+}
+
+export interface LoreDraftRequest {
+  lorebookName: string;
+  topic: string;
+  count: number;
+  existingKeys: string[];
+  character: Character | null;
 }
 
 export interface Conversation {

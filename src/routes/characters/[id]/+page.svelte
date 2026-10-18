@@ -2,7 +2,9 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, errorText } from "$lib/api";
+  import AiDraft from "$lib/components/AiDraft.svelte";
   import AppearanceSection from "$lib/components/AppearanceSection.svelte";
+  import ScheduleSection from "$lib/components/ScheduleSection.svelte";
   import Avatar from "$lib/components/Avatar.svelte";
   import { fileUrl } from "$lib/media";
   import { pickFolder, pickImages, pickSaveJson } from "$lib/pick";
@@ -41,6 +43,7 @@
       appearance: null,
       appearanceText: "",
       birthDate: null,
+      schedule: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -110,6 +113,37 @@
     } catch (e) {
       error = errorText(e);
     }
+  }
+
+  // ---- AI drafts ----
+
+  let scenarioDraft = $state<string | null>(null);
+  let scenarioBefore = $state<string | null>(null);
+  let greetingDrafts = $state<{ text: string; pick: boolean }[]>([]);
+  let greetingCount = $state(2);
+
+  async function draftScenario(idea: string) {
+    scenarioDraft = await api.draftScenario(snapshot(), idea);
+  }
+
+  function useScenario(mode: "replace" | "append") {
+    if (!form || scenarioDraft === null) return;
+    scenarioBefore = form.scenario;
+    form.scenario = mode === "replace" || !form.scenario.trim() ? scenarioDraft : `${form.scenario.trim()}\n\n${scenarioDraft}`;
+    scenarioDraft = null;
+  }
+
+  async function draftGreetings(idea: string) {
+    greetingDrafts = (await api.draftGreetings(snapshot(), idea, greetingCount)).map((text) => ({ text, pick: true }));
+  }
+
+  function addGreetings() {
+    if (!form) return;
+    const picked = greetingDrafts.filter((g) => g.pick).map((g) => g.text);
+    // Fill an empty first box before adding new ones.
+    if (form.firstMessages.length === 1 && !form.firstMessages[0].trim() && picked.length) form.firstMessages = picked;
+    else form.firstMessages.push(...picked);
+    greetingDrafts = [];
   }
 
   // ---- pictures ----
@@ -236,6 +270,19 @@
         Scenario
         <textarea rows="3" bind:value={form.scenario}></textarea>
       </label>
+      <AiDraft generate={draftScenario} placeholder={"Optional: e.g. {{user}} is the new apprentice at her bakery"}>
+        {#if scenarioDraft !== null}
+          <div class="preview">{scenarioDraft}</div>
+          <div class="btnrow">
+            <button type="button" onclick={() => useScenario("replace")}>Use as scenario</button>
+            <button type="button" onclick={() => useScenario("append")}>Append</button>
+            <button type="button" class="ghost" onclick={() => (scenarioDraft = null)}>Discard</button>
+          </div>
+        {/if}
+        {#if scenarioBefore !== null}
+          <button type="button" class="ghost" onclick={() => { form!.scenario = scenarioBefore!; scenarioBefore = null; }}>Undo scenario change</button>
+        {/if}
+      </AiDraft>
 
       <h2>Appearance</h2>
       <AppearanceSection subject="character" bind:appearance={form.appearance} bind:text={form.appearanceText} bind:birthDate={form.birthDate} />
@@ -249,6 +296,30 @@
         </div>
       {/each}
       <div><button type="button" onclick={() => form!.firstMessages.push("")}>＋ Add greeting</button></div>
+      <AiDraft generate={draftGreetings} placeholder="Optional: mood or situation for the opening">
+        {#snippet options()}
+          <label class="field inline">
+            How many
+            <select bind:value={greetingCount}>{#each [1, 2, 3, 4, 5] as n (n)}<option value={n}>{n}</option>{/each}</select>
+          </label>
+        {/snippet}
+        {#each greetingDrafts as draft, i (i)}
+          <label class="pick">
+            <input type="checkbox" bind:checked={draft.pick} />
+            <span class="preview">{draft.text}</span>
+          </label>
+        {/each}
+        {#if greetingDrafts.length}
+          <div class="btnrow">
+            <button type="button" onclick={addGreetings} disabled={!greetingDrafts.some((g) => g.pick)}>Add selected greetings</button>
+            <button type="button" class="ghost" onclick={() => (greetingDrafts = [])}>Discard</button>
+          </div>
+        {/if}
+      </AiDraft>
+
+      <h2>Schedule</h2>
+      <p class="muted small">What a normal week looks like. In roleplays the model is told what the routine has {form.name || "them"} doing right now — workdays, weekends and public holidays included.</p>
+      <ScheduleSection bind:schedule={form.schedule} character={snapshot} />
 
       <label class="field">
         Example dialogue
@@ -420,5 +491,30 @@
     color: var(--muted);
     text-decoration: none;
     padding: 6px 10px;
+  }
+
+  .preview {
+    white-space: pre-wrap;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .pick {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .pick .preview {
+    flex: 1;
+  }
+
+  .inline {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
   }
 </style>

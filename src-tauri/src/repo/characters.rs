@@ -22,6 +22,7 @@ fn map(row: &Row) -> rusqlite::Result<Character> {
         appearance: rows::opt_blob(row, "AppearanceJson")?,
         appearance_text: row.get("AppearanceText")?,
         birth_date: rows::opt_date(row, "BirthDate")?,
+        schedule: rows::opt_blob(row, "ScheduleJson")?,
         created_at: rows::datetime(row, "CreatedAt")?,
         updated_at: rows::datetime(row, "UpdatedAt")?,
     })
@@ -62,13 +63,13 @@ pub fn upsert(conn: &Connection, c: &Character) -> Result<()> {
     let id = c.id.to_string();
     tx.execute(
         "INSERT INTO Characters
-            (Id, Name, AvatarPath, Description, Personality, Scenario, FirstMessagesJson, ExampleDialogue, TagsJson, ExpressionsJson, GalleryImagePathsJson, CreatedAt, UpdatedAt, AppearanceJson, AppearanceText, BirthDate)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            (Id, Name, AvatarPath, Description, Personality, Scenario, FirstMessagesJson, ExampleDialogue, TagsJson, ExpressionsJson, GalleryImagePathsJson, CreatedAt, UpdatedAt, AppearanceJson, AppearanceText, BirthDate, ScheduleJson)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
          ON CONFLICT(Id) DO UPDATE SET
             Name = ?2, AvatarPath = ?3, Description = ?4, Personality = ?5, Scenario = ?6,
             FirstMessagesJson = ?7, ExampleDialogue = ?8, TagsJson = ?9, ExpressionsJson = ?10,
             GalleryImagePathsJson = ?11, UpdatedAt = ?13, AppearanceJson = ?14, AppearanceText = ?15,
-            BirthDate = ?16;",
+            BirthDate = ?16, ScheduleJson = ?17;",
         params![
             id,
             c.name,
@@ -86,6 +87,7 @@ pub fn upsert(conn: &Connection, c: &Character) -> Result<()> {
             c.appearance.as_ref().map(json::to_blob).transpose()?,
             c.appearance_text,
             date::format_opt(c.birth_date),
+            c.schedule.as_ref().map(json::to_blob).transpose()?,
         ],
     )?;
     tx.execute("DELETE FROM CharacterLorebooks WHERE CharacterId = ?1;", [&id])?;
@@ -160,6 +162,12 @@ mod tests {
         assert_eq!(loaded.appearance, c.appearance);
         assert_eq!(loaded.appearance_text, c.appearance_text);
         assert_eq!(loaded.birth_date, c.birth_date);
+
+        let mut schedule = crate::models::Schedule { home_country: Some("DE".into()), ..Default::default() };
+        schedule.days[0].kind = crate::models::DayKind::Work;
+        c.schedule = Some(schedule);
+        upsert(&conn, &c).unwrap();
+        assert_eq!(get(&conn, c.id).unwrap().unwrap().schedule, c.schedule);
 
         c.appearance = None;
         c.birth_date = None;

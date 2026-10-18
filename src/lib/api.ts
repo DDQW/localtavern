@@ -7,6 +7,11 @@ import { mockApi } from "./mock";
 import type {
   Appearance,
   AppearanceSubject,
+  Country,
+  HolidayOverview,
+  LoreDraftRequest,
+  Schedule,
+  WorldInfoEntry,
   Bootstrap,
   Character,
   ChatEvent,
@@ -120,6 +125,14 @@ export interface Api {
   renderAppearance(appearance: Appearance, subject: AppearanceSubject): Promise<string>;
   polishAppearance(text: string): Promise<string>;
 
+  draftScenario(character: Character, idea: string): Promise<string>;
+  draftGreetings(character: Character, idea: string, count: number): Promise<string[]>;
+  draftLoreEntries(request: LoreDraftRequest): Promise<WorldInfoEntry[]>;
+  draftSchedule(character: Character, idea: string): Promise<Schedule>;
+
+  holidayCountries(): Promise<Country[]>;
+  holidayOverview(conversationId: Uuid): Promise<HolidayOverview>;
+
   listLorebooks(): Promise<Lorebook[]>;
   saveLorebook(lorebook: Lorebook): Promise<Lorebook>;
   deleteLorebook(lorebookId: Uuid): Promise<void>;
@@ -222,6 +235,14 @@ const tauriApi: Api = {
 
   renderAppearance: (appearance, subject) => invoke("render_appearance", { appearance, subject }),
   polishAppearance: (text) => invoke("polish_appearance", { text }),
+
+  draftScenario: (character, idea) => invoke("draft_scenario", { character, idea }),
+  draftGreetings: (character, idea, count) => invoke("draft_greetings", { character, idea, count }),
+  draftLoreEntries: (request) => invoke("draft_lore_entries", { request }),
+  draftSchedule: (character, idea) => invoke("draft_schedule", { character, idea }),
+
+  holidayCountries: () => invoke("holiday_countries"),
+  holidayOverview: (conversationId) => invoke("holiday_overview", { conversationId }),
 
   listLorebooks: () => invoke("list_lorebooks"),
   saveLorebook: (lorebook) => invoke("save_lorebook", { lorebook }),

@@ -2,7 +2,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::Appearance;
+use super::{Appearance, Schedule};
 
 /// One expression-pack image, keyed by a free-form emotion name (e.g. "happy") - matches
 /// SillyTavern's sprite-folder convention. Any key is allowed, not just the suggested defaults.
@@ -35,6 +35,8 @@ pub struct Character {
     /// Rendered (or hand-edited / AI-polished) appearance, sent right after the description.
     pub appearance_text: String,
     pub birth_date: Option<NaiveDate>,
+    /// Weekly routine and home country; `None` when never filled in.
+    pub schedule: Option<Schedule>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -58,6 +60,7 @@ impl Default for Character {
             appearance: None,
             appearance_text: String::new(),
             birth_date: None,
+            schedule: None,
             created_at: now,
             updated_at: now,
         }

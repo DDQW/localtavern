@@ -20,6 +20,7 @@ use rusqlite::Connection;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use super::authoring;
 use super::compaction::{self, ContextStatus, Names};
 use super::events::{ChatEvent, EventSink};
 use super::extraction::{Exchange, Extractor};
@@ -32,10 +33,11 @@ use super::session::{self, build_session, load_reply_context, ChatSession, Reply
 use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::group_chats::strategy_for;
+use crate::holidays::{self, Country, DatedHoliday, HolidaySource};
 use crate::llm::{LlmMessage, LlmRequest, LlmRole};
 use crate::models::{
     Character, ChatMessage, Conversation, ConversationMode, ConversationSummary, LlmUsage, MessageAttachment, MessageRole, Persona,
-    PromptBlockType, PromptPreset, WorldState,
+    PromptBlockType, PromptPreset, Schedule, WorldInfoEntry, WorldState,
 };
 use crate::powershell::exec::{CommandRunner, ExecError, ExecutionResult, Pwsh};
 use crate::powershell::filter::ToolCallFilter;
@@ -63,6 +65,10 @@ struct Inner {
     runner: Mutex<Arc<dyn CommandRunner>>,
     /// Tool calls waiting for the user's yes/no, by request id.
     approvals: Mutex<HashMap<Uuid, oneshot::Sender<ToolDecision>>>,
+    /// Where public holidays come from; `None` (tests, by default) means only cached/custom ones.
+    holidays: Mutex<Option<Arc<dyn HolidaySource>>>,
+    /// "CC.year" lookups currently running, so one miss doesn't start several fetches.
+    holiday_fetches: Mutex<std::collections::HashSet<String>>,
 }
 
 /// The user's answer to a tool-call approval request.
@@ -208,12 +214,43 @@ fn push_greeting(
     conversations::add_message(conn, &greeting)
 }
 
+/// What the clock panel shows about holidays where a roleplay is set.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HolidayOverview {
+    pub country_name: Option<String>,
+    /// Region codes the country's holiday data mentions (e.g. "DE-BY").
+    pub regions: Vec<String>,
+    /// From the story date to two weeks after.
+    pub holidays: Vec<DatedHoliday>,
+}
+
+/// Where a new roleplay is set: the character's home (in a group, the first member with one),
+/// else the country last picked for any story.
+fn default_setting(conn: &Connection, conversation: &Conversation) -> Result<(Option<String>, Option<String>)> {
+    let cast: Vec<Uuid> = match (conversation.character_id, conversation.group_chat_id) {
+        (Some(id), _) => vec![id],
+        (None, Some(group)) => group_chats::get(conn, group)?.map(|g| g.character_ids).unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    for id in cast {
+        if let Some(schedule) = characters::get(conn, id)?.and_then(|c| c.schedule) {
+            if let Some(country) = schedule.home_country.filter(|c| !c.trim().is_empty()) {
+                return Ok((Some(country), schedule.home_region.filter(|r| !r.trim().is_empty())));
+            }
+        }
+    }
+    Ok((settings::last_story_country(conn)?, None))
+}
+
 impl ChatEngine {
     pub fn new(db: Db, providers: Arc<LlmProviderRegistry>, images_dir: PathBuf) -> Self {
         Self { inner: Arc::new(Inner { db, providers, images_dir, active: Mutex::new(HashMap::new()),
                 extraction: AtomicBool::new(true),
                 runner: Mutex::new(Arc::new(Pwsh::default())),
                 approvals: Mutex::new(HashMap::new()),
+                holidays: Mutex::new(None),
+                holiday_fetches: Mutex::new(Default::default()),
             }) }
     }
 
@@ -224,6 +261,10 @@ impl ChatEngine {
     /// Turns the background memory / quest / notebook requests after each reply on or off (on by default).
     pub fn set_extraction(&self, enabled: bool) {
         self.inner.extraction.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn set_holiday_source(&self, source: Arc<dyn HolidaySource>) {
+        *self.inner.holidays.lock().unwrap() = Some(source);
     }
 
     pub fn provider_ids(&self) -> Vec<String> {
@@ -238,7 +279,9 @@ impl ChatEngine {
             // A roleplay always has an in-story clock: the first time one is opened it gets the default.
             if let Some(conversation) = conversations::get(c, conversation_id)? {
                 if conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_none() {
-                    conversations::update_world_state(c, conversation_id, Some(&WorldState::create_default()))?;
+                    let (country_code, region_code) = default_setting(c, &conversation)?;
+                    let state = WorldState { country_code, region_code, ..WorldState::create_default() };
+                    conversations::update_world_state(c, conversation_id, Some(&state))?;
                 }
             }
             build_session(c, &providers, conversation_id)
@@ -389,10 +432,6 @@ impl ChatEngine {
         if text.trim().is_empty() {
             return Err(Error::Other("There is no appearance text to polish yet.".into()));
         }
-        let (provider_id, model) = self.db().with(|c| self.default_provider_and_model(c))?;
-        if model.trim().is_empty() {
-            return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
-        }
         let prompt = format!(
             "Rewrite this physical description of a fictional adult character as one or two natural, flowing paragraphs \
 for a roleplay character sheet. Keep every fact, add none, and keep any measurements. Keep placeholders such as \
@@ -400,6 +439,16 @@ for a roleplay character sheet. Keep every fact, add none, and keep any measurem
 present, keep it as its own final paragraph, stated matter-of-factly. Reply with the description only.\n\n{}",
             text.trim()
         );
+        self.one_shot(prompt).await
+    }
+
+    /// One editor-side request with the last-selected provider and model (the editors have no
+    /// conversation to take them from); the trimmed answer, never empty.
+    async fn one_shot(&self, prompt: String) -> Result<String> {
+        let (provider_id, model) = self.db().with(|c| self.default_provider_and_model(c))?;
+        if model.trim().is_empty() {
+            return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
+        }
         let request = LlmRequest {
             model,
             system_instruction: None,
@@ -409,11 +458,49 @@ present, keep it as its own final paragraph, stated matter-of-factly. Reply with
         };
         let provider = self.inner.providers.get(&provider_id).map_err(|e| Error::Other(user_message(&e)))?;
         let response = provider.get_completion(request).await.map_err(|e| Error::Other(user_message(&e)))?;
-        let polished = response.delta_text.trim().to_string();
-        if polished.is_empty() {
-            return Err(Error::Other("The model returned an empty description - try again.".into()));
+        let answer = response.delta_text.trim().to_string();
+        if answer.is_empty() {
+            return Err(Error::Other("The model returned an empty answer - try again.".into()));
         }
-        Ok(polished)
+        Ok(answer)
+    }
+
+    // ------------------------------------------------------------------ drafting (editor helpers)
+
+    pub async fn draft_scenario(&self, card: &Character, idea: &str) -> Result<String> {
+        let answer = authoring::parse_text(&self.one_shot(authoring::scenario_prompt(card, idea)).await?);
+        if answer.is_empty() {
+            return Err(Error::Other("The model returned an empty answer - try again.".into()));
+        }
+        Ok(answer)
+    }
+
+    pub async fn draft_greetings(&self, card: &Character, idea: &str, count: usize) -> Result<Vec<String>> {
+        let count = count.clamp(1, 5);
+        let greetings = authoring::parse_greetings(&self.one_shot(authoring::greetings_prompt(card, idea, count)).await?, count);
+        if greetings.is_empty() {
+            return Err(Error::Other("The model's answer didn't contain a greeting - try again.".into()));
+        }
+        Ok(greetings)
+    }
+
+    pub async fn draft_lore_entries(&self, request: &authoring::LoreDraftRequest) -> Result<Vec<WorldInfoEntry>> {
+        if request.topic.trim().is_empty() {
+            return Err(Error::Other("Say what the entries should be about first.".into()));
+        }
+        let answer = self.one_shot(authoring::lore_prompt(request)).await?;
+        let entries = authoring::parse_lore_entries(&answer, &request.existing_keys);
+        if entries.is_empty() {
+            return Err(Error::Other("The model's answer didn't contain any new entries - try again.".into()));
+        }
+        Ok(entries)
+    }
+
+    /// A weekly schedule for the card, keeping the home country and other settings of `base`.
+    pub async fn draft_schedule(&self, card: &Character, idea: &str, base: Schedule) -> Result<Schedule> {
+        let answer = self.one_shot(authoring::schedule_prompt(card, idea)).await?;
+        authoring::parse_schedule(&answer, base)
+            .ok_or_else(|| Error::Other("The model's answer didn't contain a schedule - try again.".into()))
     }
 
     // ------------------------------------------------------------------ conversation settings
@@ -463,15 +550,111 @@ present, keep it as its own final paragraph, stated matter-of-factly. Reply with
         }
         state.default_advance_minutes_per_message = state.default_advance_minutes_per_message.max(1);
         state.weather_notes = state.weather_notes.filter(|n| !n.trim().is_empty());
+        state.country_code = state.country_code.map(|c| c.trim().to_ascii_uppercase()).filter(|c| !c.is_empty());
+        state.region_code = state.region_code.map(|r| r.trim().to_ascii_uppercase()).filter(|r| !r.is_empty());
+        state.custom_holidays.retain(|h| {
+            !h.name.trim().is_empty() && chrono::NaiveDate::from_ymd_opt(2024, h.month, h.day).is_some()
+        });
         self.db().with(|c| {
             let conversation =
                 conversations::get(c, conversation_id)?.ok_or_else(|| Error::Other("Conversation not found.".into()))?;
             if conversation.mode != ConversationMode::Roleplay {
                 return Err(Error::Other("Only roleplays have an in-story clock.".into()));
             }
+            if let Some(country) = &state.country_code {
+                settings::set_last_story_country(c, country)?;
+            }
             conversations::update_world_state(c, conversation_id, Some(&state))
         })?;
+        if let Some(country) = &state.country_code {
+            let year = chrono::Datelike::year(&state.fictional_date_time.date());
+            self.prefetch_holidays(country, &[year, year + 1]);
+        }
         Ok(state)
+    }
+
+    // ------------------------------------------------------------------ holidays
+
+    /// Starts background fetches for any of `years` not cached yet. Needs a tokio runtime; a call
+    /// from outside one is skipped, and the next reply or clock-panel load tries again.
+    fn prefetch_holidays(&self, country: &str, years: &[i32]) {
+        let Some(source) = self.inner.holidays.lock().unwrap().clone() else { return };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+        for &year in years {
+            let missing = self.db().with(|c| holidays::cached_holidays(c, country, year)).map(|h| h.is_none()).unwrap_or(false);
+            let key = format!("{country}.{year}");
+            if !missing || !self.inner.holiday_fetches.lock().unwrap().insert(key.clone()) {
+                continue;
+            }
+            let (engine, source, country) = (self.clone(), source.clone(), country.to_string());
+            runtime.spawn(async move {
+                let fetched = source.public_holidays(&country, year).await;
+                if let Err(e) = &fetched {
+                    eprintln!("holidays for {country} {year}: {e}");
+                }
+                let _ = engine.db().with(|c| holidays::store_holidays(c, &country, year, &fetched));
+                engine.inner.holiday_fetches.lock().unwrap().remove(&key);
+            });
+        }
+    }
+
+    /// Fetches the years not cached yet and waits for them (bounded), for the clock panel.
+    async fn ensure_holidays(&self, country: &str, years: &[i32]) {
+        let Some(source) = self.inner.holidays.lock().unwrap().clone() else { return };
+        for &year in years {
+            if self.db().with(|c| holidays::cached_holidays(c, country, year)).ok().flatten().is_some() {
+                continue;
+            }
+            let fetched = match tokio::time::timeout(Duration::from_secs(8), source.public_holidays(country, year)).await {
+                Ok(result) => result,
+                Err(_) => Err("The holiday service took too long.".into()),
+            };
+            let _ = self.db().with(|c| holidays::store_holidays(c, country, year, &fetched));
+        }
+    }
+
+    /// Countries the holiday service knows, cached after the first successful lookup.
+    pub async fn holiday_countries(&self) -> Result<Vec<Country>> {
+        if let Some(list) = self.db().with(holidays::cached_countries)?.filter(|l| !l.is_empty()) {
+            return Ok(list);
+        }
+        let source = self.inner.holidays.lock().unwrap().clone();
+        let Some(source) = source else { return Ok(Vec::new()) };
+        let list = source.countries().await.map_err(Error::Other)?;
+        self.db().with(|c| holidays::store_countries(c, &list))?;
+        Ok(list)
+    }
+
+    /// The holidays from the story date to two weeks after where a roleplay is set, plus the regions
+    /// the country's data knows (for the clock panel). Fetches missing years first.
+    pub async fn holiday_overview(&self, conversation_id: Uuid) -> Result<HolidayOverview> {
+        let conversation = self
+            .db()
+            .with(|c| conversations::get(c, conversation_id))?
+            .ok_or_else(|| Error::Other("Conversation not found.".into()))?;
+        let Some(state) = conversation.world_state else { return Ok(HolidayOverview::default()) };
+        let today = state.fictional_date_time.date();
+        let until = today + chrono::Days::new(14);
+        let years: Vec<i32> = (chrono::Datelike::year(&today)..=chrono::Datelike::year(&until)).collect();
+        if let Some(country) = &state.country_code {
+            self.ensure_holidays(country, &years).await;
+        }
+        self.db().with(|c| {
+            let holidays = holidays::holidays_between(
+                c,
+                state.country_code.as_deref(),
+                state.region_code.as_deref(),
+                &state.custom_holidays,
+                today,
+                until,
+            )?;
+            let regions = match &state.country_code {
+                Some(country) => holidays::regions(&holidays::cached_holidays(c, country, years[0])?.unwrap_or_default()),
+                None => Vec::new(),
+            };
+            let country_name = state.country_code.as_deref().map(|cc| holidays::country_name(c, cc)).transpose()?;
+            Ok(HolidayOverview { country_name, regions, holidays })
+        })
     }
 
     pub fn delete_conversation(&self, conversation_id: Uuid) -> Result<()> {
@@ -915,6 +1098,45 @@ present, keep it as its own final paragraph, stated matter-of-factly. Reply with
 
     // ------------------------------------------------------------------ generation
 
+    /// Everything the world-state block reports besides the clock: setting, holidays (from the
+    /// cache; a miss starts a background fetch), each character's routine and everyone's birthday.
+    fn world_facts<'a>(&self, ctx: &'a ReplyContext, state: &WorldState) -> Result<world_state::WorldFacts<'a>> {
+        let today = state.fictional_date_time.date();
+        let (from, to) = (today - chrono::Days::new(1), today + chrono::Days::new(7));
+        let country = state.country_code.as_deref();
+        if let Some(country) = country {
+            let years: Vec<i32> = (chrono::Datelike::year(&from)..=chrono::Datelike::year(&to)).collect();
+            self.prefetch_holidays(country, &years);
+        }
+        let (holidays, place) = self.db().with(|c| {
+            let holidays =
+                holidays::holidays_between(c, country, state.region_code.as_deref(), &state.custom_holidays, from, to)?;
+            let place = match country {
+                Some(cc) => {
+                    let name = holidays::country_name(c, cc)?;
+                    Some(match state.region_code.as_deref() {
+                        Some(region) => format!("{name} ({region})"),
+                        None => name,
+                    })
+                }
+                None => None,
+            };
+            Ok((holidays, place))
+        })?;
+        let birthdays = ctx
+            .characters
+            .iter()
+            .filter_map(|c| c.birth_date.map(|d| (c.name.as_str(), d)))
+            .chain(ctx.persona.as_ref().and_then(|p| p.birth_date.map(|d| (roles::user_name(Some(p)), d))))
+            .collect();
+        let schedules = ctx
+            .characters
+            .iter()
+            .filter_map(|c| c.schedule.as_ref().filter(|s| !s.is_empty()).map(|s| (c.name.as_str(), s)))
+            .collect();
+        Ok(world_state::WorldFacts { birthdays, place, holidays, schedules })
+    }
+
     /// Builds the provider request for a turn: assembled prompt plus the per-turn instructions
     /// (roleplay rules on who is who, emotion tag for characters with an expression pack, time-skip
     /// tag while a world clock runs).
@@ -935,15 +1157,10 @@ present, keep it as its own final paragraph, stated matter-of-factly. Reply with
             None => history,
         };
 
-        let birthdays: Vec<(&str, chrono::NaiveDate)> = ctx
-            .characters
-            .iter()
-            .filter_map(|c| c.birth_date.map(|d| (c.name.as_str(), d)))
-            .chain(ctx.persona.as_ref().and_then(|p| p.birth_date.map(|d| (roles::user_name(Some(p)), d))))
-            .collect();
-        let world_text = (conversation.mode == ConversationMode::Roleplay)
-            .then(|| conversation.world_state.as_ref().map(|state| world_state::format(state, &birthdays)))
-            .flatten();
+        let world_text = match conversation.world_state.as_ref().filter(|_| conversation.mode == ConversationMode::Roleplay) {
+            Some(state) => Some(world_state::format(state, &self.world_facts(ctx, state)?)),
+            None => None,
+        };
 
         let mut pctx = PromptAssemblyContext::new(conversation, options.preset.unwrap_or(&ctx.preset), history)
             .with_characters(&ctx.characters)

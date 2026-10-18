@@ -48,6 +48,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (13, include_str!("../../migrations/0013_reasoning_effort.sql")),
     (14, include_str!("../../migrations/0014_conversation_summaries.sql")),
     (15, include_str!("../../migrations/0015_appearance_birthdays.sql")),
+    (16, include_str!("../../migrations/0016_schedules.sql")),
 ];
 
 /// Opens (creating if needed) the database at `path`, enables foreign keys and applies pending migrations.

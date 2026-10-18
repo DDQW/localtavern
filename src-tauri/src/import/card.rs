@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use super::png;
 use crate::error::{Error, Result};
-use crate::models::{Appearance, Character, Lorebook, WorldInfoEntry, WorldInfoPosition};
+use crate::models::{Appearance, Character, Schedule, Lorebook, WorldInfoEntry, WorldInfoPosition};
 
 /// A character plus the lorebook its card embedded (already linked from the character), if any.
 /// The caller just needs to persist both.
@@ -58,6 +58,7 @@ struct LocalTavernExtension {
     appearance: Option<Appearance>,
     appearance_text: String,
     birth_date: Option<chrono::NaiveDate>,
+    schedule: Option<Schedule>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +114,7 @@ pub fn map_card_json(json: &str) -> Result<CharacterImportResult> {
         appearance: ours.appearance,
         appearance_text: appearance_text.to_string(),
         birth_date: ours.birth_date,
+        schedule: ours.schedule,
         personality: data.personality.unwrap_or_default(),
         scenario: data.scenario.unwrap_or_default(),
         first_messages,
@@ -190,6 +192,7 @@ pub fn export_card_json(character: &Character, lorebook: Option<&Lorebook>) -> R
                 appearance: character.appearance.clone(),
                 appearance_text: character.appearance_text.clone(),
                 birth_date: character.birth_date,
+                schedule: character.schedule.clone(),
             }
         })),
     };

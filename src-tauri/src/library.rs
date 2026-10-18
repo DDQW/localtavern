@@ -41,6 +41,7 @@ pub fn save_character(conn: &Connection, mut character: Character) -> Result<Cha
     character.gallery_image_paths.retain(|p| !p.trim().is_empty());
     character.avatar_path = character.avatar_path.filter(|p| !p.trim().is_empty());
     character.appearance = clean_appearance(character.appearance.take(), &mut character.appearance_text);
+    character.schedule = character.schedule.take().filter(|s| !s.is_empty());
     character.updated_at = Utc::now();
     characters::upsert(conn, &character)?;
     Ok(character)

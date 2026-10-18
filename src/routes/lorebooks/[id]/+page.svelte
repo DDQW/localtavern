@@ -2,7 +2,8 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, errorText } from "$lib/api";
-  import type { Lorebook, WorldInfoEntry, WorldInfoPosition } from "$lib/types";
+  import AiDraft from "$lib/components/AiDraft.svelte";
+  import type { Character, Lorebook, WorldInfoEntry, WorldInfoPosition } from "$lib/types";
   import { newId, splitList } from "$lib/util";
 
   /** An entry as the form edits it: the key lists are comma-separated text until saved. */
@@ -31,6 +32,36 @@
     const { keys, secondaryKeys, ...rest } = e;
     return { ...rest, keysText: keys.join(", "), secondaryText: (secondaryKeys ?? []).join(", ") };
   };
+
+  // ---- AI drafts ----
+
+  let characters = $state<Character[]>([]);
+  let draftCount = $state(3);
+  let draftCharacterId = $state("");
+  let drafts = $state<{ entry: WorldInfoEntry; pick: boolean }[]>([]);
+
+  $effect(() => {
+    api.listCharacters().then((list) => (characters = list), () => (characters = []));
+  });
+
+  async function draftEntries(topic: string) {
+    const existingKeys = entries.flatMap((e) => splitList(e.keysText));
+    const result = await api.draftLoreEntries({
+      lorebookName: name.trim() || "Untitled",
+      topic,
+      count: draftCount,
+      existingKeys,
+      character: characters.find((c) => c.id === draftCharacterId) ?? null,
+    });
+    drafts = result.map((entry) => ({ entry, pick: true }));
+  }
+
+  function addDrafts() {
+    for (const { entry } of drafts.filter((d) => d.pick)) {
+      entries.push({ ...toForm(entry), id: newId(), insertionOrder: entries.length });
+    }
+    drafts = [];
+  }
 
   function blankEntry(): EntryForm {
     return {
@@ -176,6 +207,37 @@
         </fieldset>
       {/each}
       <div><button type="button" onclick={() => entries.push(blankEntry())}>＋ Add entry</button></div>
+      <AiDraft label="✨ Draft entries with AI" placeholder="What should the entries be about? e.g. the factions of the harbor city" generate={draftEntries}>
+        {#snippet options()}
+          <label class="field inline">
+            How many
+            <select bind:value={draftCount}>{#each [1, 2, 3, 4, 5, 6, 8, 10] as n (n)}<option value={n}>{n}</option>{/each}</select>
+          </label>
+          <label class="field inline">
+            Fit to
+            <select bind:value={draftCharacterId}>
+              <option value="">no particular character</option>
+              {#each characters as c (c.id)}<option value={c.id}>{c.name}</option>{/each}
+            </select>
+          </label>
+        {/snippet}
+        {#each drafts as draft, i (i)}
+          <label class="pick">
+            <input type="checkbox" bind:checked={draft.pick} />
+            <span class="draftentry">
+              <strong>{draft.entry.keys.join(", ")}</strong>
+              <span>{draft.entry.content}</span>
+            </span>
+          </label>
+        {/each}
+        {#if drafts.length}
+          <div class="btnrow">
+            <button type="button" onclick={addDrafts} disabled={!drafts.some((d) => d.pick)}>Add selected entries</button>
+            <button type="button" class="ghost" onclick={() => (drafts = [])}>Discard</button>
+            <span class="muted small">Added entries are saved with the lorebook.</span>
+          </div>
+        {/if}
+      </AiDraft>
 
       <div class="actionbar">
         <button class="primary" type="submit" disabled={saving || !name.trim()}>{saving ? "Saving…" : "Save"}</button>
@@ -228,5 +290,34 @@
     color: var(--muted);
     text-decoration: none;
     padding: 6px 10px;
+  }
+
+  .inline {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .pick {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .draftentry {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    white-space: pre-wrap;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .small {
+    font-size: 12px;
   }
 </style>

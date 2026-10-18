@@ -76,6 +76,7 @@ const characters: Character[] = ["Nova", "Mira", "Dorian"].map((name, i) => ({
   appearance: null,
   appearanceText: "",
   birthDate: null,
+  schedule: null,
   createdAt: now(),
   updatedAt: now(),
 }));
@@ -219,6 +220,9 @@ function conversation(overrides: Partial<Conversation>): Conversation {
       weatherNotes: "light drizzle",
       defaultAdvanceMinutesPerMessage: 5,
       autoDriftWeatherEnabled: false,
+      countryCode: "DE",
+      regionCode: "DE-BY",
+      customHolidays: [],
     },
   });
   messages.get(r.id)!.push(
@@ -769,6 +773,72 @@ export const mockApi: Api = {
   async polishAppearance(text) {
     await sleep(600);
     return `${text.trim()} (polished)`;
+  },
+
+  async draftScenario(character, idea) {
+    await sleep(500);
+    return `{{char}} and {{user}} meet ${idea.trim() || "aboard the research vessel"}. ${character.name} is wary but curious.`;
+  },
+  async draftGreetings(_character, _idea, count) {
+    await sleep(500);
+    return Array.from({ length: count }, (_, i) => `*Greeting ${i + 1}: {{char}} looks up as {{user}} enters.* "Oh — you're early."`);
+  },
+  async draftLoreEntries(request) {
+    await sleep(500);
+    return Array.from({ length: request.count }, (_, i) => ({
+      id: uid(),
+      keys: [`${request.topic.trim() || "topic"} ${i + 1}`],
+      secondaryKeys: null,
+      content: `Reference notes about ${request.topic.trim()} (${i + 1}).`,
+      caseSensitive: false,
+      enabled: true,
+      insertionOrder: 0,
+      position: "beforeCharacterDescription" as const,
+      depth: 0,
+    }));
+  },
+  async draftSchedule(character) {
+    await sleep(500);
+    const work = { kind: "work" as const, blocks: [{ start: "08:00", end: "16:00", activity: "work", place: "the bakery" }, { start: "18:00", end: "19:30", activity: "gym", place: null }] };
+    const off = { kind: "off" as const, blocks: [{ start: "10:00", end: "12:00", activity: "brunch", place: null }] };
+    return {
+      homeCountry: character.schedule?.homeCountry ?? null,
+      homeRegion: character.schedule?.homeRegion ?? null,
+      days: [work, work, work, work, work, off, off].map((d) => structuredClone(d)),
+      holiday: structuredClone(off),
+      observesHolidays: true,
+      notes: null,
+    };
+  },
+
+  async holidayCountries() {
+    return [
+      { countryCode: "AT", name: "Austria" },
+      { countryCode: "DE", name: "Germany" },
+      { countryCode: "JP", name: "Japan" },
+      { countryCode: "US", name: "United States" },
+    ];
+  },
+  async holidayOverview(id) {
+    const ws = conversations.find((c) => c.id === id)?.worldState;
+    const base = ws ? ws.fictionalDateTime.slice(0, 10) : "2025-06-14";
+    const plus = (days: number) => {
+      const d = new Date(`${base}T12:00:00`);
+      d.setDate(d.getDate() + days);
+      return d.toISOString().slice(0, 10);
+    };
+    return {
+      countryName: ws?.countryCode === "DE" ? "Germany" : (ws?.countryCode ?? null),
+      regions: ws?.countryCode === "DE" ? ["DE-BB", "DE-BE", "DE-BW", "DE-BY"] : [],
+      holidays: [
+        ...(ws?.countryCode ? [{ date: plus(5), name: "Corpus Christi", dayOff: true }] : []),
+        ...Array.from({ length: 15 }, (_, i) => plus(i)).flatMap((date) =>
+          (ws?.customHolidays ?? [])
+            .filter((h) => Number(date.slice(5, 7)) === h.month && Number(date.slice(8, 10)) === h.day && (h.year === null || Number(date.slice(0, 4)) === h.year))
+            .map((h) => ({ date, name: h.name, dayOff: true })),
+        ),
+      ].sort((a, b) => a.date.localeCompare(b.date)),
+    };
   },
 
   async listLorebooks() {

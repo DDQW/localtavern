@@ -12,11 +12,13 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::chat::compaction::ContextStatus;
+use crate::chat::{HolidayOverview, LoreDraftRequest};
+use crate::holidays::Country;
 use crate::chat::{images, ChatEngine, ChatEvent, ChatSession, EventSink, ToolDecision};
 use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::models::{
-    Appearance,
+    Appearance, Schedule, WorldInfoEntry,
     Character, CharacterNotebookEntry, ChatMessage, Conversation, ExpressionImage, GroupChat, Lorebook, Persona,
     PromptPreset, QuestLogEntry, UserMemory, WorldState,
 };
@@ -333,9 +335,49 @@ pub fn set_assistant_prompt(state: State<'_, AppState>, conversation_id: Uuid, t
     state.engine.set_assistant_prompt(conversation_id, &text)
 }
 
+/// Async so it runs on the runtime: saving a new country starts a background holiday fetch.
 #[tauri::command]
-pub fn set_world_state(state: State<'_, AppState>, conversation_id: Uuid, world_state: WorldState) -> Result<WorldState> {
+pub async fn set_world_state(state: State<'_, AppState>, conversation_id: Uuid, world_state: WorldState) -> Result<WorldState> {
     state.engine.set_world_state(conversation_id, world_state)
+}
+
+#[tauri::command]
+pub async fn draft_scenario(state: State<'_, AppState>, character: Character, idea: String) -> Result<String> {
+    let engine = state.engine.clone();
+    engine.draft_scenario(&character, &idea).await
+}
+
+#[tauri::command]
+pub async fn draft_greetings(state: State<'_, AppState>, character: Character, idea: String, count: usize) -> Result<Vec<String>> {
+    let engine = state.engine.clone();
+    engine.draft_greetings(&character, &idea, count).await
+}
+
+#[tauri::command]
+pub async fn draft_lore_entries(state: State<'_, AppState>, request: LoreDraftRequest) -> Result<Vec<WorldInfoEntry>> {
+    let engine = state.engine.clone();
+    engine.draft_lore_entries(&request).await
+}
+
+#[tauri::command]
+pub async fn draft_schedule(state: State<'_, AppState>, character: Character, idea: String) -> Result<Schedule> {
+    let engine = state.engine.clone();
+    let base = character.schedule.clone().unwrap_or_default();
+    engine.draft_schedule(&character, &idea, base).await
+}
+
+/// Countries with public-holiday data (empty when the service can't be reached and nothing is cached).
+#[tauri::command]
+pub async fn holiday_countries(state: State<'_, AppState>) -> Result<Vec<Country>> {
+    let engine = state.engine.clone();
+    engine.holiday_countries().await
+}
+
+/// Holidays around a roleplay's story date and the regions of its country, for the clock panel.
+#[tauri::command]
+pub async fn holiday_overview(state: State<'_, AppState>, conversation_id: Uuid) -> Result<HolidayOverview> {
+    let engine = state.engine.clone();
+    engine.holiday_overview(conversation_id).await
 }
 
 #[tauri::command]

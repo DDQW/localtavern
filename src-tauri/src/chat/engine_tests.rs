@@ -582,6 +582,7 @@ fn editing_the_clock_saves_it_cleaned_up() {
                 weather_notes: Some("   ".into()),
                 default_advance_minutes_per_message: 0,
                 auto_drift_weather_enabled: true,
+                ..WorldState::create_default()
             },
         )
         .unwrap();
@@ -2250,4 +2251,149 @@ async fn polish_appearance_refuses_empty_text_and_empty_replies() {
     assert!(f.engine.polish_appearance("  ").await.is_err());
     assert!(f.provider.requests().is_empty(), "nothing is sent for empty text");
     assert!(f.engine.polish_appearance("{{char}} is a man.").await.is_err());
+}
+
+// ---- setting, holidays and routines ----
+
+struct FakeHolidays;
+
+#[async_trait]
+impl crate::holidays::HolidaySource for FakeHolidays {
+    async fn countries(&self) -> std::result::Result<Vec<crate::holidays::Country>, String> {
+        Ok(vec![crate::holidays::Country { country_code: "DE".into(), name: "Germany".into() }])
+    }
+
+    async fn public_holidays(&self, _country: &str, year: i32) -> std::result::Result<Vec<crate::holidays::Holiday>, String> {
+        Ok(vec![crate::holidays::Holiday {
+            date: NaiveDate::from_ymd_opt(year, 12, 25).unwrap(),
+            local_name: "Erster Weihnachtstag".into(),
+            name: "Christmas Day".into(),
+            global: true,
+            counties: None,
+            types: vec!["Public".into()],
+        }])
+    }
+}
+
+fn request_text(request: &LlmRequest) -> String {
+    let mut all = request.system_instruction.clone().unwrap_or_default();
+    for m in &request.history {
+        all.push('\n');
+        all.push_str(&m.text);
+    }
+    all
+}
+
+#[tokio::test]
+async fn a_new_roleplay_is_set_in_the_characters_home_and_the_prompt_knows_holidays_and_routines() {
+    use crate::models::{DayKind, DayPlan, Schedule, ScheduleBlock};
+    let f = fixture(vec![Script::Items(vec![chunk("Merry Christmas."), finish("STOP")])]);
+    f.engine.set_holiday_source(Arc::new(FakeHolidays));
+    let mut schedule = Schedule { home_country: Some("DE".into()), home_region: Some("DE-BY".into()), ..Default::default() };
+    schedule.holiday = DayPlan {
+        kind: DayKind::Off,
+        blocks: vec![ScheduleBlock { start: "08:00".into(), end: "12:00".into(), activity: "family breakfast".into(), place: None }],
+    };
+    let mut nova = add_character(&f.db, "Nova", None, &[]);
+    nova.schedule = Some(schedule);
+    f.db.with(|c| characters::upsert(c, &nova)).unwrap();
+
+    let conv = ready_character(&f, &nova);
+    let mut state = f.db.with(|c| conversations::get(c, conv)).unwrap().unwrap().world_state.unwrap();
+    assert_eq!((state.country_code.as_deref(), state.region_code.as_deref()), (Some("DE"), Some("DE-BY")));
+
+    state.fictional_date_time = NaiveDate::from_ymd_opt(2025, 12, 25).unwrap().and_hms_opt(9, 0, 0).unwrap();
+    f.engine.set_world_state(conv, state).unwrap();
+    let overview = f.engine.holiday_overview(conv).await.unwrap();
+    assert_eq!(overview.holidays[0].name, "Christmas Day");
+    f.engine.holiday_countries().await.unwrap();
+
+    send(&f, conv, "Good morning").await.0.unwrap();
+    let text = request_text(&f.provider.requests()[0]);
+    assert!(text.contains("The story is set in Germany (DE-BY)."), "{text}");
+    assert!(text.contains("Today is a public holiday: Christmas Day."), "{text}");
+    assert!(text.contains("Nova - holiday; now: family breakfast until 12:00."), "{text}");
+}
+
+#[tokio::test]
+async fn without_a_home_country_a_new_roleplay_uses_the_last_story_country() {
+    let f = fixture(vec![]);
+    let conv = ready_roleplay(&f);
+    let mut state = f.db.with(|c| conversations::get(c, conv)).unwrap().unwrap().world_state.unwrap();
+    assert_eq!(state.country_code, None);
+    state.country_code = Some(" jp ".into());
+    state.custom_holidays = vec![
+        crate::models::CustomHoliday { name: "Lantern Night".into(), month: 8, day: 15, year: None },
+        crate::models::CustomHoliday { name: "Bad".into(), month: 2, day: 30, year: None },
+    ];
+    let saved = f.engine.set_world_state(conv, state).unwrap();
+    assert_eq!(saved.country_code.as_deref(), Some("JP"));
+    assert_eq!(saved.custom_holidays.len(), 1, "impossible dates are dropped");
+
+    let other = add_character(&f.db, "Rook", None, &[]);
+    let second = f.engine.open_character(other.id, false).unwrap();
+    assert_eq!(second.conversation.world_state.unwrap().country_code.as_deref(), Some("JP"));
+}
+
+// ---- drafting helpers ----
+
+fn drafting(scripts: Vec<Script>) -> Fixture {
+    let f = fixture(scripts);
+    f.db.with(|c| {
+        settings::set_last_selected_provider(c, "fake")?;
+        settings::set_last_selected_model(c, "fake", "fake-model")
+    })
+    .unwrap();
+    f
+}
+
+#[tokio::test]
+async fn drafts_scenario_greetings_lore_and_schedule_from_the_card() {
+    let f = drafting(vec![
+        Script::Items(vec![chunk("```\n{{char}} runs the bakery where {{user}} just started.\n```"), finish("STOP")]),
+        Script::Items(vec![chunk("*Flour everywhere.* \"Morning!\"\n---\n*The oven dings.*"), finish("STOP")]),
+        Script::Items(vec![chunk("KEYS: Vale\nCONTENT: A valley town.\n---\nKEYS: old mill\nCONTENT: dup"), finish("STOP")]),
+        Script::Items(vec![chunk("MON: work | 05:00-13:00 baking @ bakery\nSUN: off"), finish("STOP")]),
+    ]);
+    let card = Character { name: "Mira".into(), description: "A baker.".into(), ..Default::default() };
+
+    let scenario = f.engine.draft_scenario(&card, "first day").await.unwrap();
+    assert_eq!(scenario, "{{char}} runs the bakery where {{user}} just started.");
+    let prompt = &f.provider.requests()[0].history[0].text;
+    assert!(prompt.contains("Name: Mira\nDescription: A baker.") && prompt.ends_with("first day"), "{prompt}");
+
+    let greetings = f.engine.draft_greetings(&card, "", 2).await.unwrap();
+    assert_eq!(greetings, ["*Flour everywhere.* \"Morning!\"", "*The oven dings.*"]);
+
+    let request = crate::chat::LoreDraftRequest {
+        lorebook_name: "Vale".into(),
+        topic: "the town".into(),
+        count: 2,
+        existing_keys: vec!["Old Mill".into()],
+        character: None,
+    };
+    let entries = f.engine.draft_lore_entries(&request).await.unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].keys, ["Vale"]);
+
+    let base = crate::models::Schedule { home_country: Some("AT".into()), ..Default::default() };
+    let schedule = f.engine.draft_schedule(&card, "", base).await.unwrap();
+    assert_eq!(schedule.home_country.as_deref(), Some("AT"));
+    assert_eq!(schedule.days[0].blocks[0].place.as_deref(), Some("bakery"));
+}
+
+#[tokio::test]
+async fn drafts_report_unusable_answers() {
+    let f = drafting(vec![
+        Script::Items(vec![chunk("Sorry, I can't."), finish("STOP")]),
+        Script::Items(vec![chunk("No entries here."), finish("STOP")]),
+    ]);
+    let card = Character { name: "Mira".into(), ..Default::default() };
+    let err = f.engine.draft_schedule(&card, "", Default::default()).await.unwrap_err().to_string();
+    assert!(err.contains("didn't contain a schedule"), "{err}");
+    let request = crate::chat::LoreDraftRequest { lorebook_name: "x".into(), topic: "y".into(), count: 1, ..Default::default() };
+    assert!(f.engine.draft_lore_entries(&request).await.is_err());
+    let empty = crate::chat::LoreDraftRequest { topic: " ".into(), ..request };
+    assert!(f.engine.draft_lore_entries(&empty).await.unwrap_err().to_string().contains("about first"));
+    assert_eq!(f.provider.requests().len(), 2, "an empty topic sends nothing");
 }

@@ -147,6 +147,19 @@ impl OllamaOptionsSource for DbOllamaOptions {
     }
 }
 
+// ---- story setting ----
+
+const LAST_STORY_COUNTRY_KEY: &str = "story.lastCountry";
+
+/// The country last picked for a roleplay's setting; new roleplays without a home country start there.
+pub fn last_story_country(conn: &Connection) -> Result<Option<String>> {
+    Ok(app_settings::get(conn, LAST_STORY_COUNTRY_KEY)?.filter(|c| !c.is_empty()))
+}
+
+pub fn set_last_story_country(conn: &Connection, country: &str) -> Result<()> {
+    app_settings::set(conn, LAST_STORY_COUNTRY_KEY, country)
+}
+
 // ---- last-selected provider/model and the model cache ----
 
 pub fn last_selected_provider(conn: &Connection) -> Result<Option<String>> {
