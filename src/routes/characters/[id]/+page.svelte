@@ -2,6 +2,7 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, errorText } from "$lib/api";
+  import AppearanceSection from "$lib/components/AppearanceSection.svelte";
   import Avatar from "$lib/components/Avatar.svelte";
   import { fileUrl } from "$lib/media";
   import { pickFolder, pickImages, pickSaveJson } from "$lib/pick";
@@ -37,6 +38,9 @@
       linkedLorebookIds: [],
       expressions: [],
       galleryImagePaths: [],
+      appearance: null,
+      appearanceText: "",
+      birthDate: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -232,6 +236,9 @@
         Scenario
         <textarea rows="3" bind:value={form.scenario}></textarea>
       </label>
+
+      <h2>Appearance</h2>
+      <AppearanceSection subject="character" bind:appearance={form.appearance} bind:text={form.appearanceText} bind:birthDate={form.birthDate} />
 
       <h2>Greetings</h2>
       <p class="muted small">The first one opens a new chat; the others are alternate greetings (SillyTavern's “alternate_greetings”).</p>

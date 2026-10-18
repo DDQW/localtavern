@@ -16,6 +16,7 @@ use crate::chat::{images, ChatEngine, ChatEvent, ChatSession, EventSink, ToolDec
 use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::models::{
+    Appearance,
     Character, CharacterNotebookEntry, ChatMessage, Conversation, ExpressionImage, GroupChat, Lorebook, Persona,
     PromptPreset, QuestLogEntry, UserMemory, WorldState,
 };
@@ -28,7 +29,8 @@ use crate::repo::{
     characters, conversations, group_chats, lorebooks, notebook, personas, prompt_presets, quest_log, user_memories,
 };
 use crate::secrets::KeyringSecretStore;
-use crate::{library, settings};
+use crate::prompting::appearance::AppearanceSubject;
+use crate::{library, prompting, settings};
 
 pub struct AppState {
     pub db: Db,
@@ -587,6 +589,19 @@ pub fn delete_image(state: State<'_, AppState>, path: String) -> bool {
 #[tauri::command]
 pub fn save_persona(state: State<'_, AppState>, persona: Persona) -> Result<Persona> {
     state.db.with(|c| library::save_persona(c, persona))
+}
+
+/// The quick builder's picks as appearance text (`{{char}}` or `{{user}}` names the subject).
+#[tauri::command]
+pub fn render_appearance(appearance: Appearance, subject: AppearanceSubject) -> String {
+    prompting::appearance::render(&appearance, subject)
+}
+
+/// Rewrites appearance text as prose with the last-selected model.
+#[tauri::command]
+pub async fn polish_appearance(state: State<'_, AppState>, text: String) -> Result<String> {
+    let engine = state.engine.clone();
+    engine.polish_appearance(&text).await
 }
 
 #[tauri::command]

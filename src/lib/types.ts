@@ -50,6 +50,36 @@ export interface ExpressionImage {
   imagePath: string;
 }
 
+export type Sex = "male" | "female";
+
+/** Quick-builder picks; every trait is free text (a preset value or a custom entry). */
+export interface Appearance {
+  sex: Sex | null;
+  heightCm: number | null;
+  weightKg: number | null;
+  build: string | null;
+  muscleTone: string | null;
+  skinTone: string | null;
+  hairColor: string | null;
+  hairLength: string | null;
+  hairStyle: string | null;
+  eyeColor: string | null;
+  bodyHair: string | null;
+  marks: string[];
+  female: { cupSize: string | null; bust: string | null; waist: string | null; hips: string | null; butt: string | null };
+  male: { shoulders: string | null; chest: string | null; facialHair: string | null };
+  adult: {
+    nipples: string | null;
+    pubicHair: string | null;
+    genitals: string | null;
+    circumcision: string | null;
+    notes: string | null;
+  };
+  notes: string | null;
+}
+
+export type AppearanceSubject = "character" | "persona";
+
 export interface Character {
   id: Uuid;
   name: string;
@@ -63,6 +93,10 @@ export interface Character {
   linkedLorebookIds: Uuid[];
   expressions: ExpressionImage[];
   galleryImagePaths: string[];
+  appearance: Appearance | null;
+  appearanceText: string;
+  /** YYYY-MM-DD */
+  birthDate: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -73,6 +107,10 @@ export interface Persona {
   avatarPath: string | null;
   description: string;
   isDefault: boolean;
+  appearance: Appearance | null;
+  appearanceText: string;
+  /** YYYY-MM-DD */
+  birthDate: string | null;
 }
 
 export type WeatherCondition =

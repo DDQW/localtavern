@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
-use crate::db::{json, rows, time};
+use crate::db::{date, json, rows, time};
 use crate::error::Result;
 use crate::models::Character;
 
@@ -19,6 +19,9 @@ fn map(row: &Row) -> rusqlite::Result<Character> {
         linked_lorebook_ids: Vec::new(), // filled in by the caller
         expressions: rows::blob(row, "ExpressionsJson")?,
         gallery_image_paths: rows::blob(row, "GalleryImagePathsJson")?,
+        appearance: rows::opt_blob(row, "AppearanceJson")?,
+        appearance_text: row.get("AppearanceText")?,
+        birth_date: rows::opt_date(row, "BirthDate")?,
         created_at: rows::datetime(row, "CreatedAt")?,
         updated_at: rows::datetime(row, "UpdatedAt")?,
     })
@@ -59,12 +62,13 @@ pub fn upsert(conn: &Connection, c: &Character) -> Result<()> {
     let id = c.id.to_string();
     tx.execute(
         "INSERT INTO Characters
-            (Id, Name, AvatarPath, Description, Personality, Scenario, FirstMessagesJson, ExampleDialogue, TagsJson, ExpressionsJson, GalleryImagePathsJson, CreatedAt, UpdatedAt)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            (Id, Name, AvatarPath, Description, Personality, Scenario, FirstMessagesJson, ExampleDialogue, TagsJson, ExpressionsJson, GalleryImagePathsJson, CreatedAt, UpdatedAt, AppearanceJson, AppearanceText, BirthDate)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT(Id) DO UPDATE SET
             Name = ?2, AvatarPath = ?3, Description = ?4, Personality = ?5, Scenario = ?6,
             FirstMessagesJson = ?7, ExampleDialogue = ?8, TagsJson = ?9, ExpressionsJson = ?10,
-            GalleryImagePathsJson = ?11, UpdatedAt = ?13;",
+            GalleryImagePathsJson = ?11, UpdatedAt = ?13, AppearanceJson = ?14, AppearanceText = ?15,
+            BirthDate = ?16;",
         params![
             id,
             c.name,
@@ -79,6 +83,9 @@ pub fn upsert(conn: &Connection, c: &Character) -> Result<()> {
             json::to_blob(&c.gallery_image_paths)?,
             time::format(&c.created_at),
             time::format(&c.updated_at),
+            c.appearance.as_ref().map(json::to_blob).transpose()?,
+            c.appearance_text,
+            date::format_opt(c.birth_date),
         ],
     )?;
     tx.execute("DELETE FROM CharacterLorebooks WHERE CharacterId = ?1;", [&id])?;
@@ -128,6 +135,37 @@ mod tests {
         assert_eq!(loaded.expressions, c.expressions);
         assert_eq!(loaded.linked_lorebook_ids, vec![book.id]);
         assert_eq!(loaded.avatar_path, c.avatar_path);
+    }
+
+    #[test]
+    fn round_trips_appearance_and_birth_date() {
+        use crate::models::{Appearance, Sex};
+        let conn = open_in_memory().unwrap();
+        let mut c = Character {
+            name: "Mira".into(),
+            appearance: Some(Appearance {
+                sex: Some(Sex::Female),
+                height_cm: Some(168),
+                hair_color: Some("auburn".into()),
+                marks: vec!["freckles".into()],
+                ..Default::default()
+            }),
+            appearance_text: "{{char}} is a woman.".into(),
+            birth_date: chrono::NaiveDate::from_ymd_opt(2001, 3, 3),
+            ..Default::default()
+        };
+        c.appearance.as_mut().unwrap().female.cup_size = Some("C".into());
+        upsert(&conn, &c).unwrap();
+        let loaded = get(&conn, c.id).unwrap().unwrap();
+        assert_eq!(loaded.appearance, c.appearance);
+        assert_eq!(loaded.appearance_text, c.appearance_text);
+        assert_eq!(loaded.birth_date, c.birth_date);
+
+        c.appearance = None;
+        c.birth_date = None;
+        upsert(&conn, &c).unwrap();
+        let cleared = get(&conn, c.id).unwrap().unwrap();
+        assert_eq!((cleared.appearance, cleared.birth_date), (None, None));
     }
 
     #[test]

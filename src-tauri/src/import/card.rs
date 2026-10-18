@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use super::png;
 use crate::error::{Error, Result};
-use crate::models::{Character, Lorebook, WorldInfoEntry, WorldInfoPosition};
+use crate::models::{Appearance, Character, Lorebook, WorldInfoEntry, WorldInfoPosition};
 
 /// A character plus the lorebook its card embedded (already linked from the character), if any.
 /// The caller just needs to persist both.
@@ -46,6 +46,18 @@ struct CardData {
     alternate_greetings: Option<Vec<String>>,
     tags: Option<Vec<String>>,
     character_book: Option<CardBook>,
+    /// Free-form per-app data; LocalTavern keeps its builder picks and birthday under `localtavern`.
+    extensions: Option<Value>,
+}
+
+/// What `data.extensions.localtavern` holds. The card's description already includes the
+/// appearance text, so other apps see it; on import it is split off again.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct LocalTavernExtension {
+    appearance: Option<Appearance>,
+    appearance_text: String,
+    birth_date: Option<chrono::NaiveDate>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,9 +93,26 @@ pub fn map_card_json(json: &str) -> Result<CharacterImportResult> {
     }
     first_messages.extend(data.alternate_greetings.unwrap_or_default());
 
+    let ours: LocalTavernExtension = data
+        .extensions
+        .as_ref()
+        .and_then(|e| e.get("localtavern"))
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let mut description = data.description.unwrap_or_default();
+    let appearance_text = ours.appearance_text.trim();
+    if !appearance_text.is_empty() {
+        if let Some(rest) = description.trim_end().strip_suffix(appearance_text) {
+            description = rest.trim_end().to_string();
+        }
+    }
+
     let mut character = Character {
         name: data.name.unwrap_or_default(),
-        description: data.description.unwrap_or_default(),
+        description,
+        appearance: ours.appearance,
+        appearance_text: appearance_text.to_string(),
+        birth_date: ours.birth_date,
         personality: data.personality.unwrap_or_default(),
         scenario: data.scenario.unwrap_or_default(),
         first_messages,
@@ -148,7 +177,7 @@ pub fn export_card_json(character: &Character, lorebook: Option<&Lorebook>) -> R
 
     let data = CardData {
         name: Some(character.name.clone()),
-        description: Some(character.description.clone()),
+        description: Some(character.full_description()),
         personality: Some(character.personality.clone()),
         scenario: Some(character.scenario.clone()),
         first_mes: Some(character.first_messages.first().cloned().unwrap_or_default()),
@@ -156,6 +185,13 @@ pub fn export_card_json(character: &Character, lorebook: Option<&Lorebook>) -> R
         alternate_greetings: (character.first_messages.len() > 1).then(|| character.first_messages[1..].to_vec()),
         tags: (!character.tags.is_empty()).then(|| character.tags.clone()),
         character_book: book,
+        extensions: Some(serde_json::json!({
+            "localtavern": LocalTavernExtension {
+                appearance: character.appearance.clone(),
+                appearance_text: character.appearance_text.clone(),
+                birth_date: character.birth_date,
+            }
+        })),
     };
 
     Ok(serde_json::to_string_pretty(&ExportEnvelope { spec: "chara_card_v2", spec_version: "2.0", data })?)
@@ -354,6 +390,41 @@ mod tests {
         assert_eq!(reimported.first_messages, original.first_messages);
         assert_eq!(reimported.example_dialogue, original.example_dialogue);
         assert_eq!(reimported.tags, original.tags);
+    }
+
+    #[test]
+    fn appearance_and_birthday_survive_a_round_trip_and_other_apps_see_the_appearance() {
+        use crate::models::Sex;
+        let original = Character {
+            name: "Mira".into(),
+            description: "A cartographer.".into(),
+            appearance: Some(Appearance { sex: Some(Sex::Female), hair_color: Some("auburn".into()), ..Default::default() }),
+            appearance_text: "{{char}} is a woman. She has auburn hair.".into(),
+            birth_date: chrono::NaiveDate::from_ymd_opt(2001, 3, 3),
+            ..Default::default()
+        };
+
+        let json = export_card_json(&original, None).unwrap();
+        let card: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(card["data"]["description"], "A cartographer.
+
+{{char}} is a woman. She has auburn hair.");
+        assert_eq!(card["data"]["extensions"]["localtavern"]["birthDate"], "2001-03-03");
+
+        let reimported = map_card_json(&json).unwrap().character;
+        assert_eq!(reimported.description, original.description);
+        assert_eq!(reimported.appearance_text, original.appearance_text);
+        assert_eq!(reimported.appearance, original.appearance);
+        assert_eq!(reimported.birth_date, original.birth_date);
+    }
+
+    #[test]
+    fn an_edited_description_keeps_the_appearance_text_inside_it() {
+        let card = r#"{"spec":"chara_card_v2","data":{"name":"N","description":"Rewritten by another app.",
+            "extensions":{"localtavern":{"appearanceText":"{{char}} is tall."}}}}"#;
+        let character = map_card_json(card).unwrap().character;
+        assert_eq!(character.description, "Rewritten by another app.");
+        assert_eq!(character.appearance_text, "{{char}} is tall.");
     }
 
     #[test]

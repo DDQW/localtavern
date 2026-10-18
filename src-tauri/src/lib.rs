@@ -151,6 +151,8 @@ pub fn run() {
             commands::delete_image,
             commands::save_persona,
             commands::delete_persona,
+            commands::render_appearance,
+            commands::polish_appearance,
             commands::list_lorebooks,
             commands::save_lorebook,
             commands::delete_lorebook,

@@ -73,11 +73,14 @@ const characters: Character[] = ["Nova", "Mira", "Dorian"].map((name, i) => ({
         ]
       : [],
   galleryImagePaths: [],
+  appearance: null,
+  appearanceText: "",
+  birthDate: null,
   createdAt: now(),
   updatedAt: now(),
 }));
 
-const personas: Persona[] = [{ id: "d0000000-0000-4000-8000-000000000001", name: "Alex", avatarPath: null, description: "A curious traveler.", isDefault: true }];
+const personas: Persona[] = [{ id: "d0000000-0000-4000-8000-000000000001", name: "Alex", avatarPath: null, description: "A curious traveler.", isDefault: true, appearance: null, appearanceText: "", birthDate: null }];
 
 const lorebooks: Lorebook[] = [
   {
@@ -752,6 +755,20 @@ export const mockApi: Api = {
   },
   async deletePersona(id) {
     personas.splice(personas.findIndex((p) => p.id === id), 1);
+  },
+
+  // A rough stand-in for the Rust template (prompting/appearance.rs).
+  async renderAppearance(a, subject) {
+    const who = subject === "persona" ? "{{user}}" : "{{char}}";
+    const noun = a.sex === "female" ? "woman" : a.sex === "male" ? "man" : "person";
+    const picks = [a.heightCm && `${a.heightCm} cm`, a.build, a.hairLength, a.hairColor && `${a.hairColor} hair`, a.hairStyle, a.eyeColor && `${a.eyeColor} eyes`, a.skinTone && `${a.skinTone} skin`];
+    const sexed = a.sex === "female" ? [a.female.cupSize && `${a.female.cupSize}-cup`, a.female.hips && `${a.female.hips} hips`] : a.sex === "male" ? [a.male.shoulders && `${a.male.shoulders} shoulders`, a.male.facialHair] : [];
+    const rest = [...picks, ...sexed, ...a.marks].filter(Boolean);
+    return `${who} is a ${noun}${rest.length ? `: ${rest.join(", ")}` : ""}.`;
+  },
+  async polishAppearance(text) {
+    await sleep(600);
+    return `${text.trim()} (polished)`;
   },
 
   async listLorebooks() {

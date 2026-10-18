@@ -2223,3 +2223,31 @@ async fn the_status_prefers_the_providers_count_unless_it_is_below_the_estimate(
     assert!(status.estimated && status.used > 2, "{status:?}");
     assert_eq!(status.window, None);
 }
+// ---- appearance polish ----
+
+#[tokio::test]
+async fn polish_appearance_sends_the_text_to_the_last_selected_model_and_returns_the_rewrite() {
+    let f = fixture(vec![Script::Items(vec![chunk("  {{char}} is a slender woman with auburn waves.\n"), finish("STOP")])]);
+    f.db.with(|c| {
+        settings::set_last_selected_provider(c, "fake")?;
+        settings::set_last_selected_model(c, "fake", "fake-model")
+    })
+    .unwrap();
+
+    let polished = f.engine.polish_appearance("{{char}} is a woman. She has auburn hair (wavy).").await.unwrap();
+    assert_eq!(polished, "{{char}} is a slender woman with auburn waves.");
+
+    let request = &f.provider.requests()[0];
+    assert_eq!(request.model, "fake-model");
+    assert!(request.history[0].text.ends_with("{{char}} is a woman. She has auburn hair (wavy)."), "{}", request.history[0].text);
+    assert!(request.history[0].text.contains("{{char}} and {{user}} exactly as written"), "{}", request.history[0].text);
+}
+
+#[tokio::test]
+async fn polish_appearance_refuses_empty_text_and_empty_replies() {
+    let f = fixture(vec![Script::Items(vec![chunk("   "), finish("STOP")])]);
+    f.db.with(|c| settings::set_last_selected_model(c, "fake", "fake-model")).unwrap();
+    assert!(f.engine.polish_appearance("  ").await.is_err());
+    assert!(f.provider.requests().is_empty(), "nothing is sent for empty text");
+    assert!(f.engine.polish_appearance("{{char}} is a man.").await.is_err());
+}

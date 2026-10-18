@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
-use crate::db::rows;
+use crate::db::{date, json, rows};
 use crate::error::Result;
 use crate::models::Persona;
 
@@ -12,6 +12,9 @@ fn map(row: &Row) -> rusqlite::Result<Persona> {
         avatar_path: row.get("AvatarPath")?,
         description: row.get("Description")?,
         is_default: row.get("IsDefault")?,
+        appearance: rows::opt_blob(row, "AppearanceJson")?,
+        appearance_text: row.get("AppearanceText")?,
+        birth_date: rows::opt_date(row, "BirthDate")?,
     })
 }
 
@@ -27,10 +30,20 @@ pub fn get_all(conn: &Connection) -> Result<Vec<Persona>> {
 
 pub fn upsert(conn: &Connection, p: &Persona) -> Result<()> {
     conn.execute(
-        "INSERT INTO Personas (Id, Name, AvatarPath, Description, IsDefault)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(Id) DO UPDATE SET Name = ?2, AvatarPath = ?3, Description = ?4, IsDefault = ?5;",
-        params![p.id.to_string(), p.name, p.avatar_path, p.description, p.is_default],
+        "INSERT INTO Personas (Id, Name, AvatarPath, Description, IsDefault, AppearanceJson, AppearanceText, BirthDate)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(Id) DO UPDATE SET Name = ?2, AvatarPath = ?3, Description = ?4, IsDefault = ?5,
+            AppearanceJson = ?6, AppearanceText = ?7, BirthDate = ?8;",
+        params![
+            p.id.to_string(),
+            p.name,
+            p.avatar_path,
+            p.description,
+            p.is_default,
+            p.appearance.as_ref().map(json::to_blob).transpose()?,
+            p.appearance_text,
+            date::format_opt(p.birth_date),
+        ],
     )?;
     Ok(())
 }
@@ -55,5 +68,20 @@ mod tests {
         assert_eq!(get_all(&conn).unwrap()[0].description, "d");
         delete(&conn, p.id).unwrap();
         assert!(get(&conn, p.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn round_trips_appearance_and_birth_date() {
+        use crate::models::{Appearance, Sex};
+        let conn = crate::db::open_in_memory().unwrap();
+        let p = Persona {
+            name: "Alex".into(),
+            appearance: Some(Appearance { sex: Some(Sex::Male), eye_color: Some("grey".into()), ..Default::default() }),
+            appearance_text: "{{user}} is a man.".into(),
+            birth_date: chrono::NaiveDate::from_ymd_opt(1996, 2, 29),
+            ..Default::default()
+        };
+        upsert(&conn, &p).unwrap();
+        assert_eq!(get(&conn, p.id).unwrap().unwrap(), p);
     }
 }

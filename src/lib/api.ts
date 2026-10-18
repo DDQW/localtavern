@@ -5,6 +5,8 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { mockApi } from "./mock";
 import type {
+  Appearance,
+  AppearanceSubject,
   Bootstrap,
   Character,
   ChatEvent,
@@ -115,6 +117,9 @@ export interface Api {
   savePersona(persona: Persona): Promise<Persona>;
   deletePersona(personaId: Uuid): Promise<void>;
 
+  renderAppearance(appearance: Appearance, subject: AppearanceSubject): Promise<string>;
+  polishAppearance(text: string): Promise<string>;
+
   listLorebooks(): Promise<Lorebook[]>;
   saveLorebook(lorebook: Lorebook): Promise<Lorebook>;
   deleteLorebook(lorebookId: Uuid): Promise<void>;
@@ -214,6 +219,9 @@ const tauriApi: Api = {
 
   savePersona: (persona) => invoke("save_persona", { persona }),
   deletePersona: (personaId) => invoke("delete_persona", { personaId }),
+
+  renderAppearance: (appearance, subject) => invoke("render_appearance", { appearance, subject }),
+  polishAppearance: (text) => invoke("polish_appearance", { text }),
 
   listLorebooks: () => invoke("list_lorebooks"),
   saveLorebook: (lorebook) => invoke("save_lorebook", { lorebook }),

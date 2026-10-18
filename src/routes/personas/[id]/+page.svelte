@@ -2,6 +2,7 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, errorText } from "$lib/api";
+  import AppearanceSection from "$lib/components/AppearanceSection.svelte";
   import Avatar from "$lib/components/Avatar.svelte";
   import { pickImages } from "$lib/pick";
   import type { Persona } from "$lib/types";
@@ -18,7 +19,16 @@
       try {
         const loaded =
           id === "new"
-            ? { id: newId(), name: "", avatarPath: null, description: "", isDefault: false }
+            ? {
+                id: newId(),
+                name: "",
+                avatarPath: null,
+                description: "",
+                isDefault: false,
+                appearance: null,
+                appearanceText: "",
+                birthDate: null,
+              }
             : (await api.listPersonas()).find((p) => p.id === id);
         if (loaded) form = loaded;
         else error = "That persona no longer exists.";
@@ -83,6 +93,9 @@
         Description
         <textarea rows="5" bind:value={form.description} placeholder="A curious traveler…"></textarea>
       </label>
+
+      <h2>Appearance</h2>
+      <AppearanceSection subject="persona" bind:appearance={form.appearance} bind:text={form.appearanceText} bind:birthDate={form.birthDate} />
 
       <label class="check">
         <input type="checkbox" bind:checked={form.isDefault} />

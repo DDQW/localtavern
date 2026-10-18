@@ -383,6 +383,39 @@ impl ChatEngine {
         Ok((provider_id, model))
     }
 
+    /// Rewrites a character's or persona's appearance text as natural prose, using the last-selected
+    /// provider and model (the editor has no conversation to take them from).
+    pub async fn polish_appearance(&self, text: &str) -> Result<String> {
+        if text.trim().is_empty() {
+            return Err(Error::Other("There is no appearance text to polish yet.".into()));
+        }
+        let (provider_id, model) = self.db().with(|c| self.default_provider_and_model(c))?;
+        if model.trim().is_empty() {
+            return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
+        }
+        let prompt = format!(
+            "Rewrite this physical description of a fictional adult character as one or two natural, flowing paragraphs \
+for a roleplay character sheet. Keep every fact, add none, and keep any measurements. Keep placeholders such as \
+{{{{char}}}} and {{{{user}}}} exactly as written and use them to name the character. If an \"Intimate details\" part is \
+present, keep it as its own final paragraph, stated matter-of-factly. Reply with the description only.\n\n{}",
+            text.trim()
+        );
+        let request = LlmRequest {
+            model,
+            system_instruction: None,
+            history: vec![LlmMessage::new(LlmRole::User, prompt)],
+            generation_config: Default::default(),
+            enable_web_search: None,
+        };
+        let provider = self.inner.providers.get(&provider_id).map_err(|e| Error::Other(user_message(&e)))?;
+        let response = provider.get_completion(request).await.map_err(|e| Error::Other(user_message(&e)))?;
+        let polished = response.delta_text.trim().to_string();
+        if polished.is_empty() {
+            return Err(Error::Other("The model returned an empty description - try again.".into()));
+        }
+        Ok(polished)
+    }
+
     // ------------------------------------------------------------------ conversation settings
 
     fn update_conversation(&self, id: Uuid, change: impl FnOnce(&mut Conversation)) -> Result<Conversation> {
@@ -902,8 +935,14 @@ impl ChatEngine {
             None => history,
         };
 
+        let birthdays: Vec<(&str, chrono::NaiveDate)> = ctx
+            .characters
+            .iter()
+            .filter_map(|c| c.birth_date.map(|d| (c.name.as_str(), d)))
+            .chain(ctx.persona.as_ref().and_then(|p| p.birth_date.map(|d| (roles::user_name(Some(p)), d))))
+            .collect();
         let world_text = (conversation.mode == ConversationMode::Roleplay)
-            .then(|| conversation.world_state.as_ref().map(world_state::format))
+            .then(|| conversation.world_state.as_ref().map(|state| world_state::format(state, &birthdays)))
             .flatten();
 
         let mut pctx = PromptAssemblyContext::new(conversation, options.preset.unwrap_or(&ctx.preset), history)

@@ -236,11 +236,11 @@ fn resolve_block_text(block: &PromptBlock, ctx: &PromptAssemblyContext, macros: 
         }
         PromptBlockType::PersonaDescription => resolve_persona_description(ctx.persona),
         PromptBlockType::CharacterDescription => {
-            join_per_character(ctx.characters, macros, |c| &c.description, "description")
+            join_per_character(ctx.characters, macros, Character::full_description, "description")
         }
-        PromptBlockType::Scenario => join_per_character(ctx.characters, macros, |c| &c.scenario, "scenario"),
+        PromptBlockType::Scenario => join_per_character(ctx.characters, macros, |c| c.scenario.clone(), "scenario"),
         PromptBlockType::ExampleDialogue => {
-            join_per_character(ctx.characters, macros, |c| &c.example_dialogue, "example dialogue")
+            join_per_character(ctx.characters, macros, |c| c.example_dialogue.clone(), "example dialogue")
         }
         PromptBlockType::AuthorsNote => ctx.authors_note_text.or(custom).unwrap_or_default().to_string(),
         PromptBlockType::Custom | PromptBlockType::PostHistoryInstructions => custom.unwrap_or_default().to_string(),
@@ -324,8 +324,11 @@ fn format_user_memories(memories: &[UserMemory]) -> String {
 
 fn resolve_persona_description(persona: Option<&Persona>) -> String {
     match persona {
-        Some(p) if !p.description.trim().is_empty() => format!("{}'s persona: {}", user_name(persona), p.description),
-        _ => String::new(),
+        Some(p) => match p.full_description() {
+            d if d.is_empty() => String::new(),
+            d => format!("{}'s persona: {d}", user_name(persona)),
+        },
+        None => String::new(),
     }
 }
 
@@ -333,7 +336,7 @@ fn resolve_persona_description(persona: Option<&Persona>) -> String {
 fn join_per_character(
     characters: &[Character],
     macros: &Macros,
-    select: impl Fn(&Character) -> &String,
+    select: impl Fn(&Character) -> String,
     label: &str,
 ) -> String {
     match characters {
@@ -341,8 +344,9 @@ fn join_per_character(
         [only] => macros.for_character(only).fill(select(only).trim()),
         many => many
             .iter()
-            .filter(|c| !select(c).trim().is_empty())
-            .map(|c| format!("{}'s {label}: {}", c.name, macros.for_character(c).fill(select(c))))
+            .map(|c| (c, select(c)))
+            .filter(|(_, text)| !text.trim().is_empty())
+            .map(|(c, text)| format!("{}'s {label}: {}", c.name, macros.for_character(c).fill(&text)))
             .collect::<Vec<_>>()
             .join("\n"),
     }
@@ -509,6 +513,44 @@ mod tests {
         assert!(pos("Alex's persona: A curious traveler.") < pos("A wandering star-mapper."));
         assert!(pos("A wandering star-mapper.") < pos("Aboard a research vessel."));
         assert!(pos("Aboard a research vessel.") < pos("Nova: Greetings."));
+    }
+
+    #[test]
+    fn appearance_text_follows_the_description_for_persona_and_character() {
+        let conv = roleplay();
+        let preset = create_roleplay_preset();
+        let persona = Persona { name: "Alex".into(), appearance_text: "{{user}} is a man.".into(), ..Default::default() };
+        let characters = [Character {
+            name: "Nova".into(),
+            description: "A wandering star-mapper.".into(),
+            appearance_text: "{{char}} is a woman. She has silver hair.".into(),
+            ..Default::default()
+        }];
+
+        let request = assemble(
+            &PromptAssemblyContext::new(&conv, &preset, &[]).with_persona(&persona).with_characters(&characters),
+            &NullScanner,
+        );
+
+        let system = request.system_instruction.unwrap();
+        assert!(system.contains("Alex's persona: Alex is a man."), "{system}");
+        assert!(system.contains("A wandering star-mapper.
+
+Nova is a woman. She has silver hair."), "{system}");
+    }
+
+    #[test]
+    fn group_descriptions_include_each_cards_appearance() {
+        let conv = roleplay();
+        let preset = create_roleplay_preset();
+        let characters = [
+            Character { name: "Alice".into(), appearance_text: "{{char}} is tall.".into(), ..Default::default() },
+            Character { name: "Bob".into(), ..Default::default() },
+        ];
+        let request = assemble(&PromptAssemblyContext::new(&conv, &preset, &[]).with_characters(&characters), &NullScanner);
+        let system = request.system_instruction.unwrap();
+        assert!(system.contains("Alice's description: Alice is tall."), "{system}");
+        assert!(!system.contains("Bob's description"), "{system}");
     }
 
     #[test]

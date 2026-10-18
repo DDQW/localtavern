@@ -2,6 +2,7 @@
 //! `migrations/` are copied verbatim and tracked by the same `SchemaVersion` table, so a database
 //! created by either app opens in the other.
 
+pub mod date;
 pub mod json;
 pub mod rows;
 pub mod time;
@@ -46,6 +47,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (12, include_str!("../../migrations/0012_world_state_notebooks_quests.sql")),
     (13, include_str!("../../migrations/0013_reasoning_effort.sql")),
     (14, include_str!("../../migrations/0014_conversation_summaries.sql")),
+    (15, include_str!("../../migrations/0015_appearance_birthdays.sql")),
 ];
 
 /// Opens (creating if needed) the database at `path`, enables foreign keys and applies pending migrations.

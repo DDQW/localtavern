@@ -1,6 +1,7 @@
 //! Prompt construction: turns a conversation, its preset and loaded context into a provider-agnostic
 //! [`LlmRequest`](crate::llm::LlmRequest), plus the tag/response parsers around it.
 
+pub mod appearance;
 pub mod assembler;
 pub mod context;
 pub mod defaults;

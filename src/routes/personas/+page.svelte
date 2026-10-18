@@ -46,7 +46,7 @@
             {persona.name}
             {#if persona.isDefault}<span class="pill">default</span>{/if}
           </div>
-          <div class="muted desc">{persona.description || "No description"}</div>
+          <div class="muted desc">{persona.description || persona.appearanceText.replaceAll("{{user}}", persona.name) || "No description"}</div>
         </div>
         <a class="linkbtn" href="/personas/{persona.id}">Edit</a>
         <button class="ghost danger" onclick={() => remove(persona)}>Delete</button>

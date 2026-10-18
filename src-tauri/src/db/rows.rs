@@ -1,7 +1,7 @@
 //! Typed column readers for row-mapping closures. They return `rusqlite::Result` so they compose
 //! with `query_map`; a value that fails to parse becomes a `FromSqlConversionFailure` naming the column.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{types::Type, Row};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
@@ -24,6 +24,12 @@ pub fn opt_uuid(row: &Row, col: &str) -> rusqlite::Result<Option<Uuid>> {
 pub fn datetime(row: &Row, col: &str) -> rusqlite::Result<DateTime<Utc>> {
     let s: String = row.get(col)?;
     super::time::parse(&s).map_err(|e| bad(row, col, e))
+}
+
+/// A `YYYY-MM-DD` date column.
+pub fn opt_date(row: &Row, col: &str) -> rusqlite::Result<Option<NaiveDate>> {
+    let s: Option<String> = row.get(col)?;
+    s.map(|s| NaiveDate::parse_from_str(&s, "%Y-%m-%d").map_err(|e| bad(row, col, e))).transpose()
 }
 
 pub fn blob<T: DeserializeOwned>(row: &Row, col: &str) -> rusqlite::Result<T> {

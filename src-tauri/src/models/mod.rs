@@ -16,6 +16,7 @@ macro_rules! int_enum {
     };
 }
 
+pub mod appearance;
 pub mod character;
 pub mod chat;
 pub mod conversation;
@@ -25,6 +26,7 @@ pub mod misc;
 pub mod persona;
 pub mod prompt_preset;
 
+pub use appearance::*;
 pub use character::*;
 pub use chat::*;
 pub use conversation::*;

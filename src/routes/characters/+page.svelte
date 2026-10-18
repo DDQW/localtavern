@@ -88,7 +88,7 @@
           <Avatar name={character.name} path={character.avatarPath} size={64} />
           <div class="info">
             <h2>{character.name}</h2>
-            <p class="desc">{character.description || character.scenario || "No description"}</p>
+            <p class="desc">{character.description || character.appearanceText.replaceAll("{{char}}", character.name) || character.scenario || "No description"}</p>
             {#if character.tags.length > 0}
               <div class="tags">
                 {#each character.tags.slice(0, 4) as tag (tag)}<span>{tag}</span>{/each}
