@@ -1412,7 +1412,7 @@ impl Routed {
 }
 
 const NOTEBOOK_ASK: &str = "extracting what specific characters";
-const QUEST_ASK: &str = "maintaining a quest/objective log";
+const QUEST_ASK: &str = "quest/objective log for an ongoing roleplay";
 const MEMORY_ASK: &str = "extracting durable facts about the USER";
 const CONDENSE_ASK: &str = "It has grown long";
 

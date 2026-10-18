@@ -115,8 +115,9 @@ List any NEW, durable, specific facts about the user worth remembering long-term
                 .join("\n")
         };
 
+        // The log is the player's: a character announcing its own plans would otherwise land in it.
         let prompt = format!(
-            "You are maintaining a quest/objective log for an ongoing roleplay, based on one exchange.\n\n\
+            "You are maintaining {user}'s quest/objective log for an ongoing roleplay, based on one exchange. {user} is the player; the log tracks only {user}'s own quests.\n\n\
 Current quests:\n{existing_list}\n\n\
 {transcript}\n\n\
 Output zero or more lines, one per change, in exactly this grammar:\n\
@@ -124,7 +125,9 @@ ADD: <title> :: <one-line description>\n\
 UPDATE: <existing title, exact> :: <new one-line description>\n\
 COMPLETE: <existing title, exact>\n\
 FAIL: <existing title, exact>\n\
-Only ADD a new quest for a concrete objective introduced in this exchange. Only UPDATE/COMPLETE/FAIL a quest whose title exactly matches one already listed above. If nothing changed, output exactly: NONE",
+Only ADD a new quest for a concrete objective that {user} took on or was given in this exchange - something {user} set out to do, agreed to, or was asked to do. Never add {reply}'s or any other character's own goals, plans, errands or intentions, unless {user} has taken them on too. Only UPDATE/COMPLETE/FAIL a quest whose title exactly matches one already listed above. If nothing changed, output exactly: NONE",
+            user = exchange.user_name,
+            reply = exchange.reply_name,
             transcript = exchange.roleplay_transcript(),
         );
         let response = self.ask(prompt).await?;
