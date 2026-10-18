@@ -15,9 +15,8 @@ use crate::repo::{characters, group_chats, lorebooks, personas, prompt_presets};
 
 const IMAGE_EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 
-/// Trims the appearance text and drops builder picks that hold nothing.
-fn clean_appearance(appearance: Option<Appearance>, text: &mut String) -> Option<Appearance> {
-    *text = text.trim().to_string();
+/// Drops builder picks that hold nothing.
+fn clean_appearance(appearance: Option<Appearance>) -> Option<Appearance> {
     appearance.filter(|a| *a != Appearance::default())
 }
 
@@ -40,7 +39,8 @@ pub fn save_character(conn: &Connection, mut character: Character) -> Result<Cha
         .collect();
     character.gallery_image_paths.retain(|p| !p.trim().is_empty());
     character.avatar_path = character.avatar_path.filter(|p| !p.trim().is_empty());
-    character.appearance = clean_appearance(character.appearance.take(), &mut character.appearance_text);
+    character.appearance = clean_appearance(character.appearance.take());
+    character.schedule = character.schedule.take().filter(|s| !s.is_empty());
     character.updated_at = Utc::now();
     characters::upsert(conn, &character)?;
     Ok(character)
@@ -53,7 +53,7 @@ pub fn save_persona(conn: &Connection, mut persona: Persona) -> Result<Persona> 
         return Err(Error::Other("A persona needs a name.".into()));
     }
     persona.avatar_path = persona.avatar_path.filter(|p| !p.trim().is_empty());
-    persona.appearance = clean_appearance(persona.appearance.take(), &mut persona.appearance_text);
+    persona.appearance = clean_appearance(persona.appearance.take());
 
     if persona.is_default {
         for mut other in personas::get_all(conn)? {

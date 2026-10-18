@@ -3,6 +3,7 @@ pub mod commands;
 pub mod db;
 pub mod error;
 pub mod group_chats;
+pub mod holidays;
 pub mod image_commands;
 pub mod imagegen;
 pub mod import;
@@ -76,6 +77,7 @@ fn build_state(data_dir: PathBuf) -> Result<AppState, Box<dyn std::error::Error>
 
     let images_dir = data_dir.join("images");
     let engine = ChatEngine::new(db.clone(), registry.clone(), images_dir.clone());
+    engine.set_holiday_source(Arc::new(holidays::NagerHolidays::new(client.clone())));
     Ok(AppState { db, engine, providers: registry, secrets, sessions, sign_ins: Default::default(), images_dir, data_dir })
 }
 
@@ -118,6 +120,12 @@ pub fn run() {
             commands::set_assistant_prompt,
             commands::set_search_override,
             commands::set_world_state,
+            commands::holiday_countries,
+            commands::holiday_overview,
+            commands::draft_scenario,
+            commands::draft_greetings,
+            commands::draft_lore_entries,
+            commands::draft_schedule,
             commands::list_models,
             commands::refresh_models,
             commands::set_api_key,

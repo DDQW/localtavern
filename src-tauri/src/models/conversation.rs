@@ -61,6 +61,33 @@ pub struct WorldState {
     /// Fallback tick only - the model normally estimates each reply's elapsed time itself.
     pub default_advance_minutes_per_message: i32,
     pub auto_drift_weather_enabled: bool,
+    /// Where the story is set (ISO 3166-1 alpha-2, e.g. "DE"); picks the public holidays.
+    #[serde(default)]
+    pub country_code: Option<String>,
+    /// Subdivision for regional holidays, as the holiday data names it (e.g. "DE-BY").
+    #[serde(default)]
+    pub region_code: Option<String>,
+    /// Extra or fictional holidays for this story.
+    #[serde(default)]
+    pub custom_holidays: Vec<CustomHoliday>,
+}
+
+/// A holiday the user added to a story: every year on `month`/`day`, or once when `year` is set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomHoliday {
+    pub name: String,
+    pub month: u32,
+    pub day: u32,
+    #[serde(default)]
+    pub year: Option<i32>,
+}
+
+impl CustomHoliday {
+    pub fn falls_on(&self, date: NaiveDate) -> bool {
+        use chrono::Datelike;
+        date.month() == self.month && date.day() == self.day && self.year.is_none_or(|y| y == date.year())
+    }
 }
 
 impl WorldState {
@@ -71,6 +98,9 @@ impl WorldState {
             weather_notes: None,
             default_advance_minutes_per_message: 5,
             auto_drift_weather_enabled: false,
+            country_code: None,
+            region_code: None,
+            custom_holidays: Vec::new(),
         }
     }
 }

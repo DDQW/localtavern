@@ -13,7 +13,6 @@ fn map(row: &Row) -> rusqlite::Result<Persona> {
         description: row.get("Description")?,
         is_default: row.get("IsDefault")?,
         appearance: rows::opt_blob(row, "AppearanceJson")?,
-        appearance_text: row.get("AppearanceText")?,
         birth_date: rows::opt_date(row, "BirthDate")?,
     })
 }
@@ -30,10 +29,10 @@ pub fn get_all(conn: &Connection) -> Result<Vec<Persona>> {
 
 pub fn upsert(conn: &Connection, p: &Persona) -> Result<()> {
     conn.execute(
-        "INSERT INTO Personas (Id, Name, AvatarPath, Description, IsDefault, AppearanceJson, AppearanceText, BirthDate)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO Personas (Id, Name, AvatarPath, Description, IsDefault, AppearanceJson, BirthDate)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(Id) DO UPDATE SET Name = ?2, AvatarPath = ?3, Description = ?4, IsDefault = ?5,
-            AppearanceJson = ?6, AppearanceText = ?7, BirthDate = ?8;",
+            AppearanceJson = ?6, BirthDate = ?7;",
         params![
             p.id.to_string(),
             p.name,
@@ -41,7 +40,6 @@ pub fn upsert(conn: &Connection, p: &Persona) -> Result<()> {
             p.description,
             p.is_default,
             p.appearance.as_ref().map(json::to_blob).transpose()?,
-            p.appearance_text,
             date::format_opt(p.birth_date),
         ],
     )?;
@@ -77,7 +75,6 @@ mod tests {
         let p = Persona {
             name: "Alex".into(),
             appearance: Some(Appearance { sex: Some(Sex::Male), eye_color: Some("grey".into()), ..Default::default() }),
-            appearance_text: "{{user}} is a man.".into(),
             birth_date: chrono::NaiveDate::from_ymd_opt(1996, 2, 29),
             ..Default::default()
         };

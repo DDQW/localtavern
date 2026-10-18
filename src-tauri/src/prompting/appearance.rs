@@ -115,7 +115,7 @@ pub fn render(a: &Appearance, subject: AppearanceSubject) -> String {
     .collect::<Vec<_>>();
     let mut paragraphs = vec![sentences.join(" ")];
     if !intimate.is_empty() || text(&adult.notes).is_some() {
-        let mut block = String::from("Intimate details");
+        let mut block = format!("{}'s intimate details", subject.macro_name());
         if !intimate.is_empty() {
             block.push_str(&format!(": {}.", intimate.join("; ")));
         } else {
@@ -233,10 +233,10 @@ Distinguishing features: freckles."
     #[test]
     fn intimate_details_only_when_filled() {
         let mut a = woman();
-        assert!(!render(&a, AppearanceSubject::Character).contains("Intimate"));
+        assert!(!render(&a, AppearanceSubject::Character).contains("intimate"));
         a.adult = AdultTraits { pubic_hair: some("trimmed"), circumcision: some("circumcised"), ..Default::default() };
         let text = render(&a, AppearanceSubject::Character);
-        assert!(text.ends_with("\n\nIntimate details: pubic hair: trimmed."), "{text}");
+        assert!(text.ends_with("\n\n{{char}}'s intimate details: pubic hair: trimmed."), "{text}");
     }
 
     #[test]
@@ -246,8 +246,8 @@ Distinguishing features: freckles."
             adult: AdultTraits { circumcision: some("uncircumcised"), notes: some("Has a birthmark on the thigh"), ..Default::default() },
             ..Default::default()
         };
-        assert!(render(&a, AppearanceSubject::Character)
-            .ends_with("Intimate details: uncircumcised. Has a birthmark on the thigh."));
+        assert!(render(&a, AppearanceSubject::Persona)
+            .ends_with("{{user}}'s intimate details: uncircumcised. Has a birthmark on the thigh."));
     }
 
     #[test]

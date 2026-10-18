@@ -1,6 +1,7 @@
 //! The chat engine and everything it needs: conversation sessions, streaming events, preset
 //! resolution, reply post-processing and local image storage.
 
+mod authoring;
 pub mod compaction;
 pub mod engine;
 pub mod events;
@@ -13,6 +14,7 @@ pub mod session;
 #[cfg(test)]
 mod engine_tests;
 
-pub use engine::{ChatEngine, ImagePromptDraft, ToolDecision};
+pub use authoring::LoreDraftRequest;
+pub use engine::{ChatEngine, HolidayOverview, ImagePromptDraft, ToolDecision};
 pub use events::{ChatEvent, EventSink};
 pub use session::ChatSession;
