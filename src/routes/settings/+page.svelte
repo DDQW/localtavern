@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api, errorText } from "$lib/api";
+  import ImageGenSection from "$lib/components/ImageGenSection.svelte";
   import type {
     DefaultPersonas,
     GeminiOptions,
@@ -399,6 +400,8 @@
         {/if}
       </article>
     {/each}
+
+    <ImageGenSection />
 
     <article class="card block">
       <h2>PowerShell tool</h2>

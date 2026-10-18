@@ -25,6 +25,10 @@ import type {
   StoryState,
   ContextStatus,
   CharacterNotebookEntry,
+  ImageBackendOptions,
+  ImageGenSettings,
+  ImageMode,
+  ImagePromptDraft,
   DefaultPersonas,
   Uuid,
   WorldState,
@@ -131,6 +135,20 @@ export interface Api {
   listGroupChats(): Promise<GroupChat[]>;
   saveGroupChat(group: GroupChat): Promise<GroupChat>;
   deleteGroupChat(groupId: Uuid): Promise<void>;
+
+  getImageSettings(): Promise<ImageGenSettings>;
+  saveImageSettings(settings: ImageGenSettings): Promise<ImageGenSettings>;
+  /** Checkpoints/samplers/schedulers from the server in `settings` (which needn't be saved yet). */
+  imageBackendOptions(settings: ImageGenSettings): Promise<ImageBackendOptions>;
+  getCharacterImagePrefix(characterId: Uuid): Promise<string>;
+  setCharacterImagePrefix(characterId: Uuid, prefix: string): Promise<void>;
+  /** The chat model's description for a picture; null when stopped (stopGeneration). */
+  imagePrompt(conversationId: Uuid, mode: ImageMode, characterId: Uuid | null): Promise<ImagePromptDraft | null>;
+  /** Renders a draft and adds it to the chat; null when stopped (stopImage). */
+  generateImage(conversationId: Uuid, draft: ImagePromptDraft): Promise<ChatMessage | null>;
+  stopImage(conversationId: Uuid): Promise<void>;
+  /** Deletes a picture message and its stored file. */
+  deletePicture(messageId: Uuid): Promise<void>;
 }
 
 /** Runs a streaming command, forwarding each event to `onEvent`; resolves when the command returns. */
@@ -234,6 +252,16 @@ const tauriApi: Api = {
   listGroupChats: () => invoke("list_group_chats"),
   saveGroupChat: (group) => invoke("save_group_chat", { group }),
   deleteGroupChat: (groupId) => invoke("delete_group_chat", { groupId }),
+
+  getImageSettings: () => invoke("get_image_settings"),
+  saveImageSettings: (settings) => invoke("save_image_settings", { settings }),
+  imageBackendOptions: (settings) => invoke("image_backend_options", { settings }),
+  getCharacterImagePrefix: (characterId) => invoke("get_character_image_prefix", { characterId }),
+  setCharacterImagePrefix: (characterId, prefix) => invoke("set_character_image_prefix", { characterId, prefix }),
+  imagePrompt: (conversationId, mode, characterId) => invoke("image_prompt", { conversationId, mode, characterId }),
+  generateImage: (conversationId, draft) => invoke("generate_image", { conversationId, draft }),
+  stopImage: (conversationId) => invoke("stop_image", { conversationId }),
+  deletePicture: (messageId) => invoke("delete_picture", { messageId }),
 };
 
 export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

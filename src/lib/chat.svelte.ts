@@ -8,6 +8,8 @@ import type {
   ChatSession,
   Character,
   ContextStatus,
+  ImageMode,
+  ImagePromptDraft,
   Persona,
   StoryState,
   ToolApproval,
@@ -18,6 +20,24 @@ import type {
 
 function toUi(message: ChatMessage, streaming = false): UiMessage {
   return { ...message, streaming, editing: false, editBuffer: "" };
+}
+
+/** Where a picture is in its life: the model is writing its prompt, the prompt waits for review,
+ * or the image server is rendering it. */
+export interface PictureJob {
+  phase: "prompt" | "review" | "render";
+  draft: ImagePromptDraft | null;
+}
+
+/** The draft a picture message was drawn from (kept as its raw prompt), for drawing it again. */
+export function pictureDraft(message: ChatMessage): ImagePromptDraft | null {
+  if (message.role !== "image") return null;
+  try {
+    const draft = JSON.parse(message.rawPromptText ?? "") as ImagePromptDraft;
+    return { ...draft, prompt: message.text };
+  } catch {
+    return null;
+  }
 }
 
 export interface Speaker {
@@ -41,6 +61,8 @@ class ChatStore {
   context = $state<ContextStatus | null>(null);
   /** Older messages are being summarized (by hand, or automatically before a reply). */
   compacting = $state(false);
+  /** The picture being made for this chat, if any. */
+  picture = $state<PictureJob | null>(null);
 
   get conversationId(): Uuid | null {
     return this.session?.conversation.id ?? null;
@@ -54,20 +76,25 @@ class ChatStore {
     return !!this.session?.conversation.groupChatId;
   }
 
+  /** The newest message the model sees. Pictures sit in the chat but aren't part of the
+   * conversation, so they never count as "the last reply". */
+  get lastTurn(): UiMessage | undefined {
+    return this.messages.findLast((m) => m.role !== "image");
+  }
+
   /** In a group whose last message is the user's own: nobody has answered yet, so offer the members. */
   get awaitingSpeaker(): boolean {
-    return this.isGroup && !this.busy && this.messages.at(-1)?.role === "user";
+    return this.isGroup && !this.busy && this.lastTurn?.role === "user";
   }
 
   /** Continue extends the last reply, so it needs one (and nothing already running). */
   get canContinue(): boolean {
-    return !!this.session && !this.busy && this.messages.at(-1)?.role === "character";
+    return !!this.session && !this.busy && this.lastTurn?.role === "character";
   }
 
   get canSend(): boolean {
     if (!this.session || this.busy) return false;
-    const last = this.messages.at(-1);
-    return this.input.trim().length > 0 || this.pendingAttachments.length > 0 || last?.role === "user";
+    return this.input.trim().length > 0 || this.pendingAttachments.length > 0 || this.lastTurn?.role === "user";
   }
 
   // ---- loading ----
@@ -84,6 +111,7 @@ class ChatStore {
     this.story = null;
     this.context = null;
     this.compacting = false;
+    this.picture = null;
     void this.refreshStory();
     void this.refreshContext();
   }
@@ -201,6 +229,7 @@ class ChatStore {
     if (message.role === "user") return { name: persona?.name || "You", avatarPath: persona?.avatarPath ?? null };
     if (message.role === "tool") return { name: "PowerShell", avatarPath: null };
     if (message.role === "system") return { name: "System", avatarPath: null };
+    if (message.role === "image" && !message.speakerCharacterId) return { name: "Picture", avatarPath: null };
 
     const character = this.characterFor(message);
     if (!character) return { name: "Assistant", avatarPath: null };
@@ -423,12 +452,104 @@ class ChatStore {
 
   async remove(message: UiMessage) {
     try {
-      await api.deleteMessage(message.id);
+      // A picture's file goes with it.
+      await (message.role === "image" ? api.deletePicture(message.id) : api.deleteMessage(message.id));
       this.messages = this.messages.filter((m) => m.id !== message.id);
       void this.refreshContext();
     } catch (e) {
       this.error = errorText(e);
     }
+  }
+
+  // ---- pictures ----
+
+  /** Has the chat model describe a picture, then renders it - after review if Settings ask for it. */
+  async drawPicture(mode: ImageMode, characterId: Uuid | null = null) {
+    const id = this.conversationId;
+    if (!id || this.busy || this.picture) return;
+    this.error = "";
+    // Writing the prompt uses the chat model, so it occupies the chat like a reply would.
+    this.busy = true;
+    this.picture = { phase: "prompt", draft: null };
+    let draft: ImagePromptDraft | null = null;
+    let review = true;
+    try {
+      [draft, review] = await Promise.all([
+        api.imagePrompt(id, mode, characterId),
+        api.getImageSettings().then((s) => s.reviewPrompt),
+      ]);
+    } catch (e) {
+      if (this.conversationId === id) this.error = errorText(e);
+    } finally {
+      if (this.conversationId === id) this.busy = false;
+    }
+    if (this.conversationId !== id) return;
+    if (!draft) {
+      this.picture = null; // stopped or failed
+      return;
+    }
+    if (review) this.picture = { phase: "review", draft };
+    else await this.renderPicture(draft);
+  }
+
+  /** Opens a picture's prompt for editing and drawing again. */
+  redrawPicture(message: ChatMessage) {
+    const draft = pictureDraft(message);
+    if (!draft || this.picture) return;
+    this.picture = { phase: "review", draft };
+  }
+
+  /** Renders a (reviewed) draft. The chat stays usable meanwhile. */
+  async renderPicture(draft: ImagePromptDraft) {
+    const id = this.conversationId;
+    if (!id) return;
+    this.error = "";
+    this.picture = { phase: "render", draft };
+    try {
+      const message = await api.generateImage(id, draft);
+      if (message && this.conversationId === id) this.messages.push(toUi(message));
+    } catch (e) {
+      if (this.conversationId === id) this.error = errorText(e);
+    } finally {
+      if (this.conversationId === id) this.picture = null;
+    }
+  }
+
+  /** Draws a picture again from exactly the same draft (a new seed when the seed is random). */
+  async drawAgain(message: ChatMessage) {
+    const draft = pictureDraft(message);
+    if (draft && !this.picture) await this.renderPicture(draft);
+  }
+
+  /** Copies a picture into the character's avatar or gallery. A copy, so deleting the chat's
+   * picture later doesn't take the avatar with it. Returns a status line. */
+  async usePicture(message: ChatMessage, as: "avatar" | "gallery"): Promise<string> {
+    const character = this.session?.characters.find((c) => c.id === message.speakerCharacterId);
+    const source = message.attachments[0]?.imagePath;
+    if (!character || !source) return "";
+    try {
+      const copy = await api.storeImage(source);
+      const updated = structuredClone($state.snapshot(character));
+      if (as === "avatar") updated.avatarPath = copy;
+      else updated.galleryImagePaths = [...updated.galleryImagePaths, copy];
+      const saved = await api.saveCharacter(updated);
+      if (this.session) this.session.characters = this.session.characters.map((c) => (c.id === saved.id ? saved : c));
+      return as === "avatar" ? `Set as ${saved.name}'s avatar.` : `Added to ${saved.name}'s gallery.`;
+    } catch (e) {
+      this.error = errorText(e);
+      return "";
+    }
+  }
+
+  cancelPictureReview() {
+    if (this.picture?.phase === "review") this.picture = null;
+  }
+
+  async stopPicture() {
+    const id = this.conversationId;
+    if (!id || !this.picture) return;
+    if (this.picture.phase === "prompt") await api.stopGeneration(id);
+    else if (this.picture.phase === "render") await api.stopImage(id);
   }
 
   // ---- notebook ----

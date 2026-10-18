@@ -82,6 +82,7 @@ impl Names<'_> {
             MessageRole::User => self.user.to_string(),
             MessageRole::Tool => "Tool result".to_string(),
             MessageRole::System => "System".to_string(),
+            MessageRole::Image => "Picture".to_string(),
             MessageRole::Character => message
                 .speaker_character_id
                 .and_then(|id| self.characters.iter().find(|c| c.id == id))

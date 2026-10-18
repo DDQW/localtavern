@@ -24,6 +24,9 @@ use crate::providers::{
 use crate::repo::{characters, conversations, group_chats, personas as persona_repo};
 use crate::settings;
 
+#[path = "pictures_tests.rs"]
+mod pictures;
+
 // ---- a scripted provider ----
 
 enum Script {

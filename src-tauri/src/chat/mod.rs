@@ -13,6 +13,6 @@ pub mod session;
 #[cfg(test)]
 mod engine_tests;
 
-pub use engine::{ChatEngine, ToolDecision};
+pub use engine::{ChatEngine, ImagePromptDraft, ToolDecision};
 pub use events::{ChatEvent, EventSink};
 pub use session::ChatSession;

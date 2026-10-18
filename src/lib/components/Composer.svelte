@@ -3,6 +3,7 @@
   import { api, errorText, inTauri } from "$lib/api";
   import { chat } from "$lib/chat.svelte";
   import { fileUrl } from "$lib/media";
+  import type { ImageMode, Uuid } from "$lib/types";
 
   /** Enter sends; Shift+Enter inserts a newline (the textarea's default). */
   function onkeydown(event: KeyboardEvent) {
@@ -29,11 +30,37 @@
     }
   }
 
+  // ---- the Picture menu ----
+  let pictureMenu = $state(false);
+  let menuWrap = $state<HTMLDivElement>();
+
+  /** Any click outside the menu closes it. */
+  function onWindowClick(event: MouseEvent) {
+    if (pictureMenu && !menuWrap?.contains(event.target as Node)) pictureMenu = false;
+  }
+  const userName = $derived(chat.session?.persona?.name || "Me");
+  const pictureBusy = $derived(chat.busy || !!chat.picture);
+
+  function draw(mode: ImageMode, characterId: Uuid | null = null) {
+    pictureMenu = false;
+    void chat.drawPicture(mode, characterId);
+  }
+
   const search = $derived(chat.session?.conversation.enableGoogleSearch ?? false);
   const showSearch = $derived(chat.session?.conversation.providerId === "gemini" && !chat.isRoleplay);
 </script>
 
+<svelte:window onclick={onWindowClick} onkeydown={(e) => e.key === "Escape" && (pictureMenu = false)} />
+
 <div class="composer">
+  {#if chat.picture?.phase === "prompt" || chat.picture?.phase === "render"}
+    <div class="drawing" role="status">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>{chat.picture.phase === "prompt" ? "Describing the picture…" : "Drawing the picture…"}</span>
+      <button class="ghost" onclick={() => chat.stopPicture()}>Stop</button>
+    </div>
+  {/if}
+
   {#if chat.awaitingSpeaker && chat.session}
     <div class="speakers" role="group" aria-label="Who replies?">
       <span class="muted">Who replies?</span>
@@ -83,6 +110,32 @@
       </label>
     {/if}
 
+    {#if chat.isRoleplay && chat.session}
+      <div class="menuwrap" bind:this={menuWrap}>
+        <button
+          onclick={() => (pictureMenu = !pictureMenu)}
+          disabled={pictureBusy}
+          aria-haspopup="menu"
+          aria-expanded={pictureMenu}
+          title="Have the AI describe a picture and draw it with your Stable Diffusion server"
+        >
+          Picture
+        </button>
+        {#if pictureMenu}
+          <div class="menu" role="menu">
+            {#each chat.session.characters as character (character.id)}
+              <button role="menuitem" onclick={() => draw("character", character.id)}>{character.name}, full body</button>
+              <button role="menuitem" onclick={() => draw("face", character.id)}>{character.name}'s face</button>
+            {/each}
+            <button role="menuitem" onclick={() => draw("persona")}>{userName} (you)</button>
+            <button role="menuitem" onclick={() => draw("scene")}>The current scene</button>
+            <button role="menuitem" onclick={() => draw("lastMessage")} disabled={!chat.lastTurn}>The last message</button>
+            <a role="menuitem" href="/settings#pictures">Picture settings…</a>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     {#if chat.isRoleplay && !chat.busy}
       <button onclick={() => chat.impersonate()} title="Ask the AI to draft your next message, for you to review and send">
         Impersonate
@@ -110,7 +163,9 @@
     width: 100%;
     margin: 0 auto;
     padding: 8px 16px 16px;
+    container-type: inline-size;
   }
+
 
   .row {
     display: flex;
@@ -141,6 +196,75 @@
     color: var(--muted);
     font-size: 13px;
     white-space: nowrap;
+  }
+
+  .menuwrap {
+    position: relative;
+  }
+
+  .menu {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    right: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    min-width: 220px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--panel);
+    box-shadow: var(--shadow);
+  }
+
+  .menu button,
+  .menu a {
+    height: auto;
+    padding: 7px 10px;
+    border: none;
+    background: none;
+    text-align: left;
+    font-size: 13px;
+    color: var(--text);
+    white-space: nowrap;
+    border-radius: 4px;
+    text-decoration: none;
+  }
+
+  .menu button:hover:not(:disabled),
+  .menu a:hover {
+    background: var(--panel-3);
+  }
+
+  .menu a {
+    margin-top: 2px;
+    border-top: 1px solid var(--border);
+    border-radius: 0 0 4px 4px;
+    color: var(--muted);
+  }
+
+  .drawing {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .error {
@@ -194,5 +318,18 @@
     background: rgba(0, 0, 0, 0.6);
     color: white;
     line-height: 1.3;
+  }
+
+  /* A narrow chat column (story panel open, small window): the message box gets the full width
+     and the buttons wrap onto the line below it. Last, so it overrides the rules above. */
+  @container (max-width: 620px) {
+    .row {
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    textarea {
+      flex-basis: 100%;
+    }
   }
 </style>

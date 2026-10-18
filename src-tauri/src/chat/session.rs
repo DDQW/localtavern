@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use super::presets;
 use crate::error::{Error, Result};
-use crate::models::{Character, ChatMessage, Conversation, ConversationMode, GroupChat, Persona, PromptPreset};
+use crate::models::{Character, ChatMessage, Conversation, ConversationMode, GroupChat, MessageRole, Persona, PromptPreset};
 use crate::repo::{characters, conversations, group_chats, lorebooks, personas, user_memories};
 use crate::settings;
 
@@ -123,12 +123,22 @@ pub fn load_reply_context(conn: &Connection, conversation_id: Uuid) -> Result<Re
         books.extend(lorebooks::get(conn, id)?);
     }
 
-    let messages = conversations::get_messages(conn, conversation_id)?;
+    let messages = chat_history(conn, conversation_id)?;
     Ok(ReplyContext { group, conversation, preset, persona, characters: cast, lorebooks: books, messages })
 }
 
+/// The conversation as the model sees it: every message except generated pictures, which are only
+/// for the user to look at (and would otherwise be re-uploaded to vision models on every turn).
+pub fn chat_history(conn: &Connection, conversation_id: Uuid) -> Result<Vec<ChatMessage>> {
+    let mut messages = conversations::get_messages(conn, conversation_id)?;
+    messages.retain(|m| m.role != MessageRole::Image);
+    Ok(messages)
+}
+
 pub fn build_session(conn: &Connection, provider_ids: &[String], conversation_id: Uuid) -> Result<ChatSession> {
-    let ctx = load_reply_context(conn, conversation_id)?;
+    let mut ctx = load_reply_context(conn, conversation_id)?;
+    // The chat view shows everything, pictures included.
+    ctx.messages = conversations::get_messages(conn, conversation_id)?;
 
     // History stays inside the conversation's mode. An assistant bound to a character must not list
     // that character's roleplays, and a plain assistant chat must not list character-bound ones.

@@ -2,7 +2,8 @@
 
 export type Uuid = string;
 
-export type MessageRole = "user" | "character" | "system" | "tool";
+/** "image" is a generated picture: shown in the chat, never sent to the model. */
+export type MessageRole = "user" | "character" | "system" | "tool" | "image";
 export type ConversationMode = "roleplay" | "assistant";
 
 export interface MessageAlternate {
@@ -398,4 +399,52 @@ export interface GroupChat {
   characterIds: Uuid[];
   activationMode: GroupActivationMode;
   allowSelfResponses: boolean;
+}
+
+// ---- picture generation ----
+
+export type ImageBackend = "a1111" | "comfyUi";
+export type PromptStyle = "tags" | "natural";
+/** What to draw: SillyTavern's modes. */
+export type ImageMode = "character" | "face" | "persona" | "scene" | "lastMessage";
+
+export interface ImageBackendConfig {
+  url: string;
+  model: string;
+  sampler: string;
+  scheduler: string;
+}
+
+export interface ImageGenSettings {
+  backend: ImageBackend;
+  a1111: ImageBackendConfig;
+  comfy: ImageBackendConfig;
+  /** ComfyUI workflow in API format with %prompt%-style placeholders; empty = built-in. */
+  comfyWorkflow: string;
+  width: number;
+  height: number;
+  steps: number;
+  cfgScale: number;
+  /** -1 = random each time. */
+  seed: number;
+  promptPrefix: string;
+  negativePrompt: string;
+  promptStyle: PromptStyle;
+  reviewPrompt: boolean;
+}
+
+export interface ImageBackendOptions {
+  models: string[];
+  samplers: string[];
+  schedulers: string[];
+}
+
+/** A picture prompt ready for review; editable before rendering. */
+export interface ImagePromptDraft {
+  mode: ImageMode;
+  prompt: string;
+  negativePrompt: string;
+  width: number;
+  height: number;
+  characterId: Uuid | null;
 }
