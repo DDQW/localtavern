@@ -94,7 +94,6 @@ export interface Character {
   expressions: ExpressionImage[];
   galleryImagePaths: string[];
   appearance: Appearance | null;
-  appearanceText: string;
   /** YYYY-MM-DD */
   birthDate: string | null;
   schedule: Schedule | null;
@@ -109,7 +108,6 @@ export interface Persona {
   description: string;
   isDefault: boolean;
   appearance: Appearance | null;
-  appearanceText: string;
   /** YYYY-MM-DD */
   birthDate: string | null;
 }

@@ -50,13 +50,12 @@ struct CardData {
     extensions: Option<Value>,
 }
 
-/// What `data.extensions.localtavern` holds. The card's description already includes the
-/// appearance text, so other apps see it; on import it is split off again.
+/// What `data.extensions.localtavern` holds: what other apps have no field for. (Cards from 0.1/0.2
+/// also carried an `appearanceText`; it was already part of the description, so it is ignored.)
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct LocalTavernExtension {
     appearance: Option<Appearance>,
-    appearance_text: String,
     birth_date: Option<chrono::NaiveDate>,
     schedule: Option<Schedule>,
 }
@@ -100,19 +99,10 @@ pub fn map_card_json(json: &str) -> Result<CharacterImportResult> {
         .and_then(|e| e.get("localtavern"))
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
-    let mut description = data.description.unwrap_or_default();
-    let appearance_text = ours.appearance_text.trim();
-    if !appearance_text.is_empty() {
-        if let Some(rest) = description.trim_end().strip_suffix(appearance_text) {
-            description = rest.trim_end().to_string();
-        }
-    }
-
     let mut character = Character {
         name: data.name.unwrap_or_default(),
-        description,
+        description: data.description.unwrap_or_default(),
         appearance: ours.appearance,
-        appearance_text: appearance_text.to_string(),
         birth_date: ours.birth_date,
         schedule: ours.schedule,
         personality: data.personality.unwrap_or_default(),
@@ -179,7 +169,7 @@ pub fn export_card_json(character: &Character, lorebook: Option<&Lorebook>) -> R
 
     let data = CardData {
         name: Some(character.name.clone()),
-        description: Some(character.full_description()),
+        description: Some(character.description.clone()),
         personality: Some(character.personality.clone()),
         scenario: Some(character.scenario.clone()),
         first_mes: Some(character.first_messages.first().cloned().unwrap_or_default()),
@@ -190,7 +180,6 @@ pub fn export_card_json(character: &Character, lorebook: Option<&Lorebook>) -> R
         extensions: Some(serde_json::json!({
             "localtavern": LocalTavernExtension {
                 appearance: character.appearance.clone(),
-                appearance_text: character.appearance_text.clone(),
                 birth_date: character.birth_date,
                 schedule: character.schedule.clone(),
             }
@@ -396,13 +385,12 @@ mod tests {
     }
 
     #[test]
-    fn appearance_and_birthday_survive_a_round_trip_and_other_apps_see_the_appearance() {
+    fn appearance_picks_and_birthday_survive_a_round_trip() {
         use crate::models::Sex;
         let original = Character {
             name: "Mira".into(),
-            description: "A cartographer.".into(),
+            description: "A cartographer.\n\n{{char}} is a woman. She has auburn hair.".into(),
             appearance: Some(Appearance { sex: Some(Sex::Female), hair_color: Some("auburn".into()), ..Default::default() }),
-            appearance_text: "{{char}} is a woman. She has auburn hair.".into(),
             birth_date: chrono::NaiveDate::from_ymd_opt(2001, 3, 3),
             ..Default::default()
         };
@@ -416,18 +404,15 @@ mod tests {
 
         let reimported = map_card_json(&json).unwrap().character;
         assert_eq!(reimported.description, original.description);
-        assert_eq!(reimported.appearance_text, original.appearance_text);
         assert_eq!(reimported.appearance, original.appearance);
         assert_eq!(reimported.birth_date, original.birth_date);
     }
 
     #[test]
-    fn an_edited_description_keeps_the_appearance_text_inside_it() {
-        let card = r#"{"spec":"chara_card_v2","data":{"name":"N","description":"Rewritten by another app.",
+    fn older_cards_keep_their_appearance_inside_the_description() {
+        let card = r#"{"spec":"chara_card_v2","data":{"name":"N","description":"A baker.\n\n{{char}} is tall.",
             "extensions":{"localtavern":{"appearanceText":"{{char}} is tall."}}}}"#;
-        let character = map_card_json(card).unwrap().character;
-        assert_eq!(character.description, "Rewritten by another app.");
-        assert_eq!(character.appearance_text, "{{char}} is tall.");
+        assert_eq!(map_card_json(card).unwrap().character.description, "A baker.\n\n{{char}} is tall.");
     }
 
     #[test]

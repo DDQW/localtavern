@@ -74,14 +74,13 @@ const characters: Character[] = ["Nova", "Mira", "Dorian"].map((name, i) => ({
       : [],
   galleryImagePaths: [],
   appearance: null,
-  appearanceText: "",
   birthDate: null,
   schedule: null,
   createdAt: now(),
   updatedAt: now(),
 }));
 
-const personas: Persona[] = [{ id: "d0000000-0000-4000-8000-000000000001", name: "Alex", avatarPath: null, description: "A curious traveler.", isDefault: true, appearance: null, appearanceText: "", birthDate: null }];
+const personas: Persona[] = [{ id: "d0000000-0000-4000-8000-000000000001", name: "Alex", avatarPath: null, description: "A curious traveler.", isDefault: true, appearance: null, birthDate: null }];
 
 const lorebooks: Lorebook[] = [
   {

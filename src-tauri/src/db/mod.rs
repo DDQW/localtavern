@@ -49,6 +49,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (14, include_str!("../../migrations/0014_conversation_summaries.sql")),
     (15, include_str!("../../migrations/0015_appearance_birthdays.sql")),
     (16, include_str!("../../migrations/0016_schedules.sql")),
+    (17, include_str!("../../migrations/0017_appearance_into_description.sql")),
 ];
 
 /// Opens (creating if needed) the database at `path`, enables foreign keys and applies pending migrations.
@@ -112,6 +113,37 @@ mod tests {
         let conn = open(&path).unwrap();
         let count: i32 = conn.query_row("SELECT COUNT(*) FROM SchemaVersion;", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn appearance_text_is_folded_into_the_description() {
+        // A database as version 16 left it, with text in the old AppearanceText column.
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE SchemaVersion (Version INTEGER NOT NULL);").unwrap();
+        for (_, sql) in MIGRATIONS.iter().filter(|(v, _)| *v <= 16) {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute("INSERT INTO SchemaVersion(Version) VALUES (16);", []).unwrap();
+        let character = "INSERT INTO Characters (Id, Name, Description, Personality, Scenario, FirstMessagesJson, ExampleDialogue, \
+            TagsJson, CreatedAt, UpdatedAt, AppearanceText) VALUES (?1, 'x', ?2, '', '', '[]', '', '[]', 't', 't', ?3);";
+        conn.execute(character, ["a", "A baker.  ", "{{char}} is tall."]).unwrap();
+        conn.execute(character, ["b", " ", "{{char}} is short."]).unwrap();
+        conn.execute(character, ["c", "Untouched.", "  "]).unwrap();
+        conn.execute(character, ["d", "Pasted.\n\n{{char}} is tall.\nMore.", "{{char}} is tall."]).unwrap();
+        conn.execute("INSERT INTO Personas (Id, Name, Description, IsDefault, AppearanceText) VALUES ('p', 'Me', 'Kind.', 0, '{{user}} is a man.');", [])
+            .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let description = |table: &str, id: &str| -> String {
+            conn.query_row(&format!("SELECT Description FROM {table} WHERE Id = ?1;"), [id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(description("Characters", "a"), "A baker.\n\n{{char}} is tall.");
+        assert_eq!(description("Characters", "b"), "{{char}} is short.");
+        assert_eq!(description("Characters", "c"), "Untouched.");
+        assert_eq!(description("Characters", "d"), "Pasted.\n\n{{char}} is tall.\nMore.", "already there: not added twice");
+        assert_eq!(description("Personas", "p"), "Kind.\n\n{{user}} is a man.");
+        assert!(conn.prepare("SELECT AppearanceText FROM Characters;").is_err(), "the column is gone");
     }
 
     #[test]

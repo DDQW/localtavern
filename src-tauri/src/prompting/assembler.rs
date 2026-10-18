@@ -236,7 +236,7 @@ fn resolve_block_text(block: &PromptBlock, ctx: &PromptAssemblyContext, macros: 
         }
         PromptBlockType::PersonaDescription => resolve_persona_description(ctx.persona),
         PromptBlockType::CharacterDescription => {
-            join_per_character(ctx.characters, macros, Character::full_description, "description")
+            join_per_character(ctx.characters, macros, description_with_personality, "description")
         }
         PromptBlockType::Scenario => join_per_character(ctx.characters, macros, |c| c.scenario.clone(), "scenario"),
         PromptBlockType::ExampleDialogue => {
@@ -324,11 +324,18 @@ fn format_user_memories(memories: &[UserMemory]) -> String {
 
 fn resolve_persona_description(persona: Option<&Persona>) -> String {
     match persona {
-        Some(p) => match p.full_description() {
-            d if d.is_empty() => String::new(),
-            d => format!("{}'s persona: {d}", user_name(persona)),
-        },
-        None => String::new(),
+        Some(p) if !p.description.trim().is_empty() => format!("{}'s persona: {}", user_name(persona), p.description.trim()),
+        _ => String::new(),
+    }
+}
+
+/// The card's description followed by its personality, SillyTavern-style ("{{char}}'s personality:
+/// ..."). Presets have no block of their own for the personality, so it rides with the description.
+fn description_with_personality(c: &Character) -> String {
+    match (c.description.trim(), c.personality.trim()) {
+        (description, "") => description.to_string(),
+        ("", personality) => format!("{{{{char}}}}'s personality: {personality}"),
+        (description, personality) => format!("{description}\n{{{{char}}}}'s personality: {personality}"),
     }
 }
 
@@ -516,41 +523,27 @@ mod tests {
     }
 
     #[test]
-    fn appearance_text_follows_the_description_for_persona_and_character() {
+    fn the_personality_is_sent_with_the_description() {
         let conv = roleplay();
         let preset = create_roleplay_preset();
-        let persona = Persona { name: "Alex".into(), appearance_text: "{{user}} is a man.".into(), ..Default::default() };
-        let characters = [Character {
+        let solo = [Character {
             name: "Nova".into(),
-            description: "A wandering star-mapper.".into(),
-            appearance_text: "{{char}} is a woman. She has silver hair.".into(),
+            description: "A star-mapper.".into(),
+            personality: "Curious, calm.".into(),
             ..Default::default()
         }];
-
-        let request = assemble(
-            &PromptAssemblyContext::new(&conv, &preset, &[]).with_persona(&persona).with_characters(&characters),
-            &NullScanner,
-        );
-
+        let request = assemble(&PromptAssemblyContext::new(&conv, &preset, &[]).with_characters(&solo), &NullScanner);
         let system = request.system_instruction.unwrap();
-        assert!(system.contains("Alex's persona: Alex is a man."), "{system}");
-        assert!(system.contains("A wandering star-mapper.
+        assert!(system.contains("A star-mapper.\nNova's personality: Curious, calm."), "{system}");
+        assert_eq!(system.matches("Curious, calm.").count(), 1, "{system}");
 
-Nova is a woman. She has silver hair."), "{system}");
-    }
-
-    #[test]
-    fn group_descriptions_include_each_cards_appearance() {
-        let conv = roleplay();
-        let preset = create_roleplay_preset();
-        let characters = [
-            Character { name: "Alice".into(), appearance_text: "{{char}} is tall.".into(), ..Default::default() },
-            Character { name: "Bob".into(), ..Default::default() },
+        let group = [
+            Character { name: "Alice".into(), personality: "Bold.".into(), ..Default::default() },
+            Character { name: "Bob".into(), description: "Quiet.".into(), ..Default::default() },
         ];
-        let request = assemble(&PromptAssemblyContext::new(&conv, &preset, &[]).with_characters(&characters), &NullScanner);
+        let request = assemble(&PromptAssemblyContext::new(&conv, &preset, &[]).with_characters(&group), &NullScanner);
         let system = request.system_instruction.unwrap();
-        assert!(system.contains("Alice's description: Alice is tall."), "{system}");
-        assert!(!system.contains("Bob's description"), "{system}");
+        assert!(system.contains("Alice's description: Alice's personality: Bold.\nBob's description: Quiet."), "{system}");
     }
 
     #[test]

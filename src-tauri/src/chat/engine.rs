@@ -435,8 +435,8 @@ impl ChatEngine {
         let prompt = format!(
             "Rewrite this physical description of a fictional adult character as one or two natural, flowing paragraphs \
 for a roleplay character sheet. Keep every fact, add none, and keep any measurements. Keep placeholders such as \
-{{{{char}}}} and {{{{user}}}} exactly as written and use them to name the character. If an \"Intimate details\" part is \
-present, keep it as its own final paragraph, stated matter-of-factly. Reply with the description only.\n\n{}",
+{{{{char}}}} and {{{{user}}}} exactly as written and use them to name the character. If an \"intimate details\" part is \
+present, keep it as its own final paragraph, still naming whose details they are, stated matter-of-factly. Reply with the description only.\n\n{}",
             text.trim()
         );
         self.one_shot(prompt).await

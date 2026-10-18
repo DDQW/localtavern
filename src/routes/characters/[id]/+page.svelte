@@ -41,7 +41,6 @@
       expressions: [],
       galleryImagePaths: [],
       appearance: null,
-      appearanceText: "",
       birthDate: null,
       schedule: null,
       createdAt: now,
@@ -260,8 +259,9 @@
 
       <label class="field">
         Description
-        <textarea rows="4" bind:value={form.description} placeholder="Who they are, what they look like…"></textarea>
+        <textarea rows="6" bind:value={form.description} placeholder="Who they are, what they look like…"></textarea>
       </label>
+      <AppearanceSection subject="character" bind:appearance={form.appearance} bind:description={form.description} bind:birthDate={form.birthDate} />
       <label class="field">
         Personality
         <textarea rows="3" bind:value={form.personality}></textarea>
@@ -283,9 +283,6 @@
           <button type="button" class="ghost" onclick={() => { form!.scenario = scenarioBefore!; scenarioBefore = null; }}>Undo scenario change</button>
         {/if}
       </AiDraft>
-
-      <h2>Appearance</h2>
-      <AppearanceSection subject="character" bind:appearance={form.appearance} bind:text={form.appearanceText} bind:birthDate={form.birthDate} />
 
       <h2>Greetings</h2>
       <p class="muted small">The first one opens a new chat; the others are alternate greetings (SillyTavern's “alternate_greetings”).</p>

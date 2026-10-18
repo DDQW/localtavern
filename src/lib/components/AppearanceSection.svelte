@@ -1,7 +1,8 @@
 <script lang="ts">
-  // The quick appearance builder plus the appearance text and birthday, shared by the character and
-  // persona editors. Picks render into the text (via the backend template) for as long as the text
-  // still matches the last render; once it is edited or polished, picks only offer a regenerate.
+  // The quick appearance builder and the birthday, shared by the character and persona editors.
+  // The builder writes one appearance paragraph into the description. It keeps that paragraph in
+  // step with the picks for as long as it is still there unchanged; once it is edited or polished,
+  // the picks only offer to update it.
   import { untrack } from "svelte";
   import { api, errorText } from "$lib/api";
   import * as opt from "$lib/appearanceOptions";
@@ -11,27 +12,39 @@
   let {
     subject,
     appearance = $bindable(null),
-    text = $bindable(""),
+    description = $bindable(""),
     birthDate = $bindable(null),
   }: {
     subject: AppearanceSubject;
     appearance: Appearance | null;
-    text: string;
+    description: string;
     birthDate: string | null;
   } = $props();
 
   const who = $derived(subject === "persona" ? "{{user}}" : "{{char}}");
-  let builderOpen = $state(untrack(() => appearance !== null || text.trim() === ""));
+  let builderOpen = $state(untrack(() => appearance !== null || description.trim() === ""));
+  /** The template for the current picks. */
   let rendered = $state<string | null>(null);
-  let picksChanged = $state(false);
-  let beforePolish = $state<string | null>(null);
+  /** The paragraph this builder last put in the description (the template, or its polished form). */
+  let managed = $state<string | null>(null);
+  let undo = $state<{ description: string; managed: string | null } | null>(null);
   let polishing = $state(false);
   let error = $state("");
   let ageInput = $state<number | null>(null);
 
   const sex = $derived(appearance?.sex ?? null);
-  const stale = $derived(picksChanged && rendered !== null && text !== rendered);
+  const inDescription = $derived(managed !== null && managed !== "" && description.includes(managed));
+  const stale = $derived(rendered !== null && (managed !== rendered || !inDescription));
 
+  /** Puts `paragraph` where the managed one is, or after the description. */
+  function write(paragraph: string) {
+    if (managed && description.includes(managed)) description = description.replace(managed, paragraph);
+    else description = description.trim() ? `${description.trimEnd()}\n\n${paragraph}` : paragraph;
+    managed = paragraph;
+  }
+
+  // Set when the picks were started in this editing session (so the first render is inserted).
+  let startedHere = false;
   let firstRender = true;
   $effect(() => {
     if (!appearance) return;
@@ -40,9 +53,9 @@
       try {
         const next = await api.renderAppearance(picks, subject);
         untrack(() => {
-          if (!firstRender) picksChanged = true;
-          if (!firstRender && (!text.trim() || text === rendered)) text = next;
-          if (firstRender && !text.trim()) text = next;
+          const following = firstRender ? startedHere || description.includes(next) : managed === rendered && inDescription;
+          if (firstRender && !startedHere && description.includes(next)) managed = next;
+          else if (following) write(next);
           firstRender = false;
           rendered = next;
         });
@@ -54,6 +67,7 @@
   });
 
   function start(chosen: Sex | null) {
+    startedHere = true;
     appearance = chosen ? opt.emptyAppearance(chosen) : opt.randomAppearance(null);
     builderOpen = true;
   }
@@ -69,22 +83,26 @@
   function clearPicks() {
     appearance = null;
     rendered = null;
-    picksChanged = false;
+    managed = null;
+    startedHere = false;
     firstRender = true;
   }
 
-  function regenerate() {
-    if (rendered !== null) text = rendered;
-    beforePolish = null;
+  function applyPicks() {
+    if (rendered === null) return;
+    undo = { description, managed };
+    write(rendered);
   }
 
   async function polish() {
+    if (!managed || !inDescription) return;
     error = "";
     polishing = true;
     try {
-      const before = text;
-      text = await api.polishAppearance(text);
-      beforePolish = before;
+      const target = managed;
+      const polished = await api.polishAppearance(target);
+      undo = { description, managed };
+      write(polished);
     } catch (e) {
       error = errorText(e);
     } finally {
@@ -92,10 +110,11 @@
     }
   }
 
-  function undoPolish() {
-    if (beforePolish === null) return;
-    text = beforePolish;
-    beforePolish = null;
+  function revert() {
+    if (!undo) return;
+    description = undo.description;
+    managed = undo.managed;
+    undo = null;
   }
 
   function toggleMark(mark: string) {
@@ -250,17 +269,23 @@
   {/if}
 </details>
 
-<label class="field">
-  Appearance text <span class="hint">sent right after the description; {who} names {subject === "persona" ? "you" : "the character"}</span>
-  <textarea rows="4" bind:value={text} placeholder="Use the builder above, or describe how they look."></textarea>
-</label>
 <div class="btnrow">
-  <button type="button" onclick={polish} disabled={polishing || !text.trim()} title="Rewrite the text as natural prose with your last-used model">
-    {polishing ? "Polishing…" : "✨ Polish with AI"}
+  {#if stale && appearance}
+    <button type="button" onclick={applyPicks} title="Write the template for the current picks into the description">
+      {inDescription ? "↻ Update description from picks" : "＋ Add appearance to description"}
+    </button>
+  {/if}
+  <button
+    type="button"
+    onclick={polish}
+    disabled={polishing || !inDescription}
+    title={inDescription ? "Rewrite the appearance paragraph as natural prose with your last-used model" : "Use the builder first; this rewrites its paragraph in the description"}
+  >
+    {polishing ? "Polishing…" : "✨ Polish appearance with AI"}
   </button>
-  {#if beforePolish !== null}<button type="button" class="ghost" onclick={undoPolish}>Undo polish</button>{/if}
-  {#if stale}<button type="button" onclick={regenerate} title="Replace the text with the template from the current picks">↻ Regenerate from picks</button>{/if}
+  {#if undo}<button type="button" class="ghost" onclick={revert}>Undo</button>{/if}
 </div>
+<p class="hint">The builder writes one appearance paragraph into the description above ({who} names {subject === "persona" ? "you" : "the character"}). Edit it there freely — after an edit, picks only offer to update it.</p>
 {#if error}<p class="notice" role="alert">{error}</p>{/if}
 
 <div class="birthday">

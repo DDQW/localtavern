@@ -20,7 +20,6 @@ fn map(row: &Row) -> rusqlite::Result<Character> {
         expressions: rows::blob(row, "ExpressionsJson")?,
         gallery_image_paths: rows::blob(row, "GalleryImagePathsJson")?,
         appearance: rows::opt_blob(row, "AppearanceJson")?,
-        appearance_text: row.get("AppearanceText")?,
         birth_date: rows::opt_date(row, "BirthDate")?,
         schedule: rows::opt_blob(row, "ScheduleJson")?,
         created_at: rows::datetime(row, "CreatedAt")?,
@@ -63,13 +62,13 @@ pub fn upsert(conn: &Connection, c: &Character) -> Result<()> {
     let id = c.id.to_string();
     tx.execute(
         "INSERT INTO Characters
-            (Id, Name, AvatarPath, Description, Personality, Scenario, FirstMessagesJson, ExampleDialogue, TagsJson, ExpressionsJson, GalleryImagePathsJson, CreatedAt, UpdatedAt, AppearanceJson, AppearanceText, BirthDate, ScheduleJson)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+            (Id, Name, AvatarPath, Description, Personality, Scenario, FirstMessagesJson, ExampleDialogue, TagsJson, ExpressionsJson, GalleryImagePathsJson, CreatedAt, UpdatedAt, AppearanceJson, BirthDate, ScheduleJson)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT(Id) DO UPDATE SET
             Name = ?2, AvatarPath = ?3, Description = ?4, Personality = ?5, Scenario = ?6,
             FirstMessagesJson = ?7, ExampleDialogue = ?8, TagsJson = ?9, ExpressionsJson = ?10,
-            GalleryImagePathsJson = ?11, UpdatedAt = ?13, AppearanceJson = ?14, AppearanceText = ?15,
-            BirthDate = ?16, ScheduleJson = ?17;",
+            GalleryImagePathsJson = ?11, UpdatedAt = ?13, AppearanceJson = ?14, BirthDate = ?15,
+            ScheduleJson = ?16;",
         params![
             id,
             c.name,
@@ -85,7 +84,6 @@ pub fn upsert(conn: &Connection, c: &Character) -> Result<()> {
             time::format(&c.created_at),
             time::format(&c.updated_at),
             c.appearance.as_ref().map(json::to_blob).transpose()?,
-            c.appearance_text,
             date::format_opt(c.birth_date),
             c.schedule.as_ref().map(json::to_blob).transpose()?,
         ],
@@ -152,7 +150,6 @@ mod tests {
                 marks: vec!["freckles".into()],
                 ..Default::default()
             }),
-            appearance_text: "{{char}} is a woman.".into(),
             birth_date: chrono::NaiveDate::from_ymd_opt(2001, 3, 3),
             ..Default::default()
         };
@@ -160,7 +157,6 @@ mod tests {
         upsert(&conn, &c).unwrap();
         let loaded = get(&conn, c.id).unwrap().unwrap();
         assert_eq!(loaded.appearance, c.appearance);
-        assert_eq!(loaded.appearance_text, c.appearance_text);
         assert_eq!(loaded.birth_date, c.birth_date);
 
         let mut schedule = crate::models::Schedule { home_country: Some("DE".into()), ..Default::default() };

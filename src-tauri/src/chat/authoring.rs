@@ -30,7 +30,7 @@ pub fn card_context(card: &Character) -> String {
             parts.push(format!("{label}: {}", text.trim()));
         }
     };
-    add("Description", &card.full_description());
+    add("Description", &card.description);
     add("Personality", &card.personality);
     add("Scenario", &card.scenario);
     if let Some(first) = card.first_messages.iter().find(|m| !m.trim().is_empty()) {
@@ -253,8 +253,7 @@ mod tests {
     fn card() -> Character {
         Character {
             name: "Mira".into(),
-            description: "A baker.".into(),
-            appearance_text: "{{char}} has flour on her apron.".into(),
+            description: "A baker.\n\n{{char}} has flour on her apron.".into(),
             personality: "  ".into(),
             first_messages: vec!["".into(), "*waves*".into()],
             ..Default::default()

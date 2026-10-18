@@ -30,10 +30,8 @@ pub struct Character {
     pub expressions: Vec<ExpressionImage>,
     /// Extra reference images beyond the avatar and expression pack.
     pub gallery_image_paths: Vec<String>,
-    /// The quick-builder picks behind `appearance_text`, if the builder was used.
+    /// The quick-builder picks behind the appearance paragraph in `description`, if it was used.
     pub appearance: Option<Appearance>,
-    /// Rendered (or hand-edited / AI-polished) appearance, sent right after the description.
-    pub appearance_text: String,
     pub birth_date: Option<NaiveDate>,
     /// Weekly routine and home country; `None` when never filled in.
     pub schedule: Option<Schedule>,
@@ -58,27 +56,10 @@ impl Default for Character {
             expressions: Vec::new(),
             gallery_image_paths: Vec::new(),
             appearance: None,
-            appearance_text: String::new(),
             birth_date: None,
             schedule: None,
             created_at: now,
             updated_at: now,
         }
-    }
-}
-
-impl Character {
-    /// The description plus the appearance text, as the prompt sees them.
-    pub fn full_description(&self) -> String {
-        join_description(&self.description, &self.appearance_text)
-    }
-}
-
-/// Joins a description and an appearance text with a blank line, skipping whichever is blank.
-pub fn join_description(description: &str, appearance: &str) -> String {
-    match (description.trim(), appearance.trim()) {
-        (d, "") => d.to_string(),
-        ("", a) => a.to_string(),
-        (d, a) => format!("{d}\n\n{a}"),
     }
 }

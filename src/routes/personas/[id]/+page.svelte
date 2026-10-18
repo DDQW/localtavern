@@ -26,7 +26,6 @@
                 description: "",
                 isDefault: false,
                 appearance: null,
-                appearanceText: "",
                 birthDate: null,
               }
             : (await api.listPersonas()).find((p) => p.id === id);
@@ -93,9 +92,7 @@
         Description
         <textarea rows="5" bind:value={form.description} placeholder="A curious traveler…"></textarea>
       </label>
-
-      <h2>Appearance</h2>
-      <AppearanceSection subject="persona" bind:appearance={form.appearance} bind:text={form.appearanceText} bind:birthDate={form.birthDate} />
+      <AppearanceSection subject="persona" bind:appearance={form.appearance} bind:description={form.description} bind:birthDate={form.birthDate} />
 
       <label class="check">
         <input type="checkbox" bind:checked={form.isDefault} />
