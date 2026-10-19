@@ -23,6 +23,7 @@ import type {
   SessionStatus,
   UserMemory,
   OllamaOptions,
+  VastAiOptions,
   Persona,
   ProviderInfo,
   Uuid,
@@ -154,6 +155,7 @@ const providers: ProviderInfo[] = [
   { id: "xai-subscription", name: "SuperGrok", auth: "subscription", hasKey: false, browserSignIn: false },
   { id: "chatgpt-subscription", name: "ChatGPT", auth: "subscription", hasKey: true, browserSignIn: false },
   { id: "ollama", name: "Ollama", auth: "local", hasKey: true, browserSignIn: false },
+  { id: "vastai", name: "Vast.ai", auth: "apiKey", hasKey: false, browserSignIn: false },
 ];
 
 const models: Record<string, string[]> = {
@@ -678,6 +680,10 @@ export const mockApi: Api = {
     return { baseUrl: "http://localhost:11434", contextSize: 8192 };
   },
   async saveOllamaOptions() {},
+  async getVastAiOptions(): Promise<VastAiOptions> {
+    return { instanceId: 0, port: 11434, baseUrl: "", contextSize: 8192, idleStopSecs: 10, readyTimeoutSecs: 600 };
+  },
+  async saveVastAiOptions() {},
 
   async storeImage(path) {
     return path;

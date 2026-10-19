@@ -23,6 +23,7 @@ import type {
   GroupChat,
   Lorebook,
   OllamaOptions,
+  VastAiOptions,
   Persona,
   PromptPresetFull,
   ProviderInfo,
@@ -110,6 +111,8 @@ export interface Api {
   saveGeminiOptions(options: GeminiOptions): Promise<void>;
   getOllamaOptions(): Promise<OllamaOptions>;
   saveOllamaOptions(options: OllamaOptions): Promise<void>;
+  getVastAiOptions(): Promise<VastAiOptions>;
+  saveVastAiOptions(options: VastAiOptions): Promise<void>;
 
   storeImage(path: string): Promise<string>;
   deleteImage(path: string): Promise<boolean>;
@@ -234,6 +237,8 @@ const tauriApi: Api = {
   saveGeminiOptions: (options) => invoke("save_gemini_options", { options }),
   getOllamaOptions: () => invoke("get_ollama_options"),
   saveOllamaOptions: (options) => invoke("save_ollama_options", { options }),
+  getVastAiOptions: () => invoke("get_vastai_options"),
+  saveVastAiOptions: (options) => invoke("save_vastai_options", { options }),
 
   storeImage: (path) => invoke("store_image", { path }),
   deleteImage: (path) => invoke("delete_image", { path }),

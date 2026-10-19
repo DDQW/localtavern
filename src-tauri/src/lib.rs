@@ -36,9 +36,10 @@ use crate::providers::oauth::{OAuthPkceClient, OAuthSession};
 use crate::providers::openai::ChatGptSubscriptionProvider;
 use crate::providers::xai::XaiSubscriptionProvider;
 use crate::providers::ollama::OllamaProvider;
+use crate::providers::vastai::VastAiProvider;
 use crate::providers::{http, LlmProviderRegistry};
 use crate::secrets::KeyringSecretStore;
-use crate::settings::{DbGeminiOptions, DbOllamaOptions};
+use crate::settings::{DbGeminiOptions, DbOllamaOptions, DbVastAiOptions};
 
 /// Where the database and images live: `LOCALTAVERN_DATA_DIR` if set (handy for trying the app on a
 /// scratch copy), otherwise the OS per-user app-data folder for this app's identifier.
@@ -61,6 +62,7 @@ fn build_state(data_dir: PathBuf) -> Result<AppState, Box<dyn std::error::Error>
     let xai = session(providers::xai::oauth_config(), providers::xai::SECRET_KEY);
     let chatgpt = session(providers::openai::oauth_config(), providers::openai::SECRET_KEY);
 
+    let vast = Arc::new(VastAiProvider::new(client.clone(), secrets.clone(), Arc::new(DbVastAiOptions(db.clone()))));
     let registry = Arc::new(LlmProviderRegistry::new(vec![
         Arc::new(GeminiProvider::new(client.clone(), secrets.clone(), Arc::new(DbGeminiOptions(db.clone())))),
         Arc::new(DeepSeekProvider::new(client.clone(), secrets.clone())),
@@ -68,6 +70,7 @@ fn build_state(data_dir: PathBuf) -> Result<AppState, Box<dyn std::error::Error>
         Arc::new(XaiSubscriptionProvider::new(client.clone(), xai.clone())),
         Arc::new(ChatGptSubscriptionProvider::new(client.clone(), chatgpt.clone())),
         Arc::new(OllamaProvider::new(client.clone(), Arc::new(DbOllamaOptions(db.clone())))),
+        vast.clone(),
     ]));
     let sessions = HashMap::from([
         (providers::xai::PROVIDER_ID.to_string(), xai),
@@ -77,7 +80,7 @@ fn build_state(data_dir: PathBuf) -> Result<AppState, Box<dyn std::error::Error>
     let images_dir = data_dir.join("images");
     let engine = ChatEngine::new(db.clone(), registry.clone(), images_dir.clone());
     engine.set_holiday_source(Arc::new(holidays::NagerHolidays::new(client.clone())));
-    Ok(AppState { db, engine, providers: registry, secrets, sessions, sign_ins: Default::default(), images_dir, data_dir })
+    Ok(AppState { db, engine, providers: registry, vast, secrets, sessions, sign_ins: Default::default(), images_dir, data_dir })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -139,6 +142,8 @@ pub fn run() {
             commands::save_gemini_options,
             commands::get_ollama_options,
             commands::save_ollama_options,
+            commands::get_vastai_options,
+            commands::save_vastai_options,
             commands::get_default_personas,
             commands::save_default_personas,
             commands::store_image,
@@ -179,6 +184,13 @@ pub fn run() {
             image_commands::stop_image,
             image_commands::delete_picture,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Don't leave a rented GPU running (and billing) because the app was closed mid-grace-period.
+            if let tauri::RunEvent::Exit = event {
+                let vast = app.state::<AppState>().vast.clone();
+                tauri::async_runtime::block_on(vast.shutdown());
+            }
+        });
 }

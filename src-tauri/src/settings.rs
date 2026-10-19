@@ -14,10 +14,12 @@ use crate::providers::gemini::{
     GeminiOptionsSource, GeminiRequestOptions, GeminiSafetyCategory, GeminiSafetyThreshold,
 };
 use crate::providers::ollama::{OllamaOptionsSource, OllamaRequestOptions};
+use crate::providers::vastai::{VastAiOptions, VastAiOptionsSource};
 use crate::repo::{app_settings, personas};
 
 const GEMINI_KEY: &str = "gemini.requestOptions";
 const OLLAMA_KEY: &str = "ollama.requestOptions";
+const VASTAI_KEY: &str = "vastai.options";
 const LAST_PROVIDER_KEY: &str = "app.provider.lastSelected";
 const DEFAULT_ROLEPLAY_PERSONA_KEY: &str = "app.persona.defaultRoleplay";
 const DEFAULT_ASSISTANT_PERSONA_KEY: &str = "app.persona.defaultAssistant";
@@ -130,10 +132,22 @@ pub fn save_ollama_options(conn: &Connection, options: &OllamaRequestOptions) ->
     app_settings::set(conn, OLLAMA_KEY, &serde_json::to_string(&stored)?)
 }
 
+// ---- Vast.ai ----
+
+pub fn load_vastai_options(conn: &Connection) -> Result<VastAiOptions> {
+    let stored = app_settings::get(conn, VASTAI_KEY)?.filter(|j| !j.is_empty());
+    Ok(stored.and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default())
+}
+
+pub fn save_vastai_options(conn: &Connection, options: &VastAiOptions) -> Result<()> {
+    app_settings::set(conn, VASTAI_KEY, &serde_json::to_string(options)?)
+}
+
 /// Live option sources for the providers: read from the database on every request, so a change in
 /// Settings applies immediately without restarting anything.
 pub struct DbGeminiOptions(pub Db);
 pub struct DbOllamaOptions(pub Db);
+pub struct DbVastAiOptions(pub Db);
 
 impl GeminiOptionsSource for DbGeminiOptions {
     fn current(&self) -> GeminiRequestOptions {
@@ -144,6 +158,12 @@ impl GeminiOptionsSource for DbGeminiOptions {
 impl OllamaOptionsSource for DbOllamaOptions {
     fn current(&self) -> OllamaRequestOptions {
         self.0.with(load_ollama_options).unwrap_or_default()
+    }
+}
+
+impl VastAiOptionsSource for DbVastAiOptions {
+    fn current(&self) -> VastAiOptions {
+        self.0.with(load_vastai_options).unwrap_or_default()
     }
 }
 

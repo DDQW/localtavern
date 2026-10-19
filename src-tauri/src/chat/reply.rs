@@ -95,6 +95,7 @@ pub fn provider_display_name(provider_id: &str) -> &str {
         "xai-subscription" => "SuperGrok",
         "chatgpt-subscription" => "ChatGPT",
         "ollama" => "Ollama",
+        "vastai" => "Vast.ai",
         other => other,
     }
 }

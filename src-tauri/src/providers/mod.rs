@@ -13,6 +13,7 @@ pub mod oauth;
 pub mod ollama;
 pub mod openai;
 pub mod openai_compat;
+pub mod vastai;
 pub mod xai;
 
 use std::pin::Pin;

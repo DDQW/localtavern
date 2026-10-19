@@ -377,6 +377,15 @@ export interface OllamaOptions {
   contextSize: number;
 }
 
+export interface VastAiOptions {
+  instanceId: number;
+  port: number;
+  baseUrl: string;
+  contextSize: number;
+  idleStopSecs: number;
+  readyTimeoutSecs: number;
+}
+
 export type ErrorKind = "auth" | "rateLimit" | "invalidRequest" | "network" | "contentBlocked" | "unknown";
 
 /** What the engine reports while a reply is produced (see src-tauri/src/chat/events.rs). */

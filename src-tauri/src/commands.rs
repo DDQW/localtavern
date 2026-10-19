@@ -26,6 +26,7 @@ use crate::powershell::settings::{self as tool_settings, PowerShellToolOptions};
 use crate::providers::gemini::GeminiRequestOptions;
 use crate::providers::oauth::{OAuthSession, SessionStatus};
 use crate::providers::ollama::OllamaRequestOptions;
+use crate::providers::vastai::VastAiOptions;
 use crate::providers::{ApiKeyProvider, LlmProviderRegistry, SecretStore};
 use crate::repo::{
     characters, conversations, group_chats, lorebooks, personas, prompt_presets, user_memories,
@@ -38,6 +39,8 @@ pub struct AppState {
     pub db: Db,
     pub engine: ChatEngine,
     pub providers: Arc<LlmProviderRegistry>,
+    /// Also in `providers`; kept here so the app can stop the instance on exit.
+    pub vast: Arc<crate::providers::vastai::VastAiProvider>,
     pub secrets: Arc<KeyringSecretStore>,
     /// OAuth sessions of the subscription-login providers, by provider id.
     pub sessions: HashMap<String, Arc<OAuthSession>>,
@@ -525,6 +528,16 @@ pub fn save_gemini_options(state: State<'_, AppState>, options: GeminiRequestOpt
 #[tauri::command]
 pub fn get_ollama_options(state: State<'_, AppState>) -> Result<OllamaRequestOptions> {
     state.db.with(settings::load_ollama_options)
+}
+
+#[tauri::command]
+pub fn get_vastai_options(state: State<'_, AppState>) -> Result<VastAiOptions> {
+    state.db.with(settings::load_vastai_options)
+}
+
+#[tauri::command]
+pub fn save_vastai_options(state: State<'_, AppState>, options: VastAiOptions) -> Result<()> {
+    state.db.with(|c| settings::save_vastai_options(c, &options))
 }
 
 #[tauri::command]

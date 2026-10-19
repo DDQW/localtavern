@@ -6,6 +6,7 @@
     GeminiOptions,
     Persona,
     OllamaOptions,
+    VastAiOptions,
     PowerShellOptions,
     ProviderInfo,
     SafetyCategory,
@@ -22,6 +23,7 @@
   let modelCounts = $state<Record<string, number>>({});
   let gemini = $state<GeminiOptions | null>(null);
   let ollama = $state<OllamaOptions | null>(null);
+  let vastai = $state<VastAiOptions | null>(null);
   let error = $state("");
   let sessions = $state<Record<string, SessionStatus>>({});
   let signingIn = $state<Record<string, boolean>>({});
@@ -75,6 +77,7 @@
         }
         gemini = await api.getGeminiOptions();
         ollama = await api.getOllamaOptions();
+        vastai = await api.getVastAiOptions();
         powershell = await api.getPowerShellOptions();
         memories = await api.listMemories();
         personas = await api.listPersonas();
@@ -263,6 +266,16 @@
       status.ollama = errorText(e);
     }
   }
+
+  async function saveVastAi() {
+    if (!vastai) return;
+    try {
+      await api.saveVastAiOptions($state.snapshot(vastai));
+      status.vastai = "Vast.ai options saved.";
+    } catch (e) {
+      status.vastai = errorText(e);
+    }
+  }
 </script>
 
 <section class="page">
@@ -396,6 +409,47 @@
           <div class="keyrow">
             <button onclick={saveOllama}>Save Ollama options</button>
             {#if status.ollama}<span class="muted small" role="status">{status.ollama}</span>{/if}
+          </div>
+        {/if}
+        {#if provider.id === "vastai" && vastai}
+          <h3>Vast.ai instance</h3>
+          <p class="muted small">
+            Rent an instance running Ollama (e.g. Vast's Ollama template), then enter its ID here. It is started when a reply needs it and
+            stopped again afterwards, so it only bills for its disk in between. The key above is your Vast.ai API key.
+          </p>
+          <div class="ollama">
+            <label class="field">
+              Instance ID
+              <input type="number" min="0" bind:value={vastai.instanceId} />
+            </label>
+            <label class="field">
+              Ollama port in the container
+              <input type="number" min="1" max="65535" bind:value={vastai.port} />
+            </label>
+            <label class="field">
+              Address override (optional)
+              <input type="url" bind:value={vastai.baseUrl} placeholder="https://my-tunnel.example.com" />
+            </label>
+            <label class="field">
+              Context size (tokens)
+              <input type="number" min="512" step="512" bind:value={vastai.contextSize} />
+            </label>
+            <label class="field">
+              Stop after idle (seconds, 0 = at once)
+              <input type="number" min="0" bind:value={vastai.idleStopSecs} />
+            </label>
+            <label class="field">
+              Start timeout (seconds)
+              <input type="number" min="30" bind:value={vastai.readyTimeoutSecs} />
+            </label>
+          </div>
+          <p class="muted small">
+            A short idle time keeps the instance up across the follow-up calls the app makes right after a reply, instead of restarting it for each.
+            Starting a stopped instance usually takes a minute or more, and can fail if its GPU was rented to someone else meanwhile.
+          </p>
+          <div class="keyrow">
+            <button onclick={saveVastAi}>Save Vast.ai options</button>
+            {#if status.vastai}<span class="muted small" role="status">{status.vastai}</span>{/if}
           </div>
         {/if}
       </article>
