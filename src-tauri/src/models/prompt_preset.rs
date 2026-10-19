@@ -18,8 +18,6 @@ pub enum PromptBlockType {
     UserMemory,
     PostHistoryInstructions,
     WorldState,
-    CharacterNotebook,
-    QuestLog,
 }
 int_enum!(PromptBlockType {
     SystemPrompt = 0,
@@ -34,8 +32,7 @@ int_enum!(PromptBlockType {
     UserMemory = 9,
     PostHistoryInstructions = 10,
     WorldState = 11,
-    CharacterNotebook = 12,
-    QuestLog = 13,
+    // 12 and 13 were the character notebook and quest log (removed; migration 0019 drops their blocks).
 });
 
 /// How hard a thinking-capable model should reason. `None` on a preset means "send nothing" so each

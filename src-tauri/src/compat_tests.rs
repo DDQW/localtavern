@@ -42,8 +42,6 @@ fn reads_a_real_csharp_database() {
     let mut messages = 0;
     let mut with_alternates = 0;
     let mut with_attachments = 0;
-    let mut quests = 0;
-    let mut notes = 0;
     let mut world_states = 0;
     for c in &conversations {
         for m in conversations::get_messages(&conn, c.id).unwrap() {
@@ -51,8 +49,6 @@ fn reads_a_real_csharp_database() {
             with_alternates += usize::from(!m.alternates.is_empty());
             with_attachments += usize::from(!m.attachments.is_empty());
         }
-        quests += quest_log::get_by_conversation(&conn, c.id).unwrap().len();
-        notes += notebook::get_by_conversation(&conn, c.id).unwrap().len();
         world_states += usize::from(c.world_state.is_some());
     }
 
@@ -67,7 +63,7 @@ fn reads_a_real_csharp_database() {
         conversations.iter().filter(|c| c.mode == ConversationMode::Roleplay).count()
     );
     println!("messages: {messages} ({with_alternates} with alternates, {with_attachments} with attachments)");
-    println!("quests: {quests}, notebook entries: {notes}, user memories: {}", memories.len());
+    println!("user memories: {}", memories.len());
 
     // Round trip: re-saving a character must not corrupt it.
     if let Some(c) = characters.first() {

@@ -27,9 +27,7 @@ import type {
   PromptPresetFull,
   ProviderInfo,
   SearchHit,
-  StoryState,
   ContextStatus,
-  CharacterNotebookEntry,
   ImageBackendOptions,
   ImageGenSettings,
   ImageMode,
@@ -60,11 +58,7 @@ export interface Api {
   resumeConversation(conversationId: Uuid): Promise<ChatSession>;
   newChat(conversationId: Uuid): Promise<ChatSession>;
   deleteConversation(conversationId: Uuid): Promise<void>;
-  storyState(conversationId: Uuid): Promise<StoryState>;
   searchMessages(query: string): Promise<SearchHit[]>;
-  addNote(conversationId: Uuid, characterId: Uuid, content: string): Promise<CharacterNotebookEntry>;
-  updateNote(noteId: Uuid, content: string): Promise<CharacterNotebookEntry>;
-  deleteNote(noteId: Uuid): Promise<void>;
 
   sendMessage(conversationId: Uuid, text: string, attachments: string[], onEvent: EventHandler): Promise<void>;
   swipeNext(conversationId: Uuid, messageId: Uuid, onEvent: EventHandler): Promise<void>;
@@ -190,11 +184,7 @@ const tauriApi: Api = {
   resumeConversation: (conversationId) => invoke("resume_conversation", { conversationId }),
   newChat: (conversationId) => invoke("new_chat", { conversationId }),
   deleteConversation: (conversationId) => invoke("delete_conversation", { conversationId }),
-  storyState: (conversationId) => invoke("story_state", { conversationId }),
   searchMessages: (query) => invoke("search_messages", { query }),
-  addNote: (conversationId, characterId, content) => invoke("add_note", { conversationId, characterId, content }),
-  updateNote: (noteId, content) => invoke("update_note", { noteId, content }),
-  deleteNote: (noteId) => invoke("delete_note", { noteId }),
 
   sendMessage: (conversationId, text, attachments, onEvent) =>
     streaming("send_message", { conversationId, text, attachments }, onEvent),

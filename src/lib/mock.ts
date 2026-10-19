@@ -5,7 +5,6 @@
 import type { Api, EventHandler } from "./api";
 import type {
   Character,
-  CharacterNotebookEntry,
   ChatMessage,
   ChatSession,
   ContextStatus,
@@ -128,7 +127,7 @@ const presets: PromptPresetFull[] = [
   {
     id: "p2",
     name: "Roleplay (default)",
-    blocks: blocks(["systemPrompt", "personaDescription", "characterDescription", "scenario", "exampleDialogue", "worldInfo", "chatHistory", "postHistoryInstructions", "worldState", "characterNotebook", "questLog"]),
+    blocks: blocks(["systemPrompt", "personaDescription", "characterDescription", "scenario", "exampleDialogue", "worldInfo", "chatHistory", "postHistoryInstructions", "worldState"]),
     temperature: 0.9,
     topP: null,
     topK: null,
@@ -304,7 +303,6 @@ let memories: UserMemory[] = [
   { id: "m0000000-0000-4000-8000-000000000002", content: "Prefers Rust for side projects.", createdAt: "2026-09-02T10:00:00Z" },
 ];
 const approvals = new Map<string, (decision: { allow: boolean; alwaysPattern: string | null }) => void>();
-const notebooks = new Map<Uuid, CharacterNotebookEntry[]>();
 const summaries = new Map<Uuid, ConversationSummary>();
 /** Ollama-sized, so the demo meter fills up quickly. */
 const MOCK_WINDOW = 8192;
@@ -415,38 +413,6 @@ export const mockApi: Api = {
     conversations.splice(conversations.findIndex((c) => c.id === id), 1);
     messages.delete(id);
   },
-  async storyState(id) {
-    if (!notebooks.has(id)) {
-      notebooks.set(id, [{ id: uid(), conversationId: id, characterId: characters[0].id, content: "Alex prefers the window seat.", createdAt: now() }]);
-    }
-    return {
-      notebook: structuredClone(notebooks.get(id)!),
-      quests: [
-        { id: uid(), conversationId: id, title: "Reach the Lantern Belt", description: "Three days out on the current heading.", status: "active", createdAt: now(), updatedAt: now() },
-        { id: uid(), conversationId: id, title: "Repair the coolant loop", description: "", status: "completed", createdAt: now(), updatedAt: now() },
-      ],
-    };
-  },
-  async addNote(conversationId, characterId, content) {
-    if (!content.trim()) throw "A note can't be empty.";
-    await mockApi.storyState(conversationId);
-    const entry = { id: uid(), conversationId, characterId, content: content.trim(), createdAt: now() };
-    notebooks.get(conversationId)!.push(entry);
-    return structuredClone(entry);
-  },
-  async updateNote(noteId, content) {
-    if (!content.trim()) throw "A note can't be empty - delete it instead.";
-    const entry = [...notebooks.values()].flat().find((n) => n.id === noteId);
-    if (!entry) throw "That note no longer exists.";
-    entry.content = content.trim();
-    return structuredClone(entry);
-  },
-  async deleteNote(noteId) {
-    for (const list of notebooks.values()) {
-      const i = list.findIndex((n) => n.id === noteId);
-      if (i >= 0) list.splice(i, 1);
-    }
-  },
   async searchMessages(query) {
     const q = query.toLowerCase();
     return [...messages.values()]
@@ -506,19 +472,6 @@ export const mockApi: Api = {
     }
     await stream(conversationId, reply, onEvent, SAMPLE_REPLY, false);
     onEvent({ type: "finished" });
-    if (c.mode === "roleplay" && c.characterId) {
-      // Like the real engine: the notebook fills in shortly after the reply, in the background.
-      await sleep(400);
-      await mockApi.storyState(conversationId);
-      notebooks.get(conversationId)!.push({
-        id: uid(),
-        conversationId,
-        characterId: c.characterId,
-        content: `Alex said: "${text.trim().slice(0, 60)}"`,
-        createdAt: now(),
-      });
-      onEvent({ type: "storyChanged", conversationId });
-    }
   },
   async swipeNext(conversationId, messageId, onEvent) {
     const target = messages.get(conversationId)!.find((m) => m.id === messageId)!;

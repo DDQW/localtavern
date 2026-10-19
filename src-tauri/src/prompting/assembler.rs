@@ -16,7 +16,6 @@ use crate::models::{
 use super::context::PromptAssemblyContext;
 use super::roles::{join_names, system_note, user_name};
 use super::world_info::{WorldInfoMatch, WorldInfoScanner};
-use super::{notebook, quest_log};
 
 pub fn assemble(ctx: &PromptAssemblyContext, scanner: &dyn WorldInfoScanner) -> LlmRequest {
     let macros = Macros::new(ctx.persona, ctx.characters, ctx.speaker);
@@ -246,8 +245,6 @@ fn resolve_block_text(block: &PromptBlock, ctx: &PromptAssemblyContext, macros: 
         PromptBlockType::Custom | PromptBlockType::PostHistoryInstructions => custom.unwrap_or_default().to_string(),
         PromptBlockType::UserMemory => format_user_memories(ctx.user_memories),
         PromptBlockType::WorldState => ctx.world_state_text.or(custom).unwrap_or_default().to_string(),
-        PromptBlockType::CharacterNotebook => notebook::format(ctx.character_notebook_entries, ctx.characters),
-        PromptBlockType::QuestLog => quest_log::format(ctx.quest_log_entries),
         // World info placement is per-entry (handled outside block resolution); history is not text.
         PromptBlockType::WorldInfo | PromptBlockType::ChatHistory => String::new(),
     }
@@ -362,9 +359,7 @@ fn join_per_character(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{
-        CharacterNotebookEntry, ChatMessage, Conversation, Lorebook, MessageAttachment, PromptPreset, QuestLogEntry,
-    };
+    use crate::models::{ChatMessage, Conversation, Lorebook, MessageAttachment, PromptPreset};
     use crate::prompting::defaults::{create_assistant_preset, create_roleplay_preset};
 
     struct NullScanner;
@@ -962,34 +957,6 @@ mod tests {
         let request = assemble(&PromptAssemblyContext::new(&conv, &preset, &history), &NullScanner);
 
         assert_eq!(texts(&request), ["Hi"]);
-    }
-
-    #[test]
-    fn character_notebook_block_groups_entries_per_character() {
-        let conv = roleplay();
-        let preset = history_preset(PromptBlockType::CharacterNotebook);
-        let nova = Character { name: "Nova".into(), ..Default::default() };
-        let entries = [CharacterNotebookEntry::new(conv.id, nova.id, "The player is a smuggler.")];
-        let characters = [nova];
-
-        let request = assemble(
-            &PromptAssemblyContext::new(&conv, &preset, &[]).with_characters(&characters).with_notebook_entries(&entries),
-            &NullScanner,
-        );
-
-        assert!(request.history[0].text.contains("What Nova privately knows/recalls:"));
-        assert!(request.history[0].text.contains("The player is a smuggler."));
-    }
-
-    #[test]
-    fn quest_log_block_lists_active_quests() {
-        let conv = roleplay();
-        let preset = history_preset(PromptBlockType::QuestLog);
-        let quests = [QuestLogEntry::new(conv.id, "Find the lantern", "Explore the cave.")];
-
-        let request = assemble(&PromptAssemblyContext::new(&conv, &preset, &[]).with_quest_log(&quests), &NullScanner);
-
-        assert!(request.history[0].text.contains("Find the lantern"));
     }
 
     #[test]

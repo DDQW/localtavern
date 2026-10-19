@@ -1,7 +1,4 @@
-use crate::models::{
-    Character, CharacterNotebookEntry, ChatMessage, Conversation, Lorebook, Persona, PromptPreset, QuestLogEntry,
-    UserMemory,
-};
+use crate::models::{Character, ChatMessage, Conversation, Lorebook, Persona, PromptPreset, UserMemory};
 
 /// Everything the assembler needs to build one LLM request for a conversation turn. Borrowed, so
 /// callers can build it from whatever they've loaded without cloning.
@@ -18,8 +15,6 @@ pub struct PromptAssemblyContext<'a> {
     pub authors_note_text: Option<&'a str>,
     pub user_memories: &'a [UserMemory],
     pub world_state_text: Option<&'a str>,
-    pub character_notebook_entries: &'a [CharacterNotebookEntry],
-    pub quest_log_entries: &'a [QuestLogEntry],
 }
 
 impl<'a> PromptAssemblyContext<'a> {
@@ -35,8 +30,6 @@ impl<'a> PromptAssemblyContext<'a> {
             authors_note_text: None,
             user_memories: &[],
             world_state_text: None,
-            character_notebook_entries: &[],
-            quest_log_entries: &[],
         }
     }
 
@@ -72,16 +65,6 @@ impl<'a> PromptAssemblyContext<'a> {
 
     pub fn with_world_state_text(mut self, text: &'a str) -> Self {
         self.world_state_text = Some(text);
-        self
-    }
-
-    pub fn with_notebook_entries(mut self, entries: &'a [CharacterNotebookEntry]) -> Self {
-        self.character_notebook_entries = entries;
-        self
-    }
-
-    pub fn with_quest_log(mut self, entries: &'a [QuestLogEntry]) -> Self {
-        self.quest_log_entries = entries;
         self
     }
 }

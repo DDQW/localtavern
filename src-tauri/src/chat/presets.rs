@@ -21,7 +21,7 @@ pub fn get_all_or_seed(conn: &Connection) -> Result<Vec<PromptPreset>> {
     }
 
     let all = backfill_persona_block(conn, all)?;
-    backfill_world_system_blocks(conn, all)
+    backfill_world_state_block(conn, all)
 }
 
 /// "Assistant (default)" presets seeded before persona support don't have a PersonaDescription
@@ -44,24 +44,18 @@ fn backfill_persona_block(conn: &Connection, all: Vec<PromptPreset>) -> Result<V
     prompt_presets::get_all(conn)
 }
 
-/// "Roleplay (default)" presets seeded before the world-state/notebook/quest-log feature don't have
-/// those blocks - add whichever are missing, once.
-fn backfill_world_system_blocks(conn: &Connection, all: Vec<PromptPreset>) -> Result<Vec<PromptPreset>> {
+/// "Roleplay (default)" presets seeded before the world-state feature don't have its block - add it
+/// at the end, once.
+fn backfill_world_state_block(conn: &Connection, all: Vec<PromptPreset>) -> Result<Vec<PromptPreset>> {
     let Some(mut preset) = all.iter().find(|p| p.name == ROLEPLAY_DEFAULT).cloned() else {
         return Ok(all);
     };
-    let missing: Vec<_> = [PromptBlockType::WorldState, PromptBlockType::CharacterNotebook, PromptBlockType::QuestLog]
-        .into_iter()
-        .filter(|t| preset.blocks.iter().all(|b| b.block_type != *t))
-        .collect();
-    if missing.is_empty() {
+    if preset.blocks.iter().any(|b| b.block_type == PromptBlockType::WorldState) {
         return Ok(all);
     }
 
-    let first_order = preset.blocks.iter().map(|b| b.order).max().map_or(0, |m| m + 1);
-    for (offset, block_type) in missing.into_iter().enumerate() {
-        preset.blocks.push(PromptBlock::new(block_type, first_order + offset as i32));
-    }
+    let order = preset.blocks.iter().map(|b| b.order).max().map_or(0, |m| m + 1);
+    preset.blocks.push(PromptBlock::new(PromptBlockType::WorldState, order));
     prompt_presets::upsert(conn, &preset)?;
     prompt_presets::get_all(conn)
 }
@@ -126,19 +120,15 @@ mod tests {
     }
 
     #[test]
-    fn old_roleplay_defaults_get_the_world_system_blocks_backfilled_once() {
+    fn old_roleplay_defaults_get_the_world_state_block_backfilled_once() {
         let conn = open_in_memory().unwrap();
         let mut old = create_roleplay_preset();
-        old.blocks.retain(|b| {
-            !matches!(b.block_type, PromptBlockType::WorldState | PromptBlockType::CharacterNotebook | PromptBlockType::QuestLog)
-        });
+        old.blocks.retain(|b| b.block_type != PromptBlockType::WorldState);
         prompt_presets::upsert(&conn, &old).unwrap();
 
         let all = get_all_or_seed(&conn).unwrap();
         let roleplay = all.iter().find(|p| p.name == ROLEPLAY_DEFAULT).unwrap();
-        for t in [PromptBlockType::WorldState, PromptBlockType::CharacterNotebook, PromptBlockType::QuestLog] {
-            assert_eq!(roleplay.blocks.iter().filter(|b| b.block_type == t).count(), 1, "{t:?}");
-        }
+        assert_eq!(roleplay.blocks.iter().filter(|b| b.block_type == PromptBlockType::WorldState).count(), 1);
         let again = get_all_or_seed(&conn).unwrap();
         assert_eq!(again.iter().find(|p| p.name == ROLEPLAY_DEFAULT).unwrap().blocks.len(), roleplay.blocks.len());
     }

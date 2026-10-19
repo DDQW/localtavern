@@ -28,8 +28,6 @@ pub enum ChatEvent {
     Compacting { conversation_id: Uuid },
     /// A compaction finished (or failed - an `Error` says so); the context meter is out of date.
     Compacted { conversation_id: Uuid },
-    /// Background extraction finished: the quest log and character notebooks may have changed.
-    StoryChanged { conversation_id: Uuid },
     /// The assistant wants to run a PowerShell command and needs the user's decision - answered
     /// through `ChatEngine::resolve_tool_approval` with this `request_id`.
     ToolApproval { request_id: Uuid, command: String, elevate: bool },

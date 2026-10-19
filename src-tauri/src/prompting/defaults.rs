@@ -35,8 +35,6 @@ pub fn create_roleplay_preset() -> PromptPreset {
             block(PromptBlockType::ChatHistory, 6),
             block(PromptBlockType::PostHistoryInstructions, 7),
             block(PromptBlockType::WorldState, 8),
-            block(PromptBlockType::CharacterNotebook, 9),
-            block(PromptBlockType::QuestLog, 10),
         ],
         ..Default::default()
     }
@@ -53,7 +51,7 @@ mod tests {
         assert_eq!(assistant.blocks[3].block_type, PromptBlockType::ChatHistory);
 
         let roleplay = create_roleplay_preset();
-        assert_eq!(roleplay.blocks.len(), 11);
+        assert_eq!(roleplay.blocks.len(), 9);
         assert_eq!(roleplay.blocks[0].custom_text.as_deref(), Some(DEFAULT_ROLEPLAY_SYSTEM_PROMPT));
         assert!(roleplay.blocks.iter().enumerate().all(|(i, b)| b.order == i as i32));
     }

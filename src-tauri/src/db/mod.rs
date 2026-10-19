@@ -51,6 +51,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (16, include_str!("../../migrations/0016_schedules.sql")),
     (17, include_str!("../../migrations/0017_appearance_into_description.sql")),
     (18, include_str!("../../migrations/0018_character_pictures.sql")),
+    (19, include_str!("../../migrations/0019_drop_notebooks_quests.sql")),
 ];
 
 /// Opens (creating if needed) the database at `path`, enables foreign keys and applies pending migrations.
@@ -145,6 +146,30 @@ mod tests {
         assert_eq!(description("Characters", "d"), "Pasted.\n\n{{char}} is tall.\nMore.", "already there: not added twice");
         assert_eq!(description("Personas", "p"), "Kind.\n\n{{user}} is a man.");
         assert!(conn.prepare("SELECT AppearanceText FROM Characters;").is_err(), "the column is gone");
+    }
+
+    #[test]
+    fn notebook_and_quest_blocks_and_tables_are_dropped() {
+        // A database as version 18 left it, with a preset holding notebook (12) and quest log (13) blocks.
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE SchemaVersion (Version INTEGER NOT NULL);").unwrap();
+        for (_, sql) in MIGRATIONS.iter().filter(|(v, _)| *v <= 18) {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute("INSERT INTO SchemaVersion(Version) VALUES (18);", []).unwrap();
+        let preset = crate::prompting::defaults::create_roleplay_preset();
+        crate::repo::prompt_presets::upsert(&conn, &preset).unwrap();
+        for (id, block_type) in [("n", 12), ("q", 13)] {
+            let sql = "INSERT INTO PromptBlocks (Id, PresetId, Type, Enabled, OrderIndex) VALUES (?1, ?2, ?3, 1, 99);";
+            conn.execute(sql, rusqlite::params![id, preset.id.to_string(), block_type]).unwrap();
+        }
+
+        migrate(&mut conn).unwrap();
+
+        let loaded = crate::repo::prompt_presets::get(&conn, preset.id).unwrap().unwrap();
+        assert_eq!(loaded.blocks.len(), preset.blocks.len(), "the old blocks are gone and the preset loads");
+        assert!(conn.prepare("SELECT * FROM CharacterNotebookEntries;").is_err());
+        assert!(conn.prepare("SELECT * FROM QuestLogEntries;").is_err());
     }
 
     #[test]

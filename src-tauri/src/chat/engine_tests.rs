@@ -1394,7 +1394,7 @@ async fn impersonate_reports_provider_failures_and_can_be_stopped() {
     assert!(!f.engine.is_generating(conv));
 }
 
-// ---- background extraction (memories, quests, notebooks) ----
+// ---- background extraction (memories) ----
 
 /// Answers each request by what it asks about, so the reply and the extraction requests (which run
 /// concurrently) can't be confused by their order. The first rule whose needle occurs in the request
@@ -1421,10 +1421,7 @@ impl Routed {
     }
 }
 
-const NOTEBOOK_ASK: &str = "extracting what specific characters";
-const QUEST_ASK: &str = "quest/objective log for an ongoing roleplay";
 const MEMORY_ASK: &str = "extracting durable facts about the USER";
-const CONDENSE_ASK: &str = "It has grown long";
 
 #[async_trait]
 impl LlmProvider for Routed {
@@ -1467,162 +1464,17 @@ fn routed(rules: Vec<(&'static str, std::result::Result<String, ProviderError>)>
 }
 
 impl RoutedFixture {
-    fn roleplay(&self, character: &Character) -> Uuid {
-        let session = self.engine.open_character(character.id, false).unwrap();
+    fn assistant(&self) -> Uuid {
+        let session = self.engine.open_assistant(false).unwrap();
         self.engine.set_model(session.conversation.id, "fake", "fake-model").unwrap();
         session.conversation.id
     }
-
-    /// Sends a message and waits until the roleplay's background extraction has finished.
-    async fn say(&self, conv: Uuid, text: &str) -> Vec<ChatEvent> {
-        let sink = Arc::new(VecSink::default());
-        self.engine.send_message(conv, text.into(), vec![], sink.clone()).await.unwrap();
-        wait_until("story extraction", || sink.events().iter().any(|e| matches!(e, ChatEvent::StoryChanged { .. }))).await;
-        sink.events()
-    }
-
-    fn notes(&self, conv: Uuid) -> Vec<String> {
-        self.db.with(|c| crate::repo::notebook::get_by_conversation(c, conv)).unwrap().into_iter().map(|n| n.content).collect()
-    }
-
-    fn quests(&self, conv: Uuid) -> Vec<crate::models::QuestLogEntry> {
-        self.db.with(|c| crate::repo::quest_log::get_by_conversation(c, conv)).unwrap()
-    }
-}
-
-#[tokio::test]
-async fn a_roleplay_reply_fills_the_notebook_and_quest_log_and_tells_the_ui() {
-    let f = routed(vec![
-        (NOTEBOOK_ASK, Ok("Nova: Alex is looking for the Lantern Belt\nnobody: ignored".into())),
-        (QUEST_ASK, Ok("ADD: Reach the Lantern Belt :: Three days out.".into())),
-        ("", Ok("We set course.".into())),
-    ]);
-    let nova = add_character(&f.db, "Nova", None, &[]);
-    let conv = f.roleplay(&nova);
-
-    let events = f.say(conv, "Where to?").await;
-    assert_eq!(f.notes(conv), ["Alex is looking for the Lantern Belt"]);
-    let quests = f.quests(conv);
-    assert_eq!((quests[0].title.as_str(), quests[0].description.as_str()), ("Reach the Lantern Belt", "Three days out."));
-    assert_eq!(quests[0].status, crate::models::QuestStatus::Active);
-    assert!(events.iter().any(|e| matches!(e, ChatEvent::StoryChanged { conversation_id } if *conversation_id == conv)));
-    assert!(error_messages(&events).is_empty());
-
-    // The model was shown the exchange, not just the reply, with each message under its author's name.
-    let ask = &f.provider.asked(NOTEBOOK_ASK)[0];
-    assert!(ask.contains("User (the player) wrote:\nWhere to?") && ask.contains("Nova replied:\nWe set course."), "{ask}");
-    assert!(ask.contains("the player is User, never one of the characters"), "{ask}");
-    assert!(ask.contains("Characters present: Nova") && ask.contains("Nova:\n(none yet)"), "{ask}");
-}
-
-#[tokio::test]
-async fn quests_are_updated_completed_and_failed_by_exact_title() {
-    let f = routed(vec![
-        (QUEST_ASK, Ok("ADD: Find the key :: Somewhere in the vault.\nADD: Escape :: Before dawn.\nADD: Bribe the guard :: With coin.".into())),
-        ("", Ok("ok".into())),
-    ]);
-    let nova = add_character(&f.db, "Nova", None, &[]);
-    let conv = f.roleplay(&nova);
-    f.say(conv, "one").await;
-    assert_eq!(f.quests(conv).len(), 3);
-
-    f.provider.answer(QUEST_ASK, "UPDATE: Find the key :: Behind the painting.\nCOMPLETE: Escape\nFAIL: Bribe the guard\nCOMPLETE: No such quest");
-    f.say(conv, "two").await;
-
-    // The second request listed what was already tracked, statuses included.
-    let ask = &f.provider.asked(QUEST_ASK)[1];
-    assert!(ask.contains("- Find the key (Active): Somewhere in the vault."), "{ask}");
-
-    let by_title = |t: &str| f.quests(conv).into_iter().find(|q| q.title == t).unwrap();
-    assert_eq!(by_title("Find the key").description, "Behind the painting.");
-    assert_eq!(by_title("Find the key").status, crate::models::QuestStatus::Active);
-    assert_eq!(by_title("Escape").status, crate::models::QuestStatus::Completed);
-    assert_eq!(by_title("Bribe the guard").status, crate::models::QuestStatus::Failed);
-    assert_eq!(f.quests(conv).len(), 3, "an unknown title adds nothing");
-}
-
-#[tokio::test]
-async fn known_notes_are_shown_to_the_model_so_it_does_not_repeat_them() {
-    let f = routed(vec![(NOTEBOOK_ASK, Ok("Nova: likes tea".into())), ("", Ok("ok".into()))]);
-    let nova = add_character(&f.db, "Nova", None, &[]);
-    let conv = f.roleplay(&nova);
-    f.say(conv, "one").await;
-    f.say(conv, "two").await;
-    assert!(f.provider.asked(NOTEBOOK_ASK)[1].contains("Nova:\n- likes tea"));
-}
-
-#[tokio::test]
-async fn in_a_group_each_character_gets_their_own_notes() {
-    let f = routed(vec![
-        (NOTEBOOK_ASK, Ok("bob: saw the thief\n- Alice: heard the alarm".into())),
-        ("", Ok("ok".into())),
-    ]);
-    let alice = add_character(&f.db, "Alice", None, &[]);
-    let bob = add_character(&f.db, "Bob", None, &[]);
-    let group = crate::models::GroupChat {
-        name: "Crew".into(),
-        character_ids: vec![alice.id, bob.id],
-        activation_mode: GroupActivationMode::Manual,
-        ..Default::default()
-    };
-    f.db.with(|c| group_chats::upsert(c, &group)).unwrap();
-    let session = f.engine.open_group(group.id, false).unwrap();
-    let conv = session.conversation.id;
-    f.engine.set_model(conv, "fake", "fake-model").unwrap();
-
-    f.engine.send_message(conv, "who saw?".into(), vec![], Arc::new(VecSink::default())).await.unwrap();
-    let sink = Arc::new(VecSink::default());
-    f.engine.pick_speaker(conv, alice.id, sink.clone()).await.unwrap();
-    wait_until("story extraction", || sink.events().iter().any(|e| matches!(e, ChatEvent::StoryChanged { .. }))).await;
-
-    let notes = f.db.with(|c| crate::repo::notebook::get_by_conversation(c, conv)).unwrap();
-    let of = |id| notes.iter().filter(|n| n.character_id == id).map(|n| n.content.as_str()).collect::<Vec<_>>();
-    assert_eq!(of(alice.id), ["heard the alarm"]);
-    assert_eq!(of(bob.id), ["saw the thief"]);
-    assert!(f.provider.asked(NOTEBOOK_ASK)[0].contains("Characters present: Alice, Bob"));
-}
-
-#[tokio::test]
-async fn a_notebook_that_grows_too_long_is_condensed_but_never_wiped() {
-    let f = routed(vec![
-        (NOTEBOOK_ASK, Ok("Nova: fact 21".into())),
-        (CONDENSE_ASK, Ok("- merged one\n* merged two\n\n".into())),
-        ("", Ok("ok".into())),
-    ]);
-    let nova = add_character(&f.db, "Nova", None, &[]);
-    let conv = f.roleplay(&nova);
-    f.db.with(|c| {
-        for i in 1..=20 {
-            crate::repo::notebook::add(c, &crate::models::CharacterNotebookEntry::new(conv, nova.id, format!("fact {i}")))?;
-        }
-        Ok(())
-    })
-    .unwrap();
-
-    f.say(conv, "hello").await;
-    assert_eq!(f.notes(conv), ["merged one", "merged two"]);
-    assert!(f.provider.asked(CONDENSE_ASK)[0].contains("- fact 21"), "the new fact is condensed too");
-
-    // Twenty-one entries again, but the condensed answer has nothing usable: keep everything.
-    f.db.with(|c| {
-        for i in 1..=19 {
-            crate::repo::notebook::add(c, &crate::models::CharacterNotebookEntry::new(conv, nova.id, format!("more {i}")))?;
-        }
-        Ok(())
-    })
-    .unwrap();
-    f.provider.answer(CONDENSE_ASK, "  \n - \n");
-    f.provider.answer(NOTEBOOK_ASK, "Nova: one more");
-    f.say(conv, "again").await;
-    assert_eq!(f.notes(conv).len(), 2 + 19 + 1);
 }
 
 #[tokio::test]
 async fn assistant_chats_remember_new_facts_about_the_user() {
     let f = routed(vec![(MEMORY_ASK, Ok("- Lives in Berlin\n* Prefers Rust\nNONE\n".into())), ("", Ok("Noted.".into()))]);
-    let session = f.engine.open_assistant(false).unwrap();
-    let conv = session.conversation.id;
-    f.engine.set_model(conv, "fake", "fake-model").unwrap();
+    let conv = f.assistant();
 
     f.engine.send_message(conv, "I live in Berlin and like Rust.".into(), vec![], Arc::new(VecSink::default())).await.unwrap();
     let memories = || f.db.with(crate::repo::user_memories::get_all).unwrap();
@@ -1643,19 +1495,30 @@ async fn assistant_chats_remember_new_facts_about_the_user() {
 }
 
 #[tokio::test]
-async fn extraction_failures_never_reach_the_chat() {
-    let f = routed(vec![
-        (NOTEBOOK_ASK, Err(ProviderError::network("down"))),
-        (QUEST_ASK, Err(ProviderError::auth("nope"))),
-        ("", Ok("Fine.".into())),
-    ]);
+async fn roleplays_send_no_extraction_requests() {
+    let f = routed(vec![("", Ok("We set course.".into()))]);
     let nova = add_character(&f.db, "Nova", None, &[]);
-    let conv = f.roleplay(&nova);
+    let session = f.engine.open_character(nova.id, false).unwrap();
+    let conv = session.conversation.id;
+    f.engine.set_model(conv, "fake", "fake-model").unwrap();
 
-    let events = f.say(conv, "hi").await;
-    assert!(error_messages(&events).is_empty());
+    f.engine.send_message(conv, "Where to?".into(), vec![], Arc::new(VecSink::default())).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(f.provider.requests.lock().unwrap().len(), 1, "only the reply was requested");
+}
+
+#[tokio::test]
+async fn extraction_failures_never_reach_the_chat() {
+    let f = routed(vec![(MEMORY_ASK, Err(ProviderError::network("down"))), ("", Ok("Fine.".into()))]);
+    let conv = f.assistant();
+
+    let sink = Arc::new(VecSink::default());
+    f.engine.send_message(conv, "I like tea.".into(), vec![], sink.clone()).await.unwrap();
+    wait_until("the memory request", || f.provider.asked(MEMORY_ASK).len() == 1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(error_messages(&sink.events()).is_empty());
     assert_eq!(messages_of(&f.db, conv)[1].text, "Fine.");
-    assert!(f.notes(conv).is_empty() && f.quests(conv).is_empty());
+    assert!(f.db.with(crate::repo::user_memories::get_all).unwrap().is_empty());
 }
 
 fn messages_of(db: &Db, conversation: Uuid) -> Vec<ChatMessage> {
@@ -1666,7 +1529,7 @@ fn messages_of(db: &Db, conversation: Uuid) -> Vec<ChatMessage> {
 async fn nothing_is_extracted_from_replies_that_failed_or_were_stopped() {
     let f = fixture(vec![Script::Hang(vec![LlmResponseChunk::text("half")]), Script::Items(vec![chunk("x"), Err(ProviderError::network("cut"))])]);
     f.engine.set_extraction(true);
-    let conv = ready_roleplay(&f);
+    let conv = ready_assistant(&f);
 
     // Stopped mid-reply.
     let sink = Arc::new(VecSink::default());
@@ -1684,28 +1547,25 @@ async fn nothing_is_extracted_from_replies_that_failed_or_were_stopped() {
 
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert_eq!(f.provider.requests().len(), 2, "only the two replies were requested");
-    assert!(!sink.events().iter().any(|e| matches!(e, ChatEvent::StoryChanged { .. })));
 }
 
 #[tokio::test]
 async fn regenerating_and_continuing_extract_from_the_new_text() {
-    let f = routed(vec![(QUEST_ASK, Ok("NONE".into())), ("", Ok("first".into()))]);
-    let nova = add_character(&f.db, "Nova", None, &[]);
-    let conv = f.roleplay(&nova);
-    f.say(conv, "go").await;
+    let f = routed(vec![(MEMORY_ASK, Ok("NONE".into())), ("", Ok("first".into()))]);
+    let conv = f.assistant();
+    f.engine.send_message(conv, "go".into(), vec![], Arc::new(VecSink::default())).await.unwrap();
+    wait_until("the first memory request", || f.provider.asked(MEMORY_ASK).len() == 1).await;
     let reply_id = messages_of(&f.db, conv)[1].id;
 
     f.provider.answer("", "second");
-    let sink = Arc::new(VecSink::default());
-    f.engine.swipe_next(conv, reply_id, sink.clone()).await.unwrap();
-    wait_until("story extraction", || sink.events().iter().any(|e| matches!(e, ChatEvent::StoryChanged { .. }))).await;
-    assert!(f.provider.asked(QUEST_ASK)[1].contains("User (the player) wrote:\ngo\n\nNova replied:\nsecond"));
+    f.engine.swipe_next(conv, reply_id, Arc::new(VecSink::default())).await.unwrap();
+    wait_until("the second memory request", || f.provider.asked(MEMORY_ASK).len() == 2).await;
+    assert!(f.provider.asked(MEMORY_ASK)[1].contains("User: go\nAssistant: second"));
 
     f.provider.answer("", " and more");
-    let sink = Arc::new(VecSink::default());
-    f.engine.continue_message(conv, sink.clone()).await.unwrap();
-    wait_until("story extraction", || sink.events().iter().any(|e| matches!(e, ChatEvent::StoryChanged { .. }))).await;
-    assert!(f.provider.asked(QUEST_ASK)[2].contains("Nova replied:\nsecond and more"), "the whole continued reply");
+    f.engine.continue_message(conv, Arc::new(VecSink::default())).await.unwrap();
+    wait_until("the third memory request", || f.provider.asked(MEMORY_ASK).len() == 3).await;
+    assert!(f.provider.asked(MEMORY_ASK)[2].contains("Assistant: second and more"), "the whole continued reply");
 }
 
 // ---- PowerShell tool ----

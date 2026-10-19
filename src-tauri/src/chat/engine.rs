@@ -1,9 +1,6 @@
 //! The chat engine: opens and creates conversations, and generates, regenerates, swipes, edits and
 //! deletes messages. It mirrors the C# `ChatViewModel`, minus everything UI-shaped - progress is
 //! reported through an [`EventSink`] and the UI just renders what it's told.
-//!
-//! Not yet ported (later steps): the PowerShell tool loop and the background memory / quest-log /
-//! notebook extraction.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -47,7 +44,7 @@ use crate::prompting::{
     self, emotion_tag, roles, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext,
 };
 use crate::providers::{LlmGeneratedImage, LlmProviderRegistry, ProviderError};
-use crate::repo::{characters, conversations, group_chats, notebook, quest_log, summaries, user_memories};
+use crate::repo::{characters, conversations, group_chats, summaries, user_memories};
 use crate::settings;
 
 #[path = "pictures.rs"]
@@ -63,7 +60,7 @@ struct Inner {
     providers: Arc<LlmProviderRegistry>,
     images_dir: PathBuf,
     active: Mutex<HashMap<Uuid, CancellationToken>>,
-    /// Whether finished replies trigger the background memory / quest / notebook requests.
+    /// Whether finished Assistant replies trigger the background memory request.
     extraction: AtomicBool,
     /// Runs the assistant's PowerShell commands.
     runner: Mutex<Arc<dyn CommandRunner>>,
@@ -262,7 +259,7 @@ impl ChatEngine {
         &self.inner.db
     }
 
-    /// Turns the background memory / quest / notebook requests after each reply on or off (on by default).
+    /// Turns the background memory request after each Assistant reply on or off (on by default).
     pub fn set_extraction(&self, enabled: bool) {
         self.inner.extraction.store(enabled, Ordering::Relaxed);
     }
@@ -823,9 +820,7 @@ present, keep it as its own final paragraph, still naming whose details they are
         match end {
             StreamEnd::Failed(error) => self.emit_failure(&error, &sink),
             // The clock is not advanced again (same exchange), but the added text may still matter.
-            StreamEnd::Completed => {
-                self.spawn_enrichment(&ctx, speaker.as_ref(), last_user_text(&ctx.messages), reply_text, &sink)
-            }
+            StreamEnd::Completed => self.spawn_enrichment(&ctx, last_user_text(&ctx.messages), reply_text),
             StreamEnd::Cancelled | StreamEnd::ToolCall(_) => {}
         }
         Ok(())
@@ -1146,14 +1141,9 @@ present, keep it as its own final paragraph, still naming whose details they are
     /// tag while a world clock runs).
     fn assemble(&self, ctx: &ReplyContext, history: &[ChatMessage], options: AssembleOptions<'_>) -> Result<LlmRequest> {
         let conversation = &ctx.conversation;
-        let (memories, notebook_entries, quests, summary) = self.db().with(|c| {
+        let (memories, summary) = self.db().with(|c| {
             let memories = if conversation.mode == ConversationMode::Assistant { user_memories::get_all(c)? } else { vec![] };
-            let (notes, quests) = if conversation.mode == ConversationMode::Roleplay {
-                (notebook::get_by_conversation(c, conversation.id)?, quest_log::get_by_conversation(c, conversation.id)?)
-            } else {
-                (vec![], vec![])
-            };
-            Ok((memories, notes, quests, summaries::get(c, conversation.id)?))
+            Ok((memories, summaries::get(c, conversation.id)?))
         })?;
         // A compacted chat sends its summary in place of the messages it covers.
         let history = match &summary {
@@ -1169,9 +1159,7 @@ present, keep it as its own final paragraph, still naming whose details they are
         let mut pctx = PromptAssemblyContext::new(conversation, options.preset.unwrap_or(&ctx.preset), history)
             .with_characters(&ctx.characters)
             .with_lorebooks(&ctx.lorebooks)
-            .with_user_memories(&memories)
-            .with_notebook_entries(&notebook_entries)
-            .with_quest_log(&quests);
+            .with_user_memories(&memories);
         if let Some(persona) = &ctx.persona {
             pctx = pctx.with_persona(persona);
         }
@@ -1437,7 +1425,7 @@ present, keep it as its own final paragraph, still naming whose details they are
             StreamEnd::Cancelled => Ok(Turn::Done(false)),
             StreamEnd::ToolCall(call) => Ok(Turn::ToolCall(call)),
             StreamEnd::Completed => {
-                self.spawn_enrichment(&ctx, speaker.as_ref(), last_user_text(&ctx.messages), message.text.clone(), sink);
+                self.spawn_enrichment(&ctx, last_user_text(&ctx.messages), message.text.clone());
                 // Only the conversation's very first exchange gets auto-titled.
                 if ctx.conversation.mode == ConversationMode::Assistant && ctx.messages.len() == 1 {
                     let user_text = ctx.messages.last().map(|m| m.text.clone()).unwrap_or_default();
@@ -1609,36 +1597,24 @@ present, keep it as its own final paragraph, still naming whose details they are
         match end {
             StreamEnd::Failed(error) => self.emit_failure(&error, &sink),
             StreamEnd::Completed => {
-                self.spawn_enrichment(&ctx, speaker.as_ref(), last_user_text(&ctx.messages[..position]), reply_text, &sink);
+                self.spawn_enrichment(&ctx, last_user_text(&ctx.messages[..position]), reply_text);
             }
             StreamEnd::Cancelled | StreamEnd::ToolCall(_) => {}
         }
         Ok(())
     }
 
-    /// Fire-and-forget follow-up requests once a reply has completed: Assistant chats learn facts
-    /// about the user; roleplays update the characters' notebooks and the quest log (and tell the UI
-    /// when they are done). `speaker` is who wrote the reply. Failures are dropped - the reply itself
-    /// already succeeded.
-    fn spawn_enrichment(
-        &self,
-        ctx: &ReplyContext,
-        speaker: Option<&Character>,
-        user_text: String,
-        reply_text: String,
-        sink: &Arc<dyn EventSink>,
-    ) {
-        if !self.inner.extraction.load(Ordering::Relaxed) || user_text.trim().is_empty() {
+    /// Fire-and-forget follow-up request once an Assistant reply has completed: learns durable facts
+    /// about the user. Failures are dropped - the reply itself already succeeded.
+    fn spawn_enrichment(&self, ctx: &ReplyContext, user_text: String, reply_text: String) {
+        if ctx.conversation.mode != ConversationMode::Assistant
+            || !self.inner.extraction.load(Ordering::Relaxed)
+            || user_text.trim().is_empty()
+        {
             return;
         }
         let engine = self.clone();
-        let (conversation, characters) = (ctx.conversation.clone(), ctx.characters.clone());
-        let user_name = roles::user_name(ctx.persona.as_ref()).to_string();
-        let reply_name = match (speaker, ctx.characters.as_slice()) {
-            (Some(me), _) | (None, [me]) => me.name.clone(),
-            _ => "The character".to_string(),
-        };
-        let sink = sink.clone();
+        let conversation = ctx.conversation.clone();
         tokio::spawn(async move {
             let extractor = Extractor {
                 db: engine.db(),
@@ -1646,22 +1622,8 @@ present, keep it as its own final paragraph, still naming whose details they are
                 provider_id: &conversation.provider_id,
                 model: &conversation.model,
             };
-            let exchange =
-                Exchange { user_name: &user_name, user_text: &user_text, reply_name: &reply_name, reply_text: &reply_text };
-            match conversation.mode {
-                ConversationMode::Assistant => {
-                    report("memory extraction", extractor.memories(&exchange).await);
-                }
-                ConversationMode::Roleplay => {
-                    let (notes, quests) = tokio::join!(
-                        extractor.notebooks(conversation.id, &characters, &exchange),
-                        extractor.quests(conversation.id, &exchange)
-                    );
-                    report("notebook extraction", notes);
-                    report("quest log extraction", quests);
-                    sink.emit(ChatEvent::StoryChanged { conversation_id: conversation.id });
-                }
-            }
+            let exchange = Exchange { user_text: &user_text, reply_text: &reply_text };
+            report("memory extraction", extractor.memories(&exchange).await);
         });
     }
 

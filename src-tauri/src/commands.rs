@@ -19,8 +19,8 @@ use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::models::{
     Appearance, Schedule, WorldInfoEntry,
-    Character, CharacterNotebookEntry, ChatMessage, Conversation, ExpressionImage, GroupChat, Lorebook, Persona,
-    PromptPreset, QuestLogEntry, UserMemory, WorldState,
+    Character, ChatMessage, Conversation, ExpressionImage, GroupChat, Lorebook, Persona, PromptPreset, UserMemory,
+    WorldState,
 };
 use crate::powershell::settings::{self as tool_settings, PowerShellToolOptions};
 use crate::providers::gemini::GeminiRequestOptions;
@@ -28,7 +28,7 @@ use crate::providers::oauth::{OAuthSession, SessionStatus};
 use crate::providers::ollama::OllamaRequestOptions;
 use crate::providers::{ApiKeyProvider, LlmProviderRegistry, SecretStore};
 use crate::repo::{
-    characters, conversations, group_chats, lorebooks, notebook, personas, prompt_presets, quest_log, user_memories,
+    characters, conversations, group_chats, lorebooks, personas, prompt_presets, user_memories,
 };
 use crate::secrets::KeyringSecretStore;
 use crate::prompting::appearance::AppearanceSubject;
@@ -165,44 +165,6 @@ pub async fn pick_speaker(
 #[tauri::command]
 pub fn open_last_roleplay(state: State<'_, AppState>) -> Result<Option<ChatSession>> {
     state.engine.open_last_roleplay()
-}
-
-/// The in-story state shown beside a roleplay: quests and per-character notebooks.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StoryState {
-    pub quests: Vec<QuestLogEntry>,
-    pub notebook: Vec<CharacterNotebookEntry>,
-}
-
-#[tauri::command]
-pub fn story_state(state: State<'_, AppState>, conversation_id: Uuid) -> Result<StoryState> {
-    state.db.with(|c| {
-        Ok(StoryState {
-            quests: quest_log::get_by_conversation(c, conversation_id)?,
-            notebook: notebook::get_by_conversation(c, conversation_id)?,
-        })
-    })
-}
-
-#[tauri::command]
-pub fn add_note(
-    state: State<'_, AppState>,
-    conversation_id: Uuid,
-    character_id: Uuid,
-    content: String,
-) -> Result<CharacterNotebookEntry> {
-    state.db.with(|c| crate::story::add_note(c, conversation_id, character_id, &content))
-}
-
-#[tauri::command]
-pub fn update_note(state: State<'_, AppState>, note_id: Uuid, content: String) -> Result<CharacterNotebookEntry> {
-    state.db.with(|c| crate::story::update_note(c, note_id, &content))
-}
-
-#[tauri::command]
-pub fn delete_note(state: State<'_, AppState>, note_id: Uuid) -> Result<()> {
-    state.db.with(|c| crate::story::delete_note(c, note_id))
 }
 
 #[derive(Debug, Serialize)]

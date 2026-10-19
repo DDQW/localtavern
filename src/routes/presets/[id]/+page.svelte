@@ -18,8 +18,6 @@
     userMemory: "User memory",
     postHistoryInstructions: "Post-history instructions",
     worldState: "World state (date, time, weather)",
-    characterNotebook: "Character notebook",
-    questLog: "Quest log",
   };
 
   const HELP: Partial<Record<PromptBlockType, string>> = {
@@ -30,8 +28,6 @@
     authorsNote: "Injected into the history at the depth below.",
     postHistoryInstructions: "Injected into the history at the depth below - depth 0 puts it last.",
     userMemory: "What the assistant has learned about you (Assistant chats only).",
-    characterNotebook: "What each character privately knows (roleplay only).",
-    questLog: "Tracked objectives (roleplay only).",
   };
 
   /** Blocks whose own text is used by the prompt assembler; for the rest, custom text would be ignored. */

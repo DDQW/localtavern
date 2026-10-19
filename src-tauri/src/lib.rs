@@ -16,7 +16,6 @@ pub mod providers;
 pub mod repo;
 pub mod secrets;
 pub mod settings;
-pub mod story;
 
 #[cfg(test)]
 mod compat_tests;
@@ -101,10 +100,6 @@ pub fn run() {
             commands::open_character,
             commands::resume_conversation,
             commands::open_last_roleplay,
-            commands::story_state,
-            commands::add_note,
-            commands::update_note,
-            commands::delete_note,
             commands::search_messages,
             commands::new_chat,
             commands::delete_conversation,

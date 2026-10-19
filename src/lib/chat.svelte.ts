@@ -11,7 +11,6 @@ import type {
   ImageMode,
   ImagePromptDraft,
   Persona,
-  StoryState,
   ToolApproval,
   UiMessage,
   Uuid,
@@ -49,7 +48,6 @@ export interface Speaker {
 class ChatStore {
   session = $state<ChatSession | null>(null);
   messages = $state<UiMessage[]>([]);
-  story = $state<StoryState | null>(null);
   loading = $state(false);
   busy = $state(false);
   error = $state("");
@@ -108,11 +106,9 @@ class ChatStore {
     this.pendingAttachments = [];
     this.busy = false;
     this.approval = null;
-    this.story = null;
     this.context = null;
     this.compacting = false;
     this.picture = null;
-    void this.refreshStory();
     void this.refreshContext();
   }
 
@@ -154,17 +150,6 @@ class ChatStore {
   newChat() {
     if (!this.conversationId || this.busy) return Promise.resolve(false);
     return this.open(api.newChat(this.conversationId));
-  }
-
-  async refreshStory() {
-    const id = this.conversationId;
-    if (!id || !this.isRoleplay) return;
-    try {
-      const story = await api.storyState(id);
-      if (this.conversationId === id) this.story = story;
-    } catch {
-      // The side panel is a nicety; never let it break the chat.
-    }
   }
 
   async refreshContext() {
@@ -300,9 +285,6 @@ class ChatStore {
       case "worldStateChanged":
         if (this.session) this.session.conversation.worldState = event.worldState as WorldState;
         break;
-      case "storyChanged":
-        void this.refreshStory();
-        break;
       case "compacting":
         this.compacting = true;
         break;
@@ -324,7 +306,6 @@ class ChatStore {
         for (const m of this.messages) m.streaming = false;
         this.busy = false;
         this.compacting = false;
-        void this.refreshStory();
         void this.refreshContext();
         break;
     }
@@ -558,40 +539,6 @@ class ChatStore {
     if (!id || !this.picture) return;
     if (this.picture.phase === "prompt") await api.stopGeneration(id);
     else if (this.picture.phase === "render") await api.stopImage(id);
-  }
-
-  // ---- notebook ----
-
-  async addNote(characterId: Uuid, text: string): Promise<boolean> {
-    const id = this.conversationId;
-    if (!id || !text.trim()) return false;
-    try {
-      const note = await api.addNote(id, characterId, text);
-      this.story?.notebook.push(note);
-      return true;
-    } catch (e) {
-      this.error = errorText(e);
-      return false;
-    }
-  }
-
-  /** Saves an edited note; an emptied one is put back the way it was (deleting is its own button). */
-  async saveNote(note: { id: Uuid; content: string }, text: string) {
-    if (!text.trim() || text.trim() === note.content) return;
-    try {
-      note.content = (await api.updateNote(note.id, text)).content;
-    } catch (e) {
-      this.error = errorText(e);
-    }
-  }
-
-  async deleteNote(noteId: Uuid) {
-    try {
-      await api.deleteNote(noteId);
-      if (this.story) this.story.notebook = this.story.notebook.filter((n) => n.id !== noteId);
-    } catch (e) {
-      this.error = errorText(e);
-    }
   }
 
   // ---- per-conversation settings ----

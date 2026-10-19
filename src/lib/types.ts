@@ -326,24 +326,6 @@ export interface Bootstrap {
   dataDir: string;
 }
 
-export interface QuestLogEntry {
-  id: Uuid;
-  conversationId: Uuid;
-  title: string;
-  description: string;
-  status: "active" | "completed" | "failed";
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface CharacterNotebookEntry {
-  id: Uuid;
-  conversationId: Uuid;
-  characterId: Uuid;
-  content: string;
-  createdAt: string;
-}
-
 /** A compacted chat's summary: it replaces, in prompts, every message up to coversThroughMessageId. */
 export interface ConversationSummary {
   conversationId: Uuid;
@@ -369,11 +351,6 @@ export interface ContextStatus {
   /** Messages a compaction now would condense (0: nothing to compact). */
   compactableCount: number;
   autoCompactPercent: number;
-}
-
-export interface StoryState {
-  quests: QuestLogEntry[];
-  notebook: CharacterNotebookEntry[];
 }
 
 export interface SearchHit {
@@ -414,7 +391,6 @@ export type ChatEvent =
   | { type: "titleChanged"; conversationId: Uuid; title: string }
   | { type: "compacting"; conversationId: Uuid }
   | { type: "compacted"; conversationId: Uuid }
-  | { type: "storyChanged"; conversationId: Uuid }
   | { type: "toolApproval"; requestId: Uuid; command: string; elevate: boolean }
   | { type: "error"; message: string; kind: ErrorKind | null }
   | { type: "finished" };
@@ -455,9 +431,7 @@ export type PromptBlockType =
   | "custom"
   | "userMemory"
   | "postHistoryInstructions"
-  | "worldState"
-  | "characterNotebook"
-  | "questLog";
+  | "worldState";
 
 export type ReasoningEffort = "off" | "low" | "medium" | "high";
 
