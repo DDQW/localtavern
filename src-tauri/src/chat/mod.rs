@@ -7,6 +7,7 @@ pub mod engine;
 pub mod events;
 mod extraction;
 pub mod images;
+pub mod meters;
 pub mod presets;
 pub mod reply;
 pub mod session;

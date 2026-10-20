@@ -234,7 +234,7 @@ function conversation(overrides: Partial<Conversation>): Conversation {
       customHolidays: [],
       outfits: {},
       maxSkipMinutes: 360,
-      metersEnabled: false,
+      metersEnabled: true,
       meters: {},
     },
   });

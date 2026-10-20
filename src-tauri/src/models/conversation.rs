@@ -78,12 +78,17 @@ pub struct WorldState {
     /// overshoots ("3 days" for a coffee) is clamped to this.
     #[serde(default = "default_max_skip_minutes")]
     pub max_skip_minutes: i32,
-    /// Track an arousal / climax meter per character (adult stories only; off by default).
-    #[serde(default)]
+    /// Track an arousal / climax meter per character: after each reply the story is read for what
+    /// raised or lowered them (on unless switched off).
+    #[serde(default = "default_meters_enabled")]
     pub meters_enabled: bool,
     /// Character id -> meter.
     #[serde(default)]
     pub meters: std::collections::BTreeMap<Uuid, Meter>,
+}
+
+fn default_meters_enabled() -> bool {
+    true
 }
 
 fn default_max_skip_minutes() -> i32 {
@@ -103,24 +108,25 @@ pub struct Meter {
 impl Meter {
     /// Most a meter may rise / fall in one reply, so a model that jumps straight to 100 (or back
     /// to 0) can't skip the build-up.
-    const MAX_RISE: i32 = 25;
-    const MAX_FALL: i32 = 30;
+    const MAX_RISE: i32 = 60;
+    const MAX_FALL: i32 = 40;
 
     fn step(current: u8, reported: u8) -> u8 {
         let current = current as i32;
         (reported.min(100) as i32).clamp(current - Self::MAX_FALL, current + Self::MAX_RISE).clamp(0, 100) as u8
     }
 
-    /// Takes the model's reading. Returns whether the character climaxed: the climax meter filled
-    /// up, so it is counted and emptied, and arousal drops off.
-    pub fn apply(&mut self, arousal: Option<u8>, climax: Option<u8>) -> bool {
+    /// Takes the model's reading. Returns whether the character climaxed: the reply says so, or the
+    /// climax meter filled up. It is then counted and emptied, and arousal drops off. What the reply
+    /// narrates wins over the numbers, so a climax in the text always counts.
+    pub fn apply(&mut self, arousal: Option<u8>, climax: Option<u8>, orgasm: bool) -> bool {
         if let Some(a) = arousal {
             self.arousal = Self::step(self.arousal, a);
         }
         if let Some(c) = climax {
             self.climax = Self::step(self.climax, c);
         }
-        if self.climax >= 100 {
+        if orgasm || climax.is_some_and(|c| c >= 100) || self.climax >= 100 {
             self.orgasms += 1;
             self.climax = 0;
             self.arousal = (self.arousal as u32 * 6 / 10) as u8;
@@ -204,7 +210,7 @@ impl WorldState {
             custom_holidays: Vec::new(),
             outfits: Default::default(),
             max_skip_minutes: default_max_skip_minutes(),
-            meters_enabled: false,
+            meters_enabled: true,
             meters: Default::default(),
         }
     }

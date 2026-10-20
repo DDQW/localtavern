@@ -333,11 +333,11 @@
       <div class="clock" class:locked>
         <label class="check">
           <input type="checkbox" checked={world.metersEnabled} disabled={locked} onchange={(e) => chat.updateWorld({ metersEnabled: e.currentTarget.checked })} />
-          Track arousal and climax (adult stories)
+          Track arousal and climax automatically
         </label>
         {#if world.metersEnabled}
           <p class="muted small">
-            The model reports both after each reply; the app limits how fast they move. When climax reaches 100 it counts an orgasm and resets.
+            After each reply the story is read for anything that raises or lowers them (one extra request), so they follow what was written. An orgasm in the text counts, empties climax and drops arousal. You can also set them by hand.
           </p>
           {#each cast as c (c.id)}
             {@const m = world.meters?.[c.id] ?? { arousal: 0, climax: 0, orgasms: 0 }}

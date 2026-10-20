@@ -22,6 +22,7 @@ use super::compaction::{self, ContextStatus, Names};
 use super::events::{ChatEvent, EventSink};
 use super::extraction::{Exchange, Extractor, StoryExchange};
 use super::images;
+use super::meters;
 use super::reply::{advance_clock, append_instruction, check_blocked, format_prompt, match_emotion, random_unit, user_message};
 use super::session::{self, build_session, load_reply_context, ChatSession, ReplyContext};
 use crate::db::Db;
@@ -39,7 +40,7 @@ use crate::powershell::settings as tool_settings;
 use crate::prompting::powershell_tool::{self, PowerShellToolCallRequest, ToolResult};
 use crate::prompting::reply_tags::{self, ReplyTags};
 use crate::prompting::{
-    self, emotion_tag, meter_tag, roles, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext,
+    self, emotion_tag, roles, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext,
 };
 use crate::providers::{LlmGeneratedImage, LlmProviderRegistry, ProviderError};
 use crate::repo::{characters, conversations, group_chats, story_characters, summaries, user_memories};
@@ -1271,10 +1272,6 @@ present, keep it as its own final paragraph, still naming whose details they are
         }
         if options.reply_tags && conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_some() {
             append_instruction(&mut request, time_skip_tag::build_instruction());
-            let tracking = conversation.world_state.as_ref().is_some_and(|w| w.meters_enabled);
-            if let (true, Some(owner)) = (tracking, options.speaker.or(ctx.characters.first())) {
-                append_instruction(&mut request, &meter_tag::build_instruction(&owner.name));
-            }
         }
         Ok(request)
     }
@@ -1405,7 +1402,6 @@ present, keep it as its own final paragraph, still naming whose details they are
         &self,
         ctx: &ReplyContext,
         raw_text: String,
-        owner: Option<Uuid>,
         advance: bool,
         sink: &Arc<dyn EventSink>,
     ) -> Result<(String, ReplyTags, Option<ClockSnapshot>)> {
@@ -1416,10 +1412,7 @@ present, keep it as its own final paragraph, still naming whose details they are
         let Some(state) = ctx.conversation.world_state.as_ref().filter(|_| advance) else {
             return Ok((clean, tags, None));
         };
-        let (mut next, report) = advance_clock(state, tags.skip, &mut random_unit);
-        if let (true, Some(owner), Some(reading)) = (state.meters_enabled, owner, tags.meters) {
-            next.meters.entry(owner).or_default().apply(reading.arousal, reading.climax);
-        }
+        let (next, report) = advance_clock(state, tags.skip, &mut random_unit);
         self.db().with(|c| conversations::update_world_state(c, ctx.conversation.id, Some(&next)))?;
         sink.emit(ChatEvent::WorldStateChanged { conversation_id: ctx.conversation.id, world_state: next });
         Ok((clean, tags, Some(report)))
@@ -1491,8 +1484,7 @@ present, keep it as its own final paragraph, still naming whose details they are
         let succeeded = matches!(end, StreamEnd::Completed);
         if succeeded {
             message.usage = usage;
-            let owner = speaker_id.or(ctx.conversation.character_id);
-            let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, owner, true, sink)?;
+            let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, true, sink)?;
             message.text = clean;
             message.detected_emotion = match_emotion(speaker.as_ref(), tags.emotion);
             message.clock = clock;
@@ -1683,8 +1675,7 @@ present, keep it as its own final paragraph, still naming whose details they are
         let reasoning = nonempty(reasoning);
         if succeeded {
             target.usage = usage;
-            let owner = target.speaker_character_id.or(ctx.conversation.character_id);
-            let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, owner, moves_clock, &sink)?;
+            let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, moves_clock, &sink)?;
             target.add_alternate(clean, reasoning, Some(raw_prompt));
             target.detected_emotion = match_emotion(speaker.as_ref(), tags.emotion);
             if moves_clock {
@@ -1738,6 +1729,7 @@ present, keep it as its own final paragraph, still naming whose details they are
                 });
             }
             ConversationMode::Roleplay => {
+                self.spawn_meter_tracking(ctx, user_text.clone(), reply_text.clone(), sink.clone());
                 if !self.db().with(settings::track_story_cast).unwrap_or(false) {
                     return;
                 }
@@ -1748,6 +1740,66 @@ present, keep it as its own final paragraph, still naming whose details they are
             }
             _ => {}
         }
+    }
+
+    /// Reads the exchange for what it did to each character's arousal and climax meters, and applies
+    /// that to the story's current meters once the answer is in. Best-effort and detached: a failed
+    /// request just leaves the meters as they were.
+    fn spawn_meter_tracking(&self, ctx: &ReplyContext, user_text: String, reply_text: String, sink: Arc<dyn EventSink>) {
+        if !ctx.conversation.world_state.as_ref().is_some_and(|w| w.meters_enabled) || ctx.characters.is_empty() {
+            return;
+        }
+        let engine = self.clone();
+        let conversation = ctx.conversation.clone();
+        let cast: Vec<(Uuid, String)> = ctx.characters.iter().map(|c| (c.id, c.name.clone())).collect();
+        let user_name = roles::user_name(ctx.persona.as_ref()).to_string();
+        tokio::spawn(async move {
+            report("meter tracking", engine.track_meters(&conversation, &cast, &user_name, &user_text, &reply_text, &sink).await);
+        });
+    }
+
+    async fn track_meters(
+        &self,
+        conversation: &Conversation,
+        cast: &[(Uuid, String)],
+        user_name: &str,
+        user_text: &str,
+        reply_text: &str,
+        sink: &Arc<dyn EventSink>,
+    ) -> Result<()> {
+        // The meters as they stand now (the reply just moved the clock; the user may have edited them).
+        let current = self.db().with(|c| Ok(conversations::get(c, conversation.id)?.and_then(|c| c.world_state)))?;
+        let Some(current) = current.filter(|w| w.meters_enabled) else { return Ok(()) };
+        let values: Vec<(&str, crate::models::Meter)> =
+            cast.iter().map(|(id, name)| (name.as_str(), current.meters.get(id).copied().unwrap_or_default())).collect();
+        let question = meters::prompt(&values, user_name, user_text, reply_text);
+        let extractor = Extractor {
+            db: self.db(),
+            providers: &self.inner.providers,
+            provider_id: &conversation.provider_id,
+            model: &conversation.model,
+        };
+        let answer = extractor.ask(question).await?;
+        let names: Vec<&str> = cast.iter().map(|(_, n)| n.as_str()).collect();
+        let readings = meters::parse(&answer, &names);
+        if readings.is_empty() {
+            return Ok(());
+        }
+
+        let state = self.db().with(|c| {
+            let Some(mut state) = conversations::get(c, conversation.id)?.and_then(|c| c.world_state).filter(|w| w.meters_enabled) else {
+                return Ok(None);
+            };
+            for (index, reading) in readings {
+                state.meters.entry(cast[index].0).or_default().apply(reading.arousal, reading.climax, reading.orgasm);
+            }
+            conversations::update_world_state(c, conversation.id, Some(&state))?;
+            Ok(Some(state))
+        })?;
+        if let Some(world_state) = state {
+            sink.emit(ChatEvent::WorldStateChanged { conversation_id: conversation.id, world_state });
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]

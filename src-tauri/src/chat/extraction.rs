@@ -127,7 +127,7 @@ fn fact_lines(response: &str) -> impl Iterator<Item = &str> {
 }
 
 impl Extractor<'_> {
-    async fn ask(&self, prompt: String) -> Result<String> {
+    pub async fn ask(&self, prompt: String) -> Result<String> {
         let provider = self.providers.get(self.provider_id).map_err(|e| Error::Other(e.message))?;
         let request = LlmRequest {
             model: self.model.to_string(),

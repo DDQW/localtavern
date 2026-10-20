@@ -55,7 +55,7 @@ mod tests {
             assert_eq!(clean, "She smiled.", "{text}");
             assert_eq!(tags.skip, Some(Duration::minutes(5)), "{text}");
             assert_eq!(tags.emotion.as_deref(), Some("happy"), "{text}");
-            assert_eq!(tags.meters, Some(MeterReading { arousal: Some(30), climax: Some(5) }), "{text}");
+            assert_eq!(tags.meters, Some(MeterReading { arousal: Some(30), climax: Some(5), orgasm: false }), "{text}");
         }
     }
 

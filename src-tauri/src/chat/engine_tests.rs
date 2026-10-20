@@ -683,42 +683,70 @@ async fn an_absurd_time_skip_is_held_to_the_limit() {
 }
 
 #[tokio::test]
-async fn meters_are_tracked_clamped_and_only_when_switched_on() {
+async fn meter_values_reach_the_reply_prompt_and_a_stray_meter_tag_is_removed() {
     use crate::models::Meter;
-    let f = fixture(vec![
-        Script::Items(vec![chunk("Hello. [time-skip: 1 minute] [meters: arousal 90, climax 90]"), finish("STOP")]),
-        Script::Items(vec![chunk("Oh. [meters: arousal 100, climax 100]"), finish("STOP")]),
-    ]);
+    let f = fixture(vec![Script::Items(vec![chunk("Hello. [time-skip: 1 minute] [meters: arousal 90, climax 90]"), finish("STOP")])]);
     let nova = add_character(&f.db, "Nova", None, &[]);
     let conv = ready_character(&f, &nova);
-
-    // Off by default: no instruction, nothing recorded, the tag is still removed.
-    send(&f, conv, "hi").await.0.unwrap();
-    assert!(!request_text(&f.provider.requests()[0]).contains("[meters:"));
-    assert_eq!(messages(&f, conv)[1].text, "Hello.");
-    assert!(world(&f, conv).unwrap().meters.is_empty());
-
     let mut state = world(&f, conv).unwrap();
-    state.meters_enabled = true;
+    assert!(state.meters_enabled, "tracking is on unless switched off");
     state.meters.insert(nova.id, Meter { arousal: 50, climax: 40, orgasms: 0 });
     f.engine.set_world_state(conv, state).unwrap();
-    send(&f, conv, "more").await.0.unwrap();
-    let text = request_text(&f.provider.requests()[1]);
-    assert!(text.contains("[meters: arousal"), "{text}");
+
+    send(&f, conv, "hi").await.0.unwrap();
+    let text = request_text(&f.provider.requests()[0]);
     assert!(text.contains("Nova - arousal 50/100, climax 40/100"), "{text}");
-    // 50 -> 100 and 40 -> 100 are both held to +25 a reply.
-    let m = world(&f, conv).unwrap().meters[&nova.id];
-    assert_eq!((m.arousal, m.climax, m.orgasms), (75, 65, 0));
+    assert!(!text.contains("[meters:"), "the reply is no longer asked for a tag");
+    assert_eq!(messages(&f, conv)[1].text, "Hello.");
+    assert_eq!(world(&f, conv).unwrap().meters[&nova.id].arousal, 50, "a tag in the reply is ignored");
+}
+
+#[tokio::test]
+async fn meters_follow_the_story_after_each_reply_and_stop_when_switched_off() {
+    let f = routed(vec![
+        (crate::chat::meters::ASK, Ok("Nova: arousal 55, climax 20, orgasm no".into())),
+        ("", Ok("They kissed.".into())),
+    ]);
+    let nova = add_character(&f.db, "Nova", None, &[]);
+    let session = f.engine.open_character(nova.id, false).unwrap();
+    let conv = session.conversation.id;
+    f.engine.set_model(conv, "fake", "fake-model").unwrap();
+    let meter = |f: &RoutedFixture| f.db.with(|c| conversations::get(c, conv)).unwrap().unwrap().world_state.unwrap().meters.get(&nova.id).copied();
+
+    let sink = Arc::new(VecSink::default());
+    f.engine.send_message(conv, "I kiss her.".into(), vec![], sink.clone()).await.unwrap();
+    wait_until("the first reading", || meter(&f).is_some_and(|m| m.arousal == 55)).await;
+    assert_eq!(meter(&f).unwrap().climax, 20);
+    assert!(sink.events().iter().any(|e| matches!(e, ChatEvent::WorldStateChanged { world_state, .. } if world_state.meters.contains_key(&nova.id))));
+    assert!(f.provider.asked(crate::chat::meters::ASK)[0].contains("I kiss her."));
+
+    // The text narrates a climax: it counts, whatever the climax number was.
+    f.provider.answer(crate::chat::meters::ASK, "Nova: arousal 80, climax 60, orgasm yes");
+    f.engine.send_message(conv, "More.".into(), vec![], Arc::new(VecSink::default())).await.unwrap();
+    wait_until("the orgasm", || meter(&f).is_some_and(|m| m.orgasms == 1)).await;
+    assert!(f.provider.asked(crate::chat::meters::ASK)[1].contains("Nova: arousal 55, climax 20"), "the question carries the current values");
+    assert_eq!((meter(&f).unwrap().arousal, meter(&f).unwrap().climax), (48, 0));
+
+    let mut state = f.db.with(|c| conversations::get(c, conv)).unwrap().unwrap().world_state.unwrap();
+    state.meters_enabled = false;
+    f.engine.set_world_state(conv, state).unwrap();
+    f.engine.send_message(conv, "Again.".into(), vec![], Arc::new(VecSink::default())).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(f.provider.asked(crate::chat::meters::ASK).len(), 2, "no more questions once tracking is off");
 }
 
 #[test]
 fn a_full_climax_meter_counts_an_orgasm_and_resets() {
     use crate::models::Meter;
     let mut m = Meter { arousal: 90, climax: 80, orgasms: 1 };
-    assert!(m.apply(Some(100), Some(100)));
+    assert!(m.apply(Some(100), Some(100), false));
     assert_eq!((m.arousal, m.climax, m.orgasms), (60, 0, 2));
-    assert!(!m.apply(Some(0), Some(0)), "falling is held to 30 a reply");
-    assert_eq!((m.arousal, m.climax), (30, 0));
+    assert!(!m.apply(Some(0), Some(0), false), "falling is held to 40 a reply");
+    assert_eq!((m.arousal, m.climax), (20, 0));
+    // A climax the reply narrates counts even when the climax number was low.
+    let mut m = Meter { arousal: 70, climax: 40, orgasms: 0 };
+    assert!(m.apply(Some(85), Some(55), true));
+    assert_eq!((m.arousal, m.climax, m.orgasms), (51, 0, 1));
 }
 
 #[test]
@@ -1645,7 +1673,7 @@ async fn cast_tracking_is_off_by_default() {
 
     f.engine.send_message(conv, "Where to?".into(), vec![], Arc::new(VecSink::default())).await.unwrap();
     tokio::time::sleep(Duration::from_millis(150)).await;
-    assert_eq!(f.provider.requests.lock().unwrap().len(), 1, "only the reply was requested");
+    assert!(f.provider.asked(CAST_ASK).is_empty(), "no cast request");
 }
 
 #[tokio::test]
