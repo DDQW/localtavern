@@ -8,103 +8,124 @@ use std::sync::LazyLock;
 use chrono::Duration;
 use regex::Regex;
 
+/// The tag in the shapes models actually produce: `[time-skip: 3 hours]`, `(Time skip: 1h 30m)`,
+/// `[time_skip: 2-3 minutes]`.
 static TAG: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\s*\[\s*time-skip\s*:\s*(\d+(?:\.\d+)?)\s*(minutes?|mins?|hours?|hrs?|days?)\s*\]\s*$")
-        .unwrap()
+    Regex::new(r"(?i)[\[(]\s*time[-_ ]?(?:skip|jump|passed|elapsed)\s*[:=]\s*([^\])]{1,60}?)\s*[\])]").unwrap()
+});
+
+/// One `number unit` part of a duration; the number may be a range ("2-3").
+static PART: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(\d+(?:[.,]\d+)?)(?:\s*(?:-|–|to)\s*(\d+(?:[.,]\d+)?))?\s*([a-z]+)",
+    )
+    .unwrap()
 });
 
 const MAX_SKIP_SECONDS: f64 = 30.0 * 24.0 * 3600.0;
 
 /// One line to append to the system instruction, asking for a structured tag.
 pub fn build_instruction() -> &'static str {
-    "At the very end of every reply, append a tag estimating how much in-story time that reply \
-covered, realistically - a short line of dialogue or a quick reaction might be under a \
-minute; a described action, a wait, or a stretch of small talk might be several minutes; an \
-explicit time jump (an overnight, a training montage, \"the rest of the evening\") should \
-match what was actually narrated. Format: [time-skip: <number> <minutes|hours|days>], e.g. \
-[time-skip: 2 minutes] or [time-skip: 3 hours]. Always include it, never explain it."
+    "The story has a clock that only moves when you move it. At the very end of every reply, on its \
+own last line, append a tag saying how much in-story time that reply covered - never omit it, and \
+never write 0: a short line of dialogue or a quick reaction is about 1 minute; a described action, a \
+wait or some small talk is several minutes; a meal, a drive or a long conversation is tens of \
+minutes; an explicit time jump (an overnight, a training montage, \"the rest of the evening\") must \
+match what was narrated. Format: [time-skip: <number> <minutes|hours|days>] with a single number, \
+e.g. [time-skip: 2 minutes], [time-skip: 45 minutes] or [time-skip: 3 hours]. Do not explain the tag."
 }
 
-/// Strips a trailing `[time-skip: N unit]` tag, returning the parsed elapsed time clamped to (0, 30 days].
-pub fn extract_and_strip(text: &str) -> (String, Option<Duration>) {
-    let Some(caps) = TAG.captures(text) else {
-        return (text.to_string(), None);
-    };
-    let clean = text[..caps.get(0).unwrap().start()].trim_end().to_string();
+/// The elapsed time named by a tag in `tail` (the trailing tags peeled off a reply), clamped to (0, 30 days].
+pub fn parse_tail(tail: &str) -> Option<Duration> {
+    parse_duration(&TAG.captures(tail)?[1])
+}
 
-    let Ok(amount) = caps[1].parse::<f64>() else {
-        return (clean, None);
-    };
-    if amount <= 0.0 {
-        return (clean, None);
+/// "3 hours", "1h 30m", "1,5 hours", "2-3 minutes" (the middle), "an hour", "half an hour".
+fn parse_duration(body: &str) -> Option<Duration> {
+    let body = body.trim().to_lowercase();
+    if body.starts_with('-') {
+        return None;
     }
+    let body = body.replace("half an ", "0.5 ").replace("half a ", "0.5 ").replace("an ", "1 ").replace("a ", "1 ");
 
-    let unit_seconds = match caps[2].to_lowercase().chars().next() {
-        Some('m') => 60.0,
-        Some('h') => 3600.0,
-        Some('d') => 86_400.0,
-        _ => return (clean, None),
-    };
-    let seconds = (amount * unit_seconds).min(MAX_SKIP_SECONDS);
-    (clean, Some(Duration::milliseconds((seconds * 1000.0).round() as i64)))
+    let number = |s: &str| s.replace(',', ".").parse::<f64>().ok();
+    let mut seconds = 0.0;
+    for part in PART.captures_iter(&body) {
+        let low = number(&part[1])?;
+        let amount = match part.get(2) {
+            Some(high) => (low + number(high.as_str())?) / 2.0,
+            None => low,
+        };
+        let unit = match &part[3] {
+            "s" | "sec" | "secs" | "second" | "seconds" => 1.0,
+            "m" | "min" | "mins" | "minute" | "minutes" => 60.0,
+            "h" | "hr" | "hrs" | "hour" | "hours" => 3600.0,
+            "d" | "day" | "days" => 86_400.0,
+            "w" | "week" | "weeks" => 7.0 * 86_400.0,
+            _ => continue,
+        };
+        seconds += amount * unit;
+    }
+    if seconds <= 0.0 {
+        return None;
+    }
+    Some(Duration::milliseconds((seconds.min(MAX_SKIP_SECONDS) * 1000.0).round() as i64))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn skip(text: &str) -> Option<Duration> {
+        parse_tail(text)
+    }
+
     #[test]
     fn parses_each_unit_alias() {
         for (text, minutes) in [
-            ("She left. [time-skip: 3 hours]", 180),
-            ("She left. [time-skip: 0.5 hours]", 30),
-            ("She left. [time-skip: 45 minutes]", 45),
-            ("She left. [time-skip: 45 mins]", 45),
-            ("She left. [time-skip: 2 days]", 2 * 24 * 60),
+            ("[time-skip: 3 hours]", 180),
+            ("[time-skip: 0.5 hours]", 30),
+            ("[time-skip: 45 minutes]", 45),
+            ("[time-skip: 45 mins]", 45),
+            ("[time-skip: 2 days]", 2 * 24 * 60),
         ] {
-            let (clean, skip) = extract_and_strip(text);
-            assert_eq!(clean, "She left.", "{text}");
-            assert_eq!(skip, Some(Duration::minutes(minutes)), "{text}");
+            assert_eq!(skip(text), Some(Duration::minutes(minutes)), "{text}");
         }
     }
 
     #[test]
-    fn leaves_text_unchanged_when_no_tag() {
-        assert_eq!(extract_and_strip("Just a normal reply."), ("Just a normal reply.".into(), None));
+    fn accepts_the_shapes_models_actually_write() {
+        for (text, seconds) in [
+            ("[Time-Skip: 90 min]", 90 * 60),
+            ("(time skip: 2 hours)", 2 * 3600),
+            ("[time_skip: 1h 30m]", 90 * 60),
+            ("[time-skip: 1 hour 15 minutes]", 75 * 60),
+            ("[time-skip: 2-3 minutes]", 150),
+            ("[time-skip: an hour]", 3600),
+            ("[time-skip: half an hour]", 30 * 60),
+            ("[time-skip: 1,5 hours]", 90 * 60),
+            ("[time-skip: 1 day]", 86_400),
+        ] {
+            assert_eq!(skip(text), Some(Duration::seconds(seconds)), "{text}");
+        }
     }
 
     #[test]
-    fn handles_empty_text() {
-        assert_eq!(extract_and_strip(""), (String::new(), None));
-    }
-
-    #[test]
-    fn only_matches_a_trailing_tag_not_one_mid_text() {
-        let text = "It was [time-skip: 3 hours] ago, she said.";
-        assert_eq!(extract_and_strip(text), (text.into(), None));
+    fn unreadable_zero_and_negative_amounts_are_none() {
+        for text in ["[time-skip: a while]", "[time-skip: 0 hours]", "[time-skip: -1 hours]", "no tag", ""] {
+            assert_eq!(skip(text), None, "{text}");
+        }
     }
 
     #[test]
     fn clamps_absurd_values_to_thirty_days() {
-        let (_, skip) = extract_and_strip("[time-skip: 9999 days]");
-        assert_eq!(skip, Some(Duration::days(30)));
-    }
-
-    #[test]
-    fn rejects_zero_or_negative_amounts() {
-        assert_eq!(extract_and_strip("[time-skip: 0 hours]").1, None);
-        assert_eq!(extract_and_strip("[time-skip: -1 hours]").1, None);
-    }
-
-    #[test]
-    fn a_zero_tag_is_still_stripped() {
-        assert_eq!(extract_and_strip("Fine. [time-skip: 0 hours]"), ("Fine.".into(), None));
+        assert_eq!(skip("[time-skip: 9999 days]"), Some(Duration::days(30)));
     }
 
     #[test]
     fn instruction_mentions_the_tag_format() {
         let instruction = build_instruction();
         assert!(instruction.contains("[time-skip:"));
-        assert!(instruction.contains("Always include it"));
+        assert!(instruction.contains("never omit it"));
     }
 }

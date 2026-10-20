@@ -9,5 +9,6 @@ pub mod group_chats;
 pub mod lorebooks;
 pub mod personas;
 pub mod prompt_presets;
+pub mod story_characters;
 pub mod summaries;
 pub mod user_memories;

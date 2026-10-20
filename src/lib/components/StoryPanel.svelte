@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from "$lib/api";
   import { chat } from "$lib/chat.svelte";
-  import type { Country, HolidayOverview, WeatherCondition } from "$lib/types";
+  import type { Country, HolidayOverview, Meter, StoryCharacter, WeatherCondition } from "$lib/types";
   import { addMinutes } from "$lib/util";
 
   const world = $derived(chat.session?.conversation.worldState ?? null);
@@ -25,6 +25,14 @@
 
   const weatherLabel = (w: string) => w.replace(/([a-z])([A-Z])/g, "$1 $2");
   const WEATHER: WeatherCondition[] = ["Clear", "PartlyCloudy", "Overcast", "Rain", "Thunderstorm", "Snow", "Fog", "Windy"];
+  const SKIP_LIMITS = [
+    { label: "1 hour", minutes: 60 },
+    { label: "3 hours", minutes: 180 },
+    { label: "6 hours", minutes: 360 },
+    { label: "12 hours", minutes: 720 },
+    { label: "1 day", minutes: 1440 },
+    { label: "No limit", minutes: 0 },
+  ];
   const JUMPS = [
     { label: "+1 hour", minutes: 60 },
     { label: "+6 hours", minutes: 360 },
@@ -37,6 +45,62 @@
   function setTime(e: Event & { currentTarget: HTMLInputElement }) {
     const value = e.currentTarget.value; // "YYYY-MM-DDTHH:mm", empty while the field is half-typed
     if (value) void chat.updateWorld({ fictionalDateTime: `${value}:00` });
+  }
+
+  // ---- arousal meters ----
+
+  function setMeter(characterId: string, patch: Partial<Meter>) {
+    if (!world) return;
+    const current = world.meters?.[characterId] ?? { arousal: 0, climax: 0, orgasms: 0 };
+    void chat.updateWorld({ meters: { ...(world.meters ?? {}), [characterId]: { ...current, ...patch } } });
+  }
+
+  // ---- people the story introduced ----
+
+  let tracking = $state(false);
+  let editing = $state<StoryCharacter | null>(null);
+  let adding = $state("");
+
+  $effect(() => {
+    api.getTrackStoryCast().then((on) => (tracking = on), () => {});
+  });
+
+  function setTracking(on: boolean) {
+    tracking = on;
+    void api.setTrackStoryCast(on);
+  }
+
+  const introduced = (c: StoryCharacter) =>
+    c.introducedAt ? new Date(c.introducedAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "";
+
+  function addPerson() {
+    const id = chat.conversationId;
+    const name = adding.trim();
+    if (!id || !name) return;
+    editing = {
+      id: crypto.randomUUID(),
+      conversationId: id,
+      name,
+      age: null,
+      role: "",
+      appearance: "",
+      adultDetails: "",
+      introducedAt: world?.fictionalDateTime ?? null,
+      introducedMessageId: null,
+      createdAt: new Date().toISOString(),
+    };
+    adding = "";
+  }
+
+  async function saveEdit() {
+    if (!editing) return;
+    await chat.saveCastMember(editing);
+    editing = null;
+  }
+
+  function setAge(e: Event & { currentTarget: HTMLInputElement }) {
+    const n = Math.round(Number(e.currentTarget.value));
+    if (editing) editing.age = e.currentTarget.value.trim() !== "" && Number.isFinite(n) && n >= 0 ? n : null;
   }
 
   // ---- setting and holidays ----
@@ -99,6 +163,27 @@
   }
 </script>
 
+{#snippet editor()}
+  {#if editing}
+    <div class="person edit">
+      <label class="field">Name <input bind:value={editing.name} /></label>
+      <div class="two">
+        <label class="field">Age <input type="number" min="0" value={editing.age ?? ""} oninput={setAge} /></label>
+        <label class="field">Role <input bind:value={editing.role} placeholder="who they are" /></label>
+      </div>
+      <label class="field">Appearance <textarea rows="5" bind:value={editing.appearance}></textarea></label>
+      <label class="field">
+        18+ details {#if editing.age === null || editing.age < 18}<span class="muted">(only for characters aged 18 or more)</span>{/if}
+        <textarea rows="4" bind:value={editing.adultDetails} disabled={editing.age === null || editing.age < 18}></textarea>
+      </label>
+      <div class="row">
+        <button disabled={!editing.name.trim()} onclick={saveEdit}>Save</button>
+        <button class="ghost" onclick={() => (editing = null)}>Cancel</button>
+      </div>
+    </div>
+  {/if}
+{/snippet}
+
 <aside class="panel" aria-label="Story">
   <details open>
     <summary>World</summary>
@@ -133,6 +218,12 @@
             disabled={locked}
             onchange={(e) => chat.updateWorld({ weatherNotes: e.currentTarget.value })}
           />
+        </label>
+        <label class="field">
+          Largest automatic jump per reply
+          <select value={world.maxSkipMinutes ?? 360} disabled={locked} onchange={(e) => chat.updateWorld({ maxSkipMinutes: Number(e.currentTarget.value) })}>
+            {#each SKIP_LIMITS as l (l.minutes)}<option value={l.minutes}>{l.label}</option>{/each}
+          </select>
         </label>
         <label class="field">
           Minutes per message (when the reply gives no time)
@@ -207,6 +298,15 @@
         {:else if world.countryCode}
           <p class="muted small">No holidays in the next two weeks.</p>
         {/if}
+        {#each overview?.schoolBreaks ?? [] as b (b.start + b.name)}
+          <p class="small">
+            <span class="muted">School holidays:</span>
+            {b.name}, {b.start <= storyDate ? "until" : `${shortDate(b.start)} –`} {shortDate(b.end)}
+          </p>
+        {/each}
+        {#if world.countryCode && !world.regionCode && overview?.regions.length}
+          <p class="muted small">Pick a region to include its school holidays.</p>
+        {/if}
 
         <details class="custom">
           <summary class="small">Story holidays ({world.customHolidays.length})</summary>
@@ -225,6 +325,91 @@
     {:else}
       <p class="muted small">No in-story clock for this chat.</p>
     {/if}
+  </details>
+
+  {#if world}
+    <details>
+      <summary>Arousal meters</summary>
+      <div class="clock" class:locked>
+        <label class="check">
+          <input type="checkbox" checked={world.metersEnabled} disabled={locked} onchange={(e) => chat.updateWorld({ metersEnabled: e.currentTarget.checked })} />
+          Track arousal and climax (adult stories)
+        </label>
+        {#if world.metersEnabled}
+          <p class="muted small">
+            The model reports both after each reply; the app limits how fast they move. When climax reaches 100 it counts an orgasm and resets.
+          </p>
+          {#each cast as c (c.id)}
+            {@const m = world.meters?.[c.id] ?? { arousal: 0, climax: 0, orgasms: 0 }}
+            <div class="meter">
+              <strong>{c.name}</strong>
+              <label>
+                <span>Arousal <span class="muted">{m.arousal}</span></span>
+                <input type="range" min="0" max="100" value={m.arousal} disabled={locked} onchange={(e) => setMeter(c.id, { arousal: Number(e.currentTarget.value) })} />
+              </label>
+              <label>
+                <span>Climax <span class="muted">{m.climax}</span></span>
+                <input type="range" min="0" max="100" value={m.climax} disabled={locked} onchange={(e) => setMeter(c.id, { climax: Number(e.currentTarget.value) })} />
+              </label>
+              <span class="muted small">Orgasms so far: {m.orgasms}</span>
+            </div>
+          {/each}
+        {/if}
+      </div>
+    </details>
+  {/if}
+
+  <details open>
+    <summary>People ({chat.cast.length})</summary>
+    <div class="people-tools">
+      <button disabled={chat.busy || chat.scanning} onclick={() => chat.scanCast()}>
+        {chat.scanning ? "Reading the story…" : "Scan recent story"}
+      </button>
+      <label class="check small">
+        <input type="checkbox" checked={tracking} onchange={(e) => setTracking(e.currentTarget.checked)} />
+        Note new people after each reply (one extra request)
+      </label>
+    </div>
+
+    {#if chat.cast.length === 0 && !editing}
+      <p class="muted small">Nobody yet. People who are introduced in the story (apart from the main characters) are listed here with their age and looks.</p>
+    {/if}
+
+    {#each chat.cast as person (person.id)}
+      {#if editing?.id === person.id}
+        {@render editor()}
+      {:else}
+        <article class="person">
+          <header>
+            <strong>{person.name}</strong>
+            <span class="muted small">
+              {person.age !== null ? `${person.age} years` : "age unknown"}{person.role ? ` · ${person.role}` : ""}
+            </span>
+            {#if introduced(person)}<span class="muted small">Introduced {introduced(person)}</span>{/if}
+          </header>
+          {#if person.appearance}<p class="small">{person.appearance}</p>{/if}
+          {#if person.adultDetails}
+            <details class="adult">
+              <summary class="small">18+ details</summary>
+              <p class="small">{person.adultDetails}</p>
+            </details>
+          {/if}
+          <div class="row">
+            <button class="ghost small" onclick={() => (editing = structuredClone($state.snapshot(person)))}>Edit</button>
+            <button class="ghost small" onclick={() => chat.removeCastMember(person.id)} aria-label="Remove {person.name}">Remove</button>
+          </div>
+        </article>
+      {/if}
+    {/each}
+
+    {#if editing && !chat.cast.some((p) => p.id === editing?.id)}
+      {@render editor()}
+    {/if}
+
+    <div class="addrow">
+      <input placeholder="Add a person…" bind:value={adding} onkeydown={(e) => e.key === "Enter" && addPerson()} />
+      <button disabled={!adding.trim()} onclick={addPerson}>Add</button>
+    </div>
   </details>
 
 </aside>
@@ -282,6 +467,18 @@
     opacity: 0.6;
   }
 
+  .meter {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .meter label {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
   .jumps {
     display: flex;
     gap: 6px;
@@ -321,5 +518,66 @@
     align-items: center;
     justify-content: space-between;
     gap: 6px;
+  }
+  .people-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 6px 0 10px;
+  }
+
+  .person {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .person header {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .person.edit {
+    gap: 8px;
+    font-size: 12px;
+  }
+
+  .person textarea {
+    width: 100%;
+    resize: vertical;
+  }
+
+  .adult {
+    margin: 0;
+  }
+
+  .adult summary {
+    font-weight: 500;
+    color: var(--accent);
+  }
+
+  .two {
+    display: grid;
+    grid-template-columns: 70px 1fr;
+    gap: 6px;
+  }
+
+  .row {
+    display: flex;
+    gap: 6px;
+  }
+
+  .addrow {
+    display: flex;
+    gap: 6px;
+  }
+
+  .addrow input {
+    flex: 1;
+    min-width: 0;
   }
 </style>

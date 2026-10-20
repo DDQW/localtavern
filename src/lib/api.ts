@@ -38,6 +38,7 @@ import type {
   LookDraft,
   DefaultPersonas,
   Uuid,
+  StoryCharacter,
   WorldState,
   PowerShellOptions,
   SessionStatus,
@@ -75,7 +76,8 @@ export interface Api {
   swipePrevious(messageId: Uuid): Promise<ChatMessage>;
   stopGeneration(conversationId: Uuid): Promise<void>;
   editMessage(messageId: Uuid, text: string): Promise<ChatMessage>;
-  deleteMessage(messageId: Uuid): Promise<void>;
+  /** Returns the story clock when deleting the reply put it back. */
+  deleteMessage(messageId: Uuid): Promise<WorldState | null>;
 
   setConversationModel(conversationId: Uuid, providerId: string, model: string): Promise<Conversation>;
   setConversationPreset(conversationId: Uuid, presetId: Uuid): Promise<Conversation>;
@@ -133,6 +135,14 @@ export interface Api {
   draftGreetings(character: Character, idea: string, count: number): Promise<string[]>;
   draftLoreEntries(request: LoreDraftRequest): Promise<WorldInfoEntry[]>;
   draftSchedule(character: Character, idea: string): Promise<Schedule>;
+
+  listStoryCast(conversationId: Uuid): Promise<StoryCharacter[]>;
+  /** Reads the latest stretch of the story for newly introduced people; returns the whole cast. */
+  scanStoryCast(conversationId: Uuid): Promise<StoryCharacter[]>;
+  saveStoryCharacter(character: StoryCharacter): Promise<StoryCharacter[]>;
+  deleteStoryCharacter(conversationId: Uuid, id: Uuid): Promise<StoryCharacter[]>;
+  getTrackStoryCast(): Promise<boolean>;
+  setTrackStoryCast(on: boolean): Promise<void>;
 
   holidayCountries(): Promise<Country[]>;
   holidayOverview(conversationId: Uuid): Promise<HolidayOverview>;
@@ -259,6 +269,13 @@ const tauriApi: Api = {
   draftGreetings: (character, idea, count) => invoke("draft_greetings", { character, idea, count }),
   draftLoreEntries: (request) => invoke("draft_lore_entries", { request }),
   draftSchedule: (character, idea) => invoke("draft_schedule", { character, idea }),
+
+  listStoryCast: (conversationId) => invoke("list_story_cast", { conversationId }),
+  scanStoryCast: (conversationId) => invoke("scan_story_cast", { conversationId }),
+  saveStoryCharacter: (character) => invoke("save_story_character", { character }),
+  deleteStoryCharacter: (conversationId, id) => invoke("delete_story_character", { conversationId, id }),
+  getTrackStoryCast: () => invoke("get_track_story_cast"),
+  setTrackStoryCast: (on) => invoke("set_track_story_cast", { on }),
 
   holidayCountries: () => invoke("holiday_countries"),
   holidayOverview: (conversationId) => invoke("holiday_overview", { conversationId }),

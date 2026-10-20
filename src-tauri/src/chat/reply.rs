@@ -5,8 +5,7 @@
 use chrono::Duration;
 
 use crate::llm::{LlmRequest, LlmRole};
-use crate::models::{Character, WeatherCondition, WorldState};
-use crate::prompting::{emotion_tag, time_skip_tag};
+use crate::models::{Character, ClockSnapshot, WeatherCondition, WorldState};
 use crate::providers::{ProviderError, ProviderErrorKind};
 
 /// Renders an assembled request as a plain-text transcript for the "prompt sent to model" panel -
@@ -36,30 +35,44 @@ pub fn append_instruction(request: &mut LlmRequest, instruction: &str) {
     });
 }
 
-/// Strips a trailing `[emotion: x]` tag and validates it against the speaker's configured expression
-/// keys. Returns the text unchanged (and no emotion) when the speaker has no expression pack; the
-/// tag is still stripped when it doesn't match one of the keys, but no emotion is recorded.
-pub fn extract_matched_emotion(speaker: Option<&Character>, raw_text: &str) -> (String, Option<String>) {
-    let Some(character) = speaker.filter(|c| !c.expressions.is_empty()) else {
-        return (raw_text.to_string(), None);
-    };
-    let (clean, emotion) = emotion_tag::extract_and_strip(raw_text);
-    let matched = emotion.filter(|e| character.expressions.iter().any(|x| &x.emotion == e));
-    (clean, matched)
+/// Checks the emotion a reply's tag named against the speaker's configured expression keys: `None`
+/// when the speaker has no expression pack or the tag names an emotion they don't have.
+pub fn match_emotion(speaker: Option<&Character>, emotion: Option<String>) -> Option<String> {
+    let character = speaker.filter(|c| !c.expressions.is_empty())?;
+    emotion.filter(|e| character.expressions.iter().any(|x| &x.emotion == e))
 }
 
-/// Strips a trailing `[time-skip: ...]` tag and advances the world clock by the parsed duration, or
-/// by the configured per-message default when the tag is absent or unparseable. `roll` supplies
-/// uniform randomness in [0, 1) for weather drift, so tests can control it.
-pub fn advance_world_state(state: &WorldState, raw_text: &str, roll: &mut dyn FnMut() -> f64) -> (String, WorldState) {
-    let (clean, skip) = time_skip_tag::extract_and_strip(raw_text);
-    let elapsed = skip.unwrap_or_else(|| Duration::minutes(state.default_advance_minutes_per_message as i64));
+/// Advances the world clock by the reply's time-skip (held to the state's limit), or by the
+/// configured per-message default when the model gave none. Also returns the clock as it was, with
+/// what happened to it, for the message to keep. `roll` supplies uniform randomness in [0, 1) for
+/// weather drift, so tests can control it.
+pub fn advance_clock(state: &WorldState, skip: Option<Duration>, roll: &mut dyn FnMut() -> f64) -> (WorldState, ClockSnapshot) {
+    let mut report = ClockSnapshot::of(state);
+    let mut elapsed = match skip {
+        Some(skip) => skip,
+        None => {
+            report.estimated = true;
+            Duration::minutes(state.default_advance_minutes_per_message as i64)
+        }
+    };
+    if state.max_skip_minutes > 0 && elapsed > Duration::minutes(state.max_skip_minutes as i64) {
+        report.clamped_from = Some(elapsed.num_minutes());
+        elapsed = Duration::minutes(state.max_skip_minutes as i64);
+    }
 
     let mut next = state.clone();
     if let Some(moved) = next.fictional_date_time.checked_add_signed(elapsed) {
         next.fictional_date_time = moved;
+        report.advanced_minutes = elapsed.num_minutes();
     }
-    (clean, maybe_drift_weather(next, elapsed, roll))
+    (maybe_drift_weather(next, elapsed, roll), report)
+}
+
+/// Peels the tags off `raw_text` and advances the clock by its time-skip.
+#[cfg(test)]
+pub fn advance_world_state(state: &WorldState, raw_text: &str, roll: &mut dyn FnMut() -> f64) -> (String, WorldState) {
+    let (clean, tags) = crate::prompting::reply_tags::peel(raw_text);
+    (clean, advance_clock(state, tags.skip, roll).0)
 }
 
 /// Occasionally shifts the weather when auto-drift is enabled - roughly one roll per 3 in-story hours
@@ -217,16 +230,34 @@ mod tests {
     #[test]
     fn emotion_is_matched_only_against_the_speakers_own_keys() {
         let nova = speaker_with(&["happy", "sad"]);
-        assert_eq!(extract_matched_emotion(Some(&nova), "Hi! [emotion: Happy]"), ("Hi!".into(), Some("happy".into())));
-        // A tag for an emotion the character doesn't have is stripped but not recorded.
-        assert_eq!(extract_matched_emotion(Some(&nova), "Hi! [emotion: furious]"), ("Hi!".into(), None));
+        assert_eq!(match_emotion(Some(&nova), Some("happy".into())), Some("happy".into()));
+        // An emotion the character doesn't have is not recorded.
+        assert_eq!(match_emotion(Some(&nova), Some("furious".into())), None);
     }
 
     #[test]
-    fn no_expression_pack_means_the_text_is_untouched() {
+    fn no_expression_pack_means_no_emotion() {
         let plain = speaker_with(&[]);
-        assert_eq!(extract_matched_emotion(Some(&plain), "Hi [emotion: happy]"), ("Hi [emotion: happy]".into(), None));
-        assert_eq!(extract_matched_emotion(None, "Hi [emotion: happy]"), ("Hi [emotion: happy]".into(), None));
+        assert_eq!(match_emotion(Some(&plain), Some("happy".into())), None);
+        assert_eq!(match_emotion(None, Some("happy".into())), None);
+    }
+
+    #[test]
+    fn a_huge_jump_is_held_to_the_limit_and_reported() {
+        let (_, report) = advance_clock(&state(), Some(Duration::days(3)), &mut || 0.99);
+        assert_eq!(report.clamped_from, Some(3 * 24 * 60));
+        assert_eq!(report.advanced_minutes, 360, "the default limit is six hours");
+        let mut unlimited = state();
+        unlimited.max_skip_minutes = 0;
+        assert_eq!(advance_clock(&unlimited, Some(Duration::days(3)), &mut || 0.99).1.advanced_minutes, 3 * 24 * 60);
+    }
+
+    #[test]
+    fn a_missing_tag_is_reported_as_an_estimate() {
+        let (_, report) = advance_clock(&state(), None, &mut || 0.99);
+        assert!(report.estimated);
+        assert_eq!(report.advanced_minutes, 5);
+        assert_eq!(report.fictional_date_time, state().fictional_date_time, "the snapshot is the clock before");
     }
 
     fn state() -> WorldState {
@@ -268,6 +299,7 @@ mod tests {
     fn weather_stays_put_on_a_high_roll_and_long_skips_get_more_rolls() {
         let mut s = state();
         s.auto_drift_weather_enabled = true;
+        s.max_skip_minutes = 0;
         let mut calls = 0;
         advance_world_state(&s, "x [time-skip: 9 hours]", &mut || {
             calls += 1;

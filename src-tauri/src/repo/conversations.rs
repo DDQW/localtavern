@@ -42,6 +42,7 @@ fn map_message(row: &Row) -> rusqlite::Result<ChatMessage> {
         active_alternate_index: row.get("ActiveAlternateIndex")?,
         attachments: rows::blob(row, "AttachmentsJson")?,
         detected_emotion: row.get("DetectedEmotion")?,
+        clock: rows::opt_blob(row, "ClockJson")?,
         timestamp: rows::datetime(row, "Timestamp")?,
         usage: if prompt_tokens.is_none() && completion_tokens.is_none() && total_tokens.is_none() {
             None
@@ -194,8 +195,9 @@ pub fn add_message(conn: &Connection, m: &ChatMessage) -> Result<()> {
     conn.execute(
         "INSERT INTO ChatMessages
             (Id, ConversationId, Role, SpeakerCharacterId, Text, ReasoningText, RawPromptText, AlternatesJson,
-             ActiveAlternateIndex, AttachmentsJson, DetectedEmotion, Timestamp, PromptTokens, CompletionTokens, TotalTokens)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15);",
+             ActiveAlternateIndex, AttachmentsJson, DetectedEmotion, Timestamp, PromptTokens, CompletionTokens, TotalTokens,
+             ClockJson)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16);",
         params![
             m.id.to_string(),
             m.conversation_id.to_string(),
@@ -212,6 +214,7 @@ pub fn add_message(conn: &Connection, m: &ChatMessage) -> Result<()> {
             m.usage.and_then(|u| u.prompt_tokens),
             m.usage.and_then(|u| u.completion_tokens),
             m.usage.and_then(|u| u.total_tokens),
+            m.clock.as_ref().map(json::to_blob).transpose()?,
         ],
     )?;
     Ok(())
@@ -222,8 +225,8 @@ pub fn update_message(conn: &Connection, m: &ChatMessage) -> Result<()> {
     conn.execute(
         "UPDATE ChatMessages SET
             Text = ?1, ReasoningText = ?2, RawPromptText = ?3, AlternatesJson = ?4, ActiveAlternateIndex = ?5,
-            AttachmentsJson = ?6, DetectedEmotion = ?7
-         WHERE Id = ?8;",
+            AttachmentsJson = ?6, DetectedEmotion = ?7, ClockJson = ?8
+         WHERE Id = ?9;",
         params![
             m.effective_text(),
             m.reasoning_text,
@@ -232,6 +235,7 @@ pub fn update_message(conn: &Connection, m: &ChatMessage) -> Result<()> {
             m.active_alternate_index,
             json::to_blob(&m.attachments)?,
             m.detected_emotion,
+            m.clock.as_ref().map(json::to_blob).transpose()?,
             m.id.to_string(),
         ],
     )?;

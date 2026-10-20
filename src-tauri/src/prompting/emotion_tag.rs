@@ -18,6 +18,14 @@ Format: [emotion: <one of the list above>]. Always include it, never explain it.
     )
 }
 
+static ANY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\[\s*emotion\s*:\s*([a-zA-Z0-9_\- ]+?)\s*\]").unwrap());
+
+/// The emotion named by a tag anywhere in `tail` (the trailing tags peeled off a reply), lowercased.
+pub fn parse_tail(tail: &str) -> Option<String> {
+    ANY.captures(tail).map(|c| c[1].trim().to_lowercase()).filter(|e| !e.is_empty())
+}
+
 /// Strips a trailing `[emotion: xyz]` tag, returning the cleaned text and the lowercased emotion key.
 pub fn extract_and_strip(text: &str) -> (String, Option<String>) {
     let Some(caps) = TAG.captures(text) else {

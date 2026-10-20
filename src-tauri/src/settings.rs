@@ -180,6 +180,17 @@ pub fn set_last_story_country(conn: &Connection, country: &str) -> Result<()> {
     app_settings::set(conn, LAST_STORY_COUNTRY_KEY, country)
 }
 
+const TRACK_CAST_KEY: &str = "story.trackCast";
+
+/// Whether roleplay replies are scanned for newly introduced side characters (off unless switched on, since it is an extra request per reply).
+pub fn track_story_cast(conn: &Connection) -> Result<bool> {
+    Ok(app_settings::get(conn, TRACK_CAST_KEY)?.as_deref() == Some("1"))
+}
+
+pub fn set_track_story_cast(conn: &Connection, on: bool) -> Result<()> {
+    app_settings::set(conn, TRACK_CAST_KEY, if on { "1" } else { "0" })
+}
+
 // ---- last-selected provider/model and the model cache ----
 
 pub fn last_selected_provider(conn: &Connection) -> Result<Option<String>> {

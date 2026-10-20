@@ -26,6 +26,7 @@ import type {
   VastAiOptions,
   Persona,
   ProviderInfo,
+  StoryCharacter,
   Uuid,
 } from "./types";
 
@@ -166,6 +167,8 @@ const models: Record<string, string[]> = {
 
 const conversations: Conversation[] = [];
 const messages = new Map<Uuid, ChatMessage[]>();
+const storyCast = new Map<Uuid, StoryCharacter[]>();
+let trackCast = false;
 
 function message(conversationId: Uuid, role: ChatMessage["role"], text: string, extra: Partial<ChatMessage> = {}): ChatMessage {
   return {
@@ -230,6 +233,9 @@ function conversation(overrides: Partial<Conversation>): Conversation {
       regionCode: "DE-BY",
       customHolidays: [],
       outfits: {},
+      maxSkipMinutes: 360,
+      metersEnabled: false,
+      meters: {},
     },
   });
   messages.get(r.id)!.push(
@@ -612,6 +618,7 @@ export const mockApi: Api = {
       const i = list.findIndex((m) => m.id === messageId);
       if (i >= 0) list.splice(i, 1);
     }
+    return null;
   },
 
   async setConversationModel(id, providerId, model) {
@@ -769,6 +776,7 @@ export const mockApi: Api = {
     return {
       homeCountry: character.schedule?.homeCountry ?? null,
       homeRegion: character.schedule?.homeRegion ?? null,
+      storyStart: character.schedule?.storyStart ?? null,
       days: [work, work, work, work, work, off, off].map((d) => structuredClone(d)),
       holiday: structuredClone(off),
       observesHolidays: true,
@@ -783,6 +791,62 @@ export const mockApi: Api = {
       { countryCode: "JP", name: "Japan" },
       { countryCode: "US", name: "United States" },
     ];
+  },
+  async listStoryCast(id) {
+    return structuredClone(storyCast.get(id) ?? []);
+  },
+  async scanStoryCast(id) {
+    const list = storyCast.get(id) ?? [];
+    if (list.length === 0) {
+      const at = conversations.find((c) => c.id === id)?.worldState?.fictionalDateTime ?? null;
+      const base = { conversationId: id, introducedAt: at, introducedMessageId: null, createdAt: new Date().toISOString() };
+      list.push(
+        {
+          ...base,
+          id: uid(),
+          name: "Tom Becker",
+          age: 34,
+          role: "Bartender at the Anchor",
+          appearance:
+            "Tall and broad-shouldered with a thick red beard, green eyes and sun-weathered skin. He wears a faded apron over rolled-up flannel sleeves and speaks in a low, unhurried rumble.",
+          adultDetails: "",
+        },
+        {
+          ...base,
+          id: uid(),
+          name: "Lena Voss",
+          age: 27,
+          role: "Regular, works nights at the clinic",
+          appearance:
+            "Petite, about 1.60 m, with a dark bob, brown eyes and freckles across her nose. She wears scrubs under an oversized grey cardigan and is rarely without a travel mug.",
+          adultDetails: "Slim and toned with small, high breasts, a tattoo of a swallow on her left hip and a neatly trimmed landing strip.",
+        },
+      );
+      storyCast.set(id, list);
+    }
+    return structuredClone(list);
+  },
+  async saveStoryCharacter(character) {
+    const list = storyCast.get(character.conversationId) ?? [];
+    const saved = { ...character, name: character.name.trim() };
+    if (!saved.name) throw "A character needs a name.";
+    if (saved.age === null || saved.age < 18) saved.adultDetails = "";
+    const i = list.findIndex((c) => c.id === saved.id);
+    if (i >= 0) list[i] = saved;
+    else list.push(saved);
+    storyCast.set(character.conversationId, list);
+    return structuredClone(list);
+  },
+  async deleteStoryCharacter(conversationId, id) {
+    const list = (storyCast.get(conversationId) ?? []).filter((c) => c.id !== id);
+    storyCast.set(conversationId, list);
+    return structuredClone(list);
+  },
+  async getTrackStoryCast() {
+    return trackCast;
+  },
+  async setTrackStoryCast(on) {
+    trackCast = on;
   },
   async holidayOverview(id) {
     const ws = conversations.find((c) => c.id === id)?.worldState;
@@ -803,6 +867,7 @@ export const mockApi: Api = {
             .map((h) => ({ date, name: h.name, dayOff: true })),
         ),
       ].sort((a, b) => a.date.localeCompare(b.date)),
+      schoolBreaks: ws?.countryCode === "DE" && ws.regionCode ? [{ start: plus(3), end: plus(16), name: "Autumn Holidays", nationwide: false, regions: [ws.regionCode] }] : [],
     };
   },
 

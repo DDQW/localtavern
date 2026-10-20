@@ -63,6 +63,9 @@ pub struct ChatMessage {
     pub attachments: Vec<MessageAttachment>,
     /// Emotion detected in this reply when the speaking character has an expression pack.
     pub detected_emotion: Option<String>,
+    /// The story clock before this reply and what the reply did to it (roleplay replies).
+    #[serde(default)]
+    pub clock: Option<super::ClockSnapshot>,
     pub timestamp: DateTime<Utc>,
     pub usage: Option<LlmUsage>,
 }
@@ -81,6 +84,7 @@ impl ChatMessage {
             active_alternate_index: 0,
             attachments: Vec::new(),
             detected_emotion: None,
+            clock: None,
             timestamp: Utc::now(),
             usage: None,
         }

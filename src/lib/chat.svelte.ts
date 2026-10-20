@@ -14,6 +14,7 @@ import type {
   ToolApproval,
   UiMessage,
   Uuid,
+  StoryCharacter,
   WorldState,
 } from "./types";
 
@@ -59,6 +60,10 @@ class ChatStore {
   context = $state<ContextStatus | null>(null);
   /** Older messages are being summarized (by hand, or automatically before a reply). */
   compacting = $state(false);
+  /** Side characters this story has introduced (roleplay only). */
+  cast = $state<StoryCharacter[]>([]);
+  /** A scan of the recent story for new people is running. */
+  scanning = $state(false);
   /** The picture being made for this chat, if any. */
   picture = $state<PictureJob | null>(null);
 
@@ -109,6 +114,9 @@ class ChatStore {
     this.context = null;
     this.compacting = false;
     this.picture = null;
+    this.cast = [];
+    this.scanning = false;
+    void this.refreshCast();
     void this.refreshContext();
   }
 
@@ -150,6 +158,52 @@ class ChatStore {
   newChat() {
     if (!this.conversationId || this.busy) return Promise.resolve(false);
     return this.open(api.newChat(this.conversationId));
+  }
+
+  async refreshCast() {
+    const id = this.conversationId;
+    if (!id || !this.isRoleplay) return;
+    try {
+      const cast = await api.listStoryCast(id);
+      if (this.conversationId === id) this.cast = cast;
+    } catch {
+      /* the sidebar just stays empty */
+    }
+  }
+
+  /** Reads the latest stretch of the story for people it has introduced. */
+  async scanCast() {
+    const id = this.conversationId;
+    if (!id || this.scanning) return;
+    this.scanning = true;
+    try {
+      const cast = await api.scanStoryCast(id);
+      if (this.conversationId === id) this.cast = cast;
+    } catch (e) {
+      this.error = errorText(e);
+    } finally {
+      this.scanning = false;
+    }
+  }
+
+  async saveCastMember(character: StoryCharacter) {
+    try {
+      const cast = await api.saveStoryCharacter($state.snapshot(character));
+      if (this.conversationId === character.conversationId) this.cast = cast;
+    } catch (e) {
+      this.error = errorText(e);
+    }
+  }
+
+  async removeCastMember(id: string) {
+    const conversationId = this.conversationId;
+    if (!conversationId) return;
+    try {
+      const cast = await api.deleteStoryCharacter(conversationId, id);
+      if (this.conversationId === conversationId) this.cast = cast;
+    } catch (e) {
+      this.error = errorText(e);
+    }
   }
 
   async refreshContext() {
@@ -284,6 +338,9 @@ class ChatStore {
         break;
       case "worldStateChanged":
         if (this.session) this.session.conversation.worldState = event.worldState as WorldState;
+        break;
+      case "castChanged":
+        if (event.conversationId === this.conversationId) this.cast = event.cast;
         break;
       case "compacting":
         this.compacting = true;
@@ -442,8 +499,9 @@ class ChatStore {
   async remove(message: UiMessage) {
     try {
       // A picture's file goes with it.
-      await (message.role === "image" ? api.deletePicture(message.id) : api.deleteMessage(message.id));
+      const rewound = await (message.role === "image" ? api.deletePicture(message.id) : api.deleteMessage(message.id));
       this.messages = this.messages.filter((m) => m.id !== message.id);
+      if (rewound && this.session) this.session.conversation.worldState = rewound as WorldState;
       void this.refreshContext();
     } catch (e) {
       this.error = errorText(e);

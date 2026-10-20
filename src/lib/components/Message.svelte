@@ -22,7 +22,22 @@
   }
   const swipeLabel = $derived(`${message.activeAlternateIndex + 1}/${Math.max(message.alternates.length, 1)}`);
   const canSwipePrevious = $derived(message.activeAlternateIndex > 0);
-  const waiting = $derived(message.streaming && message.text.length === 0 && !message.reasoningText);
+  const waiting = $derived(message.streaming && message.text.length === 0);
+  const clock = $derived(message.clock && message.clock.advancedMinutes > 0 ? message.clock : null);
+  const clockLabel = $derived.by(() => {
+    const m = clock?.advancedMinutes ?? 0;
+    const text = m >= 1440 ? `${+(m / 1440).toFixed(1)} d` : m >= 60 ? `${+(m / 60).toFixed(1)} h` : `${m} min`;
+    return `+${text}`;
+  });
+  const clockHint = $derived(
+    !clock
+      ? ""
+      : clock.clampedFrom
+        ? `The model asked for ${clock.clampedFrom} minutes; held to the limit`
+        : clock.estimated
+          ? "The reply gave no time, so the per-message default was used"
+          : "Story time this reply covered, as estimated by the model",
+  );
 
   let copied = $state(false);
   async function copy() {
@@ -64,10 +79,11 @@
       <strong>{speaker.name}</strong>
       {#if isPicture && message.speakerCharacterId}<span class="muted tokens">picture</span>{/if}
       {#if message.usage?.totalTokens}<span class="muted tokens">{message.usage.totalTokens} tokens</span>{/if}
+      {#if clock}<span class="muted tokens" title={clockHint}>⏱ {clockLabel}{clock.clampedFrom ? " (capped)" : clock.estimated ? " (default)" : ""}</span>{/if}
     </div>
 
     {#if message.reasoningText}
-      <details class="fold" open={message.streaming && message.text.length === 0}>
+      <details class="fold">
         <summary>Reasoning</summary>
         <div class="plain muted">{message.reasoningText}</div>
       </details>

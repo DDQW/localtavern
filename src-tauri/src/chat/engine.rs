@@ -20,31 +20,29 @@ use uuid::Uuid;
 use super::authoring;
 use super::compaction::{self, ContextStatus, Names};
 use super::events::{ChatEvent, EventSink};
-use super::extraction::{Exchange, Extractor};
+use super::extraction::{Exchange, Extractor, StoryExchange};
 use super::images;
-use super::reply::{
-    advance_world_state, append_instruction, check_blocked, extract_matched_emotion, format_prompt, random_unit,
-    user_message,
-};
+use super::reply::{advance_clock, append_instruction, check_blocked, format_prompt, match_emotion, random_unit, user_message};
 use super::session::{self, build_session, load_reply_context, ChatSession, ReplyContext};
 use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::group_chats::strategy_for;
-use crate::holidays::{self, Country, DatedHoliday, HolidaySource};
+use crate::holidays::{self, Country, DatedHoliday, HolidaySource, SchoolBreak};
 use crate::llm::{LlmMessage, LlmRequest, LlmRole};
 use crate::models::{
-    Character, ChatMessage, Conversation, ConversationMode, ConversationSummary, LlmUsage, MessageAttachment, MessageRole, Persona,
-    PromptBlockType, PromptPreset, Schedule, WorldInfoEntry, WorldState,
+    Character, ChatMessage, ClockSnapshot, Conversation, ConversationMode, ConversationSummary, LlmUsage, MessageAttachment, MessageRole, Persona,
+    PromptBlockType, PromptPreset, Schedule, StoryCharacter, WorldInfoEntry, WorldState,
 };
 use crate::powershell::exec::{CommandRunner, ExecError, ExecutionResult, Pwsh};
 use crate::powershell::filter::ToolCallFilter;
 use crate::powershell::settings as tool_settings;
 use crate::prompting::powershell_tool::{self, PowerShellToolCallRequest, ToolResult};
+use crate::prompting::reply_tags::{self, ReplyTags};
 use crate::prompting::{
-    self, emotion_tag, roles, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext,
+    self, emotion_tag, meter_tag, roles, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext,
 };
 use crate::providers::{LlmGeneratedImage, LlmProviderRegistry, ProviderError};
-use crate::repo::{characters, conversations, group_chats, summaries, user_memories};
+use crate::repo::{characters, conversations, group_chats, story_characters, summaries, user_memories};
 use crate::settings;
 
 #[path = "pictures.rs"]
@@ -70,6 +68,8 @@ struct Inner {
     holidays: Mutex<Option<Arc<dyn HolidaySource>>>,
     /// "CC.year" lookups currently running, so one miss doesn't start several fetches.
     holiday_fetches: Mutex<std::collections::HashSet<String>>,
+    /// The running side-character scan per conversation; a new reply cancels it so the two never queue behind each other.
+    cast_tasks: Mutex<HashMap<Uuid, tokio::task::AbortHandle>>,
 }
 
 /// The user's answer to a tool-call approval request.
@@ -224,24 +224,43 @@ pub struct HolidayOverview {
     pub regions: Vec<String>,
     /// From the story date to two weeks after.
     pub holidays: Vec<DatedHoliday>,
+    /// School holidays (Schulferien) in the next two weeks where the story is set.
+    pub school_breaks: Vec<SchoolBreak>,
+}
+
+/// Where and when a new roleplay begins.
+struct StorySetting {
+    country_code: Option<String>,
+    region_code: Option<String>,
+    start: Option<chrono::NaiveDateTime>,
 }
 
 /// Where a new roleplay is set: the character's home (in a group, the first member with one),
-/// else the country last picked for any story.
-fn default_setting(conn: &Connection, conversation: &Conversation) -> Result<(Option<String>, Option<String>)> {
+/// else the country last picked for any story. It begins at the first cast member's story start,
+/// if any has one.
+fn default_setting(conn: &Connection, conversation: &Conversation) -> Result<StorySetting> {
     let cast: Vec<Uuid> = match (conversation.character_id, conversation.group_chat_id) {
         (Some(id), _) => vec![id],
         (None, Some(group)) => group_chats::get(conn, group)?.map(|g| g.character_ids).unwrap_or_default(),
         _ => Vec::new(),
     };
+    let mut start = None;
+    let mut home = None;
     for id in cast {
         if let Some(schedule) = characters::get(conn, id)?.and_then(|c| c.schedule) {
-            if let Some(country) = schedule.home_country.filter(|c| !c.trim().is_empty()) {
-                return Ok((Some(country), schedule.home_region.filter(|r| !r.trim().is_empty())));
+            start = start.or(schedule.story_start);
+            if home.is_none() {
+                if let Some(country) = schedule.home_country.filter(|c| !c.trim().is_empty()) {
+                    home = Some((country, schedule.home_region.filter(|r| !r.trim().is_empty())));
+                }
             }
         }
     }
-    Ok((settings::last_story_country(conn)?, None))
+    let (country_code, region_code) = match home {
+        Some((country, region)) => (Some(country), region),
+        None => (settings::last_story_country(conn)?, None),
+    };
+    Ok(StorySetting { country_code, region_code, start })
 }
 
 impl ChatEngine {
@@ -252,6 +271,7 @@ impl ChatEngine {
                 approvals: Mutex::new(HashMap::new()),
                 holidays: Mutex::new(None),
                 holiday_fetches: Mutex::new(Default::default()),
+                cast_tasks: Mutex::new(HashMap::new()),
             }) }
     }
 
@@ -280,8 +300,15 @@ impl ChatEngine {
             // A roleplay always has an in-story clock: the first time one is opened it gets the default.
             if let Some(conversation) = conversations::get(c, conversation_id)? {
                 if conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_none() {
-                    let (country_code, region_code) = default_setting(c, &conversation)?;
-                    let state = WorldState { country_code, region_code, ..WorldState::create_default() };
+                    let setting = default_setting(c, &conversation)?;
+                    let mut state = WorldState {
+                        country_code: setting.country_code,
+                        region_code: setting.region_code,
+                        ..WorldState::create_default()
+                    };
+                    if let Some(start) = setting.start {
+                        state.fictional_date_time = start;
+                    }
                     conversations::update_world_state(c, conversation_id, Some(&state))?;
                 }
             }
@@ -583,17 +610,28 @@ present, keep it as its own final paragraph, still naming whose details they are
         let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
         for &year in years {
             let missing = self.db().with(|c| holidays::cached_holidays(c, country, year)).map(|h| h.is_none()).unwrap_or(false);
+            let school_missing =
+                self.db().with(|c| holidays::cached_school_breaks(c, country, year)).map(|h| h.is_none()).unwrap_or(false);
             let key = format!("{country}.{year}");
-            if !missing || !self.inner.holiday_fetches.lock().unwrap().insert(key.clone()) {
+            if !(missing || school_missing) || !self.inner.holiday_fetches.lock().unwrap().insert(key.clone()) {
                 continue;
             }
             let (engine, source, country) = (self.clone(), source.clone(), country.to_string());
             runtime.spawn(async move {
-                let fetched = source.public_holidays(&country, year).await;
-                if let Err(e) = &fetched {
-                    eprintln!("holidays for {country} {year}: {e}");
+                if missing {
+                    let fetched = source.public_holidays(&country, year).await;
+                    if let Err(e) = &fetched {
+                        eprintln!("holidays for {country} {year}: {e}");
+                    }
+                    let _ = engine.db().with(|c| holidays::store_holidays(c, &country, year, &fetched));
                 }
-                let _ = engine.db().with(|c| holidays::store_holidays(c, &country, year, &fetched));
+                if school_missing {
+                    let fetched = source.school_holidays(&country, year).await;
+                    if let Err(e) = &fetched {
+                        eprintln!("school holidays for {country} {year}: {e}");
+                    }
+                    let _ = engine.db().with(|c| holidays::store_school_breaks(c, &country, year, &fetched));
+                }
                 engine.inner.holiday_fetches.lock().unwrap().remove(&key);
             });
         }
@@ -603,14 +641,20 @@ present, keep it as its own final paragraph, still naming whose details they are
     async fn ensure_holidays(&self, country: &str, years: &[i32]) {
         let Some(source) = self.inner.holidays.lock().unwrap().clone() else { return };
         for &year in years {
-            if self.db().with(|c| holidays::cached_holidays(c, country, year)).ok().flatten().is_some() {
-                continue;
+            if self.db().with(|c| holidays::cached_holidays(c, country, year)).ok().flatten().is_none() {
+                let fetched = match tokio::time::timeout(Duration::from_secs(8), source.public_holidays(country, year)).await {
+                    Ok(result) => result,
+                    Err(_) => Err("The holiday service took too long.".into()),
+                };
+                let _ = self.db().with(|c| holidays::store_holidays(c, country, year, &fetched));
             }
-            let fetched = match tokio::time::timeout(Duration::from_secs(8), source.public_holidays(country, year)).await {
-                Ok(result) => result,
-                Err(_) => Err("The holiday service took too long.".into()),
-            };
-            let _ = self.db().with(|c| holidays::store_holidays(c, country, year, &fetched));
+            if self.db().with(|c| holidays::cached_school_breaks(c, country, year)).ok().flatten().is_none() {
+                let fetched = match tokio::time::timeout(Duration::from_secs(8), source.school_holidays(country, year)).await {
+                    Ok(result) => result,
+                    Err(_) => Err("The school holiday service took too long.".into()),
+                };
+                let _ = self.db().with(|c| holidays::store_school_breaks(c, country, year, &fetched));
+            }
         }
     }
 
@@ -654,7 +698,9 @@ present, keep it as its own final paragraph, still naming whose details they are
                 None => Vec::new(),
             };
             let country_name = state.country_code.as_deref().map(|cc| holidays::country_name(c, cc)).transpose()?;
-            Ok(HolidayOverview { country_name, regions, holidays })
+            let school_breaks =
+                holidays::school_breaks_between(c, state.country_code.as_deref(), state.region_code.as_deref(), today, until)?;
+            Ok(HolidayOverview { country_name, regions, holidays, school_breaks })
         })
     }
 
@@ -673,8 +719,29 @@ present, keep it as its own final paragraph, still naming whose details they are
         })
     }
 
-    pub fn delete_message(&self, message_id: Uuid) -> Result<()> {
-        self.db().with(|c| conversations::delete_message(c, message_id))
+    /// Deletes a message. When it is the latest reply that moved the story clock, the clock (and
+    /// meters) go back to before it; the restored state is returned so the UI can show it.
+    pub fn delete_message(&self, message_id: Uuid) -> Result<Option<WorldState>> {
+        self.db().with(|c| {
+            let mut restored = None;
+            if let Some(message) = conversations::get_message(c, message_id)? {
+                if let Some(clock) = &message.clock {
+                    let later_clock = conversations::get_messages(c, message.conversation_id)?
+                        .iter()
+                        .skip_while(|m| m.id != message_id)
+                        .skip(1)
+                        .any(|m| m.clock.is_some());
+                    let state = conversations::get(c, message.conversation_id)?.and_then(|conv| conv.world_state);
+                    if let (false, Some(mut state)) = (later_clock, state) {
+                        clock.restore(&mut state);
+                        conversations::update_world_state(c, message.conversation_id, Some(&state))?;
+                        restored = Some(state);
+                    }
+                }
+            }
+            conversations::delete_message(c, message_id)?;
+            Ok(restored)
+        })
     }
 
     pub fn swipe_previous(&self, message_id: Uuid) -> Result<ChatMessage> {
@@ -815,12 +882,13 @@ present, keep it as its own final paragraph, still naming whose details they are
         }
 
         let reply_text = target.text.clone();
+        let target_id = target.id;
         // Also restores the original text on the UI after a failure.
         sink.emit(ChatEvent::MessageUpdated { message: target });
         match end {
             StreamEnd::Failed(error) => self.emit_failure(&error, &sink),
             // The clock is not advanced again (same exchange), but the added text may still matter.
-            StreamEnd::Completed => self.spawn_enrichment(&ctx, last_user_text(&ctx.messages), reply_text),
+            StreamEnd::Completed => self.spawn_enrichment(&ctx, last_user_text(&ctx.messages), reply_text, target_id, sink.clone()),
             StreamEnd::Cancelled | StreamEnd::ToolCall(_) => {}
         }
         Ok(())
@@ -1031,6 +1099,9 @@ present, keep it as its own final paragraph, still naming whose details they are
         Fut: Future<Output = Result<()>>,
     {
         let (token, guard) = self.claim(conversation_id)?;
+        if let Some(scan) = self.inner.cast_tasks.lock().unwrap().remove(&conversation_id) {
+            scan.abort();
+        }
         let result = operation(token).await;
         drop(guard);
 
@@ -1107,9 +1178,11 @@ present, keep it as its own final paragraph, still naming whose details they are
             let years: Vec<i32> = (chrono::Datelike::year(&from)..=chrono::Datelike::year(&to)).collect();
             self.prefetch_holidays(country, &years);
         }
-        let (holidays, place) = self.db().with(|c| {
+        let (holidays, school, place) = self.db().with(|c| {
             let holidays =
                 holidays::holidays_between(c, country, state.region_code.as_deref(), &state.custom_holidays, from, to)?;
+            let school =
+                holidays::school_breaks_between(c, country, state.region_code.as_deref(), today, today + chrono::Days::new(14))?;
             let place = match country {
                 Some(cc) => {
                     let name = holidays::country_name(c, cc)?;
@@ -1120,7 +1193,7 @@ present, keep it as its own final paragraph, still naming whose details they are
                 }
                 None => None,
             };
-            Ok((holidays, place))
+            Ok((holidays, school, place))
         })?;
         let birthdays = ctx
             .characters
@@ -1133,7 +1206,12 @@ present, keep it as its own final paragraph, still naming whose details they are
             .iter()
             .filter_map(|c| c.schedule.as_ref().filter(|s| !s.is_empty()).map(|s| (c.name.as_str(), s)))
             .collect();
-        Ok(world_state::WorldFacts { birthdays, place, holidays, schedules })
+        let meters = if state.meters_enabled {
+            ctx.characters.iter().map(|c| (c.name.as_str(), state.meters.get(&c.id).copied().unwrap_or_default())).collect()
+        } else {
+            Vec::new()
+        };
+        Ok(world_state::WorldFacts { birthdays, place, holidays, school, schedules, meters })
     }
 
     /// Builds the provider request for a turn: assembled prompt plus the per-turn instructions
@@ -1193,6 +1271,10 @@ present, keep it as its own final paragraph, still naming whose details they are
         }
         if options.reply_tags && conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_some() {
             append_instruction(&mut request, time_skip_tag::build_instruction());
+            let tracking = conversation.world_state.as_ref().is_some_and(|w| w.meters_enabled);
+            if let (true, Some(owner)) = (tracking, options.speaker.or(ctx.characters.first())) {
+                append_instruction(&mut request, &meter_tag::build_instruction(&owner.name));
+            }
         }
         Ok(request)
     }
@@ -1315,15 +1397,32 @@ present, keep it as its own final paragraph, still naming whose details they are
             .collect()
     }
 
-    /// Strips the time-skip tag and, in a roleplay with a world clock, advances and persists it.
-    fn apply_world_clock(&self, ctx: &ReplyContext, raw_text: String, sink: &Arc<dyn EventSink>) -> Result<String> {
-        let Some(state) = ctx.conversation.world_state.as_ref().filter(|_| ctx.conversation.mode == ConversationMode::Roleplay) else {
-            return Ok(raw_text);
+    /// Peels the trailing tags off a finished reply. In a roleplay with a world clock they also move
+    /// it (and the speaker's meters) and the result is persisted. The text comes back without the
+    /// tags, along with what they said and the clock as it was (for the message to keep); `advance`
+    /// false only peels, for a reply that must not move the clock.
+    fn apply_reply_tags(
+        &self,
+        ctx: &ReplyContext,
+        raw_text: String,
+        owner: Option<Uuid>,
+        advance: bool,
+        sink: &Arc<dyn EventSink>,
+    ) -> Result<(String, ReplyTags, Option<ClockSnapshot>)> {
+        if ctx.conversation.mode != ConversationMode::Roleplay {
+            return Ok((raw_text, ReplyTags::default(), None));
+        }
+        let (clean, tags) = reply_tags::peel(&raw_text);
+        let Some(state) = ctx.conversation.world_state.as_ref().filter(|_| advance) else {
+            return Ok((clean, tags, None));
         };
-        let (clean, next) = advance_world_state(state, &raw_text, &mut random_unit);
+        let (mut next, report) = advance_clock(state, tags.skip, &mut random_unit);
+        if let (true, Some(owner), Some(reading)) = (state.meters_enabled, owner, tags.meters) {
+            next.meters.entry(owner).or_default().apply(reading.arousal, reading.climax);
+        }
         self.db().with(|c| conversations::update_world_state(c, ctx.conversation.id, Some(&next)))?;
         sink.emit(ChatEvent::WorldStateChanged { conversation_id: ctx.conversation.id, world_state: next });
-        Ok(clean)
+        Ok((clean, tags, Some(report)))
     }
 
     fn emit_failure(&self, error: &ProviderError, sink: &Arc<dyn EventSink>) {
@@ -1392,10 +1491,11 @@ present, keep it as its own final paragraph, still naming whose details they are
         let succeeded = matches!(end, StreamEnd::Completed);
         if succeeded {
             message.usage = usage;
-            let after_clock = self.apply_world_clock(&ctx, text, sink)?;
-            let (clean, emotion) = extract_matched_emotion(speaker.as_ref(), &after_clock);
+            let owner = speaker_id.or(ctx.conversation.character_id);
+            let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, owner, true, sink)?;
             message.text = clean;
-            message.detected_emotion = emotion;
+            message.detected_emotion = match_emotion(speaker.as_ref(), tags.emotion);
+            message.clock = clock;
         } else if matches!(end, StreamEnd::ToolCall(_)) {
             // Keep what the user saw (everything before the tag); the tag itself is never stored.
             message.text = shown_text;
@@ -1425,7 +1525,7 @@ present, keep it as its own final paragraph, still naming whose details they are
             StreamEnd::Cancelled => Ok(Turn::Done(false)),
             StreamEnd::ToolCall(call) => Ok(Turn::ToolCall(call)),
             StreamEnd::Completed => {
-                self.spawn_enrichment(&ctx, last_user_text(&ctx.messages), message.text.clone());
+                self.spawn_enrichment(&ctx, last_user_text(&ctx.messages), message.text.clone(), message.id, sink.clone());
                 // Only the conversation's very first exchange gets auto-titled.
                 if ctx.conversation.mode == ConversationMode::Assistant && ctx.messages.len() == 1 {
                     let user_text = ctx.messages.last().map(|m| m.text.clone()).unwrap_or_default();
@@ -1546,7 +1646,7 @@ present, keep it as its own final paragraph, still naming whose details they are
         sink: Arc<dyn EventSink>,
         token: CancellationToken,
     ) -> Result<()> {
-        let ctx = self.db().with(|c| load_reply_context(c, conversation_id))?;
+        let mut ctx = self.db().with(|c| load_reply_context(c, conversation_id))?;
         let position = ctx
             .messages
             .iter()
@@ -1561,6 +1661,13 @@ present, keep it as its own final paragraph, still naming whose details they are
         }
 
         let speaker = target.speaker_character_id.and_then(|id| ctx.characters.iter().find(|c| c.id == id)).cloned();
+        // The new reply replaces the old one, so the story clock starts again from before it - but
+        // only for the latest reply that moved it. An older one (or one from before the clock was
+        // recorded) leaves the clock alone: that time has already passed.
+        let moves_clock = target.clock.is_some() && ctx.messages[position + 1..].iter().all(|m| m.clock.is_none());
+        if let (true, Some(clock), Some(state)) = (moves_clock, &target.clock, ctx.conversation.world_state.as_mut()) {
+            clock.restore(state);
+        }
         let request = self.assemble(
             &ctx,
             &ctx.messages[..position],
@@ -1576,10 +1683,13 @@ present, keep it as its own final paragraph, still naming whose details they are
         let reasoning = nonempty(reasoning);
         if succeeded {
             target.usage = usage;
-            let after_clock = self.apply_world_clock(&ctx, text, &sink)?;
-            let (clean, emotion) = extract_matched_emotion(speaker.as_ref(), &after_clock);
+            let owner = target.speaker_character_id.or(ctx.conversation.character_id);
+            let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, owner, moves_clock, &sink)?;
             target.add_alternate(clean, reasoning, Some(raw_prompt));
-            target.detected_emotion = emotion;
+            target.detected_emotion = match_emotion(speaker.as_ref(), tags.emotion);
+            if moves_clock {
+                target.clock = clock;
+            }
             if !generated.is_empty() {
                 target.attachments = self.save_generated_images(&generated);
             }
@@ -1591,40 +1701,154 @@ present, keep it as its own final paragraph, still naming whose details they are
 
         self.db().with(|c| conversations::update_message(c, &target))?;
         let reply_text = target.text.clone();
+        let target_id = target.id;
         // Also restores the original text on the UI when nothing new arrived.
         sink.emit(ChatEvent::MessageUpdated { message: target });
 
         match end {
             StreamEnd::Failed(error) => self.emit_failure(&error, &sink),
             StreamEnd::Completed => {
-                self.spawn_enrichment(&ctx, last_user_text(&ctx.messages[..position]), reply_text);
+                self.spawn_enrichment(&ctx, last_user_text(&ctx.messages[..position]), reply_text, target_id, sink.clone());
             }
             StreamEnd::Cancelled | StreamEnd::ToolCall(_) => {}
         }
         Ok(())
     }
 
-    /// Fire-and-forget follow-up request once an Assistant reply has completed: learns durable facts
-    /// about the user. Failures are dropped - the reply itself already succeeded.
-    fn spawn_enrichment(&self, ctx: &ReplyContext, user_text: String, reply_text: String) {
-        if ctx.conversation.mode != ConversationMode::Assistant
-            || !self.inner.extraction.load(Ordering::Relaxed)
-            || user_text.trim().is_empty()
-        {
+    /// Fire-and-forget follow-up request once a reply has completed. Assistant chats learn durable
+    /// facts about the user; roleplays note the side characters the story has introduced.
+    /// Failures are dropped - the reply itself already succeeded.
+    fn spawn_enrichment(&self, ctx: &ReplyContext, user_text: String, reply_text: String, message_id: Uuid, sink: Arc<dyn EventSink>) {
+        if !self.inner.extraction.load(Ordering::Relaxed) {
             return;
         }
+        match ctx.conversation.mode {
+            ConversationMode::Assistant if !user_text.trim().is_empty() => {
+                let engine = self.clone();
+                let conversation = ctx.conversation.clone();
+                tokio::spawn(async move {
+                    let extractor = Extractor {
+                        db: engine.db(),
+                        providers: &engine.inner.providers,
+                        provider_id: &conversation.provider_id,
+                        model: &conversation.model,
+                    };
+                    let exchange = Exchange { user_text: &user_text, reply_text: &reply_text };
+                    report("memory extraction", extractor.memories(&exchange).await);
+                });
+            }
+            ConversationMode::Roleplay => {
+                if !self.db().with(settings::track_story_cast).unwrap_or(false) {
+                    return;
+                }
+                let mut main_names: Vec<String> = ctx.characters.iter().map(|c| c.name.clone()).collect();
+                main_names.extend(ctx.persona.iter().map(|p| p.name.clone()));
+                let story_time = ctx.conversation.world_state.as_ref().map(|w| w.fictional_date_time);
+                self.spawn_story_cast(ctx.conversation.clone(), user_text, reply_text, message_id, story_time, main_names, sink);
+            }
+            _ => {}
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_story_cast(
+        &self,
+        conversation: Conversation,
+        user_text: String,
+        reply_text: String,
+        message_id: Uuid,
+        story_time: Option<chrono::NaiveDateTime>,
+        main_names: Vec<String>,
+        sink: Arc<dyn EventSink>,
+    ) {
         let engine = self.clone();
-        let conversation = ctx.conversation.clone();
-        tokio::spawn(async move {
+        let conversation_id = conversation.id;
+        let task = tokio::spawn(async move {
             let extractor = Extractor {
                 db: engine.db(),
                 providers: &engine.inner.providers,
                 provider_id: &conversation.provider_id,
                 model: &conversation.model,
             };
-            let exchange = Exchange { user_text: &user_text, reply_text: &reply_text };
-            report("memory extraction", extractor.memories(&exchange).await);
+            let exchange = StoryExchange {
+                conversation_id: conversation.id,
+                user_text: &user_text,
+                reply_text: &reply_text,
+                story_time,
+                message_id,
+                main_names,
+            };
+            match extractor.story_cast(&exchange).await {
+                Ok(Some(cast)) => sink.emit(ChatEvent::CastChanged { conversation_id: conversation.id, cast }),
+                Ok(None) => {}
+                Err(error) => report("story cast tracking", Err(error)),
+            }
         });
+        if let Some(old) = self.inner.cast_tasks.lock().unwrap().insert(conversation_id, task.abort_handle()) {
+            old.abort();
+        }
+    }
+
+    /// Reads the latest stretch of the story again for side characters (the sidebar's "Scan"
+    /// button) and returns the whole cast.
+    pub async fn scan_story_cast(&self, conversation_id: Uuid) -> Result<Vec<StoryCharacter>> {
+        let ctx = self.db().with(|c| load_reply_context(c, conversation_id))?;
+        if ctx.conversation.mode != ConversationMode::Roleplay {
+            return Err(Error::Other("Only roleplays have a cast list.".into()));
+        }
+        let skip = ctx.messages.len().saturating_sub(8);
+        let recent = &ctx.messages[skip..];
+        let Some(last) = recent.last() else { return self.story_cast(conversation_id) };
+        let transcript = recent.iter().map(|m| m.text.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n\n");
+        let mut main_names: Vec<String> = ctx.characters.iter().map(|c| c.name.clone()).collect();
+        main_names.extend(ctx.persona.iter().map(|p| p.name.clone()));
+        let story_time = ctx.conversation.world_state.as_ref().map(|w| w.fictional_date_time);
+        let extractor = Extractor {
+            db: self.db(),
+            providers: &self.inner.providers,
+            provider_id: &ctx.conversation.provider_id,
+            model: &ctx.conversation.model,
+        };
+        let exchange = StoryExchange {
+            conversation_id,
+            user_text: "(see the story below)",
+            reply_text: &transcript,
+            story_time,
+            message_id: last.id,
+            main_names,
+        };
+        extractor.story_cast(&exchange).await?;
+        self.story_cast(conversation_id)
+    }
+
+    pub fn story_cast(&self, conversation_id: Uuid) -> Result<Vec<StoryCharacter>> {
+        self.db().with(|c| story_characters::for_conversation(c, conversation_id))
+    }
+
+    pub fn save_story_character(&self, mut character: StoryCharacter) -> Result<Vec<StoryCharacter>> {
+        character.enforce_rules();
+        if character.name.is_empty() {
+            return Err(Error::Other("A character needs a name.".into()));
+        }
+        self.db().with(|c| {
+            story_characters::upsert(c, &character)?;
+            story_characters::for_conversation(c, character.conversation_id)
+        })
+    }
+
+    pub fn delete_story_character(&self, conversation_id: Uuid, id: Uuid) -> Result<Vec<StoryCharacter>> {
+        self.db().with(|c| {
+            story_characters::delete(c, id)?;
+            story_characters::for_conversation(c, conversation_id)
+        })
+    }
+
+    pub fn track_story_cast(&self) -> Result<bool> {
+        self.db().with(settings::track_story_cast)
+    }
+
+    pub fn set_track_story_cast(&self, on: bool) -> Result<()> {
+        self.db().with(|c| settings::set_track_story_cast(c, on))
     }
 
     /// Best-effort background enrichment after a conversation's first exchange: asks the model for a

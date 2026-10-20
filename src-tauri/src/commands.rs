@@ -20,7 +20,7 @@ use crate::error::{Error, Result};
 use crate::models::{
     Appearance, Schedule, WorldInfoEntry,
     Character, ChatMessage, Conversation, ExpressionImage, GroupChat, Lorebook, Persona, PromptPreset, UserMemory,
-    WorldState,
+    StoryCharacter, WorldState,
 };
 use crate::powershell::settings::{self as tool_settings, PowerShellToolOptions};
 use crate::providers::gemini::GeminiRequestOptions;
@@ -265,7 +265,7 @@ pub fn edit_message(state: State<'_, AppState>, message_id: Uuid, text: String) 
 }
 
 #[tauri::command]
-pub fn delete_message(state: State<'_, AppState>, message_id: Uuid) -> Result<()> {
+pub fn delete_message(state: State<'_, AppState>, message_id: Uuid) -> Result<Option<WorldState>> {
     state.engine.delete_message(message_id)
 }
 
@@ -304,6 +304,37 @@ pub fn set_assistant_prompt(state: State<'_, AppState>, conversation_id: Uuid, t
 #[tauri::command]
 pub async fn set_world_state(state: State<'_, AppState>, conversation_id: Uuid, world_state: WorldState) -> Result<WorldState> {
     state.engine.set_world_state(conversation_id, world_state)
+}
+
+#[tauri::command]
+pub fn list_story_cast(state: State<'_, AppState>, conversation_id: Uuid) -> Result<Vec<StoryCharacter>> {
+    state.engine.story_cast(conversation_id)
+}
+
+#[tauri::command]
+pub async fn scan_story_cast(state: State<'_, AppState>, conversation_id: Uuid) -> Result<Vec<StoryCharacter>> {
+    let engine = state.engine.clone();
+    engine.scan_story_cast(conversation_id).await
+}
+
+#[tauri::command]
+pub fn save_story_character(state: State<'_, AppState>, character: StoryCharacter) -> Result<Vec<StoryCharacter>> {
+    state.engine.save_story_character(character)
+}
+
+#[tauri::command]
+pub fn delete_story_character(state: State<'_, AppState>, conversation_id: Uuid, id: Uuid) -> Result<Vec<StoryCharacter>> {
+    state.engine.delete_story_character(conversation_id, id)
+}
+
+#[tauri::command]
+pub fn get_track_story_cast(state: State<'_, AppState>) -> Result<bool> {
+    state.engine.track_story_cast()
+}
+
+#[tauri::command]
+pub fn set_track_story_cast(state: State<'_, AppState>, on: bool) -> Result<()> {
+    state.engine.set_track_story_cast(on)
 }
 
 #[tauri::command]

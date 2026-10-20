@@ -26,6 +26,7 @@ pub mod misc;
 pub mod persona;
 pub mod prompt_preset;
 pub mod schedule;
+pub mod story_character;
 
 pub use appearance::*;
 pub use character::*;
@@ -37,3 +38,4 @@ pub use misc::*;
 pub use persona::*;
 pub use prompt_preset::*;
 pub use schedule::*;
+pub use story_character::*;

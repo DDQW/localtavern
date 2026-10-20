@@ -1,6 +1,6 @@
 [package]
 name = "localtavern"
-version = "0.2.1"
+version = "0.2.3"
 description = "LocalTavern - local-first AI character chat"
 authors = ["Dominik Wölki"]
 edition = "2021"

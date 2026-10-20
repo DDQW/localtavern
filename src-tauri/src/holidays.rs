@@ -1,5 +1,5 @@
 //! Public holidays for the country a roleplay is set in, from the free Nager.Date service
-//! (`date.nager.at`), cached in AppSettings so each country/year is fetched once. Lookups never
+//! (`date.nager.at`), and school holidays (Schulferien) from OpenHolidays (`openholidaysapi.org`), cached in AppSettings so each country/year is fetched once. Lookups never
 //! block or fail a reply: a miss just means no holidays until the background fetch lands.
 
 use std::time::Duration;
@@ -60,25 +60,87 @@ pub struct DatedHoliday {
     pub day_off: bool,
 }
 
+/// A stretch of school holidays (Schulferien), e.g. "Autumn Holidays" 5-17 October in Hesse.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchoolBreak {
+    pub start: NaiveDate,
+    pub end: NaiveDate,
+    pub name: String,
+    #[serde(default)]
+    pub nationwide: bool,
+    /// Region codes it applies to (e.g. "DE-HE") when not nationwide.
+    #[serde(default)]
+    pub regions: Vec<String>,
+}
+
+impl SchoolBreak {
+    /// Whether it applies where the story is set. Dates differ by region, so one needs a match.
+    pub fn applies_in(&self, region: Option<&str>) -> bool {
+        self.nationwide || region.is_some_and(|r| self.regions.iter().any(|x| x.eq_ignore_ascii_case(r)))
+    }
+
+    pub fn covers(&self, date: NaiveDate) -> bool {
+        (self.start..=self.end).contains(&date)
+    }
+}
+
 #[async_trait]
 pub trait HolidaySource: Send + Sync {
     async fn countries(&self) -> std::result::Result<Vec<Country>, String>;
     /// An empty list for a year or country the source doesn't cover.
     async fn public_holidays(&self, country: &str, year: i32) -> std::result::Result<Vec<Holiday>, String>;
+    /// School holidays overlapping the year; empty for a country the source doesn't cover.
+    async fn school_holidays(&self, _country: &str, _year: i32) -> std::result::Result<Vec<SchoolBreak>, String> {
+        Ok(Vec::new())
+    }
 }
 
 pub struct NagerHolidays {
     client: reqwest::Client,
     base_url: String,
+    school_url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenEntry {
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    #[serde(default)]
+    name: Vec<OpenText>,
+    #[serde(default)]
+    nationwide: bool,
+    #[serde(default)]
+    subdivisions: Option<Vec<OpenSubdivision>>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct OpenText {
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct OpenSubdivision {
+    code: String,
 }
 
 impl NagerHolidays {
     pub fn new(client: reqwest::Client) -> Self {
-        Self::with_base_url(client, "https://date.nager.at")
+        Self::with_base_url(client, "https://date.nager.at").with_school_url("https://openholidaysapi.org")
     }
 
     pub fn with_base_url(client: reqwest::Client, base_url: impl Into<String>) -> Self {
-        Self { client, base_url: base_url.into() }
+        let base_url = base_url.into();
+        Self { client, school_url: base_url.clone(), base_url }
+    }
+
+    /// Where school holidays come from (the same host as the public holidays unless set).
+    pub fn with_school_url(mut self, url: impl Into<String>) -> Self {
+        self.school_url = url.into();
+        self
     }
 
     async fn get_json<T: serde::de::DeserializeOwned + Default>(&self, path: &str) -> std::result::Result<T, String> {
@@ -114,6 +176,45 @@ impl HolidaySource for NagerHolidays {
         }
         self.get_json(&format!("/api/v3/PublicHolidays/{year}/{}", country.to_ascii_uppercase())).await
     }
+
+    async fn school_holidays(&self, country: &str, year: i32) -> std::result::Result<Vec<SchoolBreak>, String> {
+        if !(1..=9999).contains(&year) {
+            return Ok(Vec::new());
+        }
+        let response = self
+            .client
+            .get(format!(
+                "{}/SchoolHolidays?countryIsoCode={}&validFrom={year}-01-01&validTo={year}-12-31&languageIsoCode=EN",
+                self.school_url,
+                country.to_ascii_uppercase()
+            ))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| format!("Couldn't reach the school holiday service: {e}"))?;
+        let status = response.status();
+        // 204 / 400 / 404: a country (or year) the service has no school data for.
+        if matches!(status.as_u16(), 204 | 400 | 404) {
+            return Ok(Vec::new());
+        }
+        if !status.is_success() {
+            return Err(format!("The school holiday service answered {status}."));
+        }
+        let body = response.bytes().await.map_err(|e| format!("Couldn't read the school holiday data: {e}"))?;
+        let entries: Vec<OpenEntry> = serde_json::from_slice(&body).map_err(|e| format!("Unexpected school holiday data: {e}"))?;
+        Ok(entries
+            .into_iter()
+            // Exceptions are for a few places inside a region (e.g. North Sea islands).
+            .filter(|e| !e.tags.iter().flatten().any(|t| t.eq_ignore_ascii_case("Exception")))
+            .map(|e| SchoolBreak {
+                start: e.start_date,
+                end: e.end_date,
+                name: e.name.into_iter().next().map(|n| n.text).unwrap_or_else(|| "School holidays".into()),
+                nationwide: e.nationwide,
+                regions: e.subdivisions.into_iter().flatten().map(|s| s.code).collect(),
+            })
+            .collect())
+    }
 }
 
 // ---- cache ----
@@ -134,6 +235,10 @@ fn today() -> NaiveDate {
 
 fn holidays_key(country: &str, year: i32) -> String {
     format!("holidays.{}.{year}", country.to_ascii_uppercase())
+}
+
+fn school_key(country: &str, year: i32) -> String {
+    format!("schoolholidays.{}.{year}", country.to_ascii_uppercase())
 }
 
 const COUNTRIES_KEY: &str = "holidays.countries";
@@ -157,6 +262,36 @@ pub fn store_holidays(conn: &Connection, country: &str, year: i32, fetched: &std
         Ok(list) => write(conn, &holidays_key(country, year), list, false, today()),
         Err(_) => write(conn, &holidays_key(country, year), &Vec::<Holiday>::new(), true, today()),
     }
+}
+
+/// The cached school holidays for a country and year; `None` when they still need fetching.
+pub fn cached_school_breaks(conn: &Connection, country: &str, year: i32) -> Result<Option<Vec<SchoolBreak>>> {
+    read(conn, &school_key(country, year), today())
+}
+
+pub fn store_school_breaks(conn: &Connection, country: &str, year: i32, fetched: &std::result::Result<Vec<SchoolBreak>, String>) -> Result<()> {
+    match fetched {
+        Ok(list) => write(conn, &school_key(country, year), list, false, today()),
+        Err(_) => write(conn, &school_key(country, year), &Vec::<SchoolBreak>::new(), true, today()),
+    }
+}
+
+/// The school holidays in force where the story is set that overlap `from..=to` (from whatever is
+/// cached), earliest first.
+pub fn school_breaks_between(conn: &Connection, country: Option<&str>, region: Option<&str>, from: NaiveDate, to: NaiveDate) -> Result<Vec<SchoolBreak>> {
+    use chrono::Datelike;
+    let mut found = Vec::new();
+    if let Some(country) = country.filter(|c| !c.trim().is_empty()) {
+        for year in from.year()..=to.year() {
+            for b in cached_school_breaks(conn, country, year)?.unwrap_or_default() {
+                if b.start <= to && b.end >= from && b.applies_in(region) && !found.contains(&b) {
+                    found.push(b);
+                }
+            }
+        }
+    }
+    found.sort_by_key(|b| b.start);
+    Ok(found)
 }
 
 pub fn cached_countries(conn: &Connection) -> Result<Option<Vec<Country>>> {
@@ -284,6 +419,40 @@ mod tests {
         assert_eq!(cached_holidays(&conn, "DE", 2025).unwrap(), None, "retried the next day");
         write(&conn, &holidays_key("DE", 2025), &Vec::<Holiday>::new(), false, yesterday).unwrap();
         assert_eq!(cached_holidays(&conn, "DE", 2025).unwrap(), Some(vec![]), "an empty success is kept");
+    }
+
+    #[test]
+    fn school_breaks_need_the_region_and_survive_new_year() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let winter = SchoolBreak { start: date(2025, 12, 22), end: date(2026, 1, 5), name: "Winter Holidays".into(), nationwide: false, regions: vec!["DE-HE".into()] };
+        let other = SchoolBreak { start: date(2025, 12, 22), end: date(2026, 1, 2), name: "Winter Holidays".into(), nationwide: false, regions: vec!["DE-BY".into()] };
+        for year in [2025, 2026] {
+            store_school_breaks(&conn, "DE", year, &Ok(vec![winter.clone(), other.clone()])).unwrap();
+        }
+        let found = school_breaks_between(&conn, Some("de"), Some("de-he"), date(2025, 12, 30), date(2026, 1, 3)).unwrap();
+        assert_eq!(found, vec![winter.clone()], "one entry, only for the region");
+        assert!(school_breaks_between(&conn, Some("DE"), None, date(2025, 12, 30), date(2026, 1, 3)).unwrap().is_empty());
+        assert!(winter.covers(date(2026, 1, 5)) && !winter.covers(date(2026, 1, 6)));
+    }
+
+    #[tokio::test]
+    async fn school_holidays_are_read_from_openholidays_and_exceptions_are_skipped() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/SchoolHolidays"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"[{"startDate":"2026-10-05","endDate":"2026-10-17","type":"School","name":[{"language":"EN","text":"Autumn Holidays"}],
+                     "nationwide":false,"subdivisions":[{"code":"DE-HE","shortName":"HE"}]},
+                    {"startDate":"2026-10-05","endDate":"2026-10-24","type":"School","name":[{"language":"EN","text":"Autumn Holidays"}],
+                     "nationwide":false,"subdivisions":[{"code":"DE-SH","shortName":"SH"}],"tags":["Exception"]}]"#,
+            ))
+            .mount(&server)
+            .await;
+        let source = NagerHolidays::with_base_url(reqwest::Client::new(), server.uri());
+        let list = source.school_holidays("de", 2026).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!((list[0].name.as_str(), list[0].end, list[0].regions.clone()), ("Autumn Holidays", date(2026, 10, 17), vec!["DE-HE".to_string()]));
+        assert_eq!(source.school_holidays("de", 0).await.unwrap(), vec![]);
     }
 
     #[test]

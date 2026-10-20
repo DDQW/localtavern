@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::models::{ChatMessage, WorldState};
+use crate::models::{ChatMessage, StoryCharacter, WorldState};
 use crate::providers::ProviderErrorKind;
 
 /// What the engine tells the UI while a reply is being produced. Serialized as
@@ -23,6 +23,8 @@ pub enum ChatEvent {
     MessageUpdated { message: ChatMessage },
     MessageRemoved { message_id: Uuid },
     WorldStateChanged { conversation_id: Uuid, world_state: WorldState },
+    /// The story's side-character list changed (someone new was introduced, or learned about).
+    CastChanged { conversation_id: Uuid, cast: Vec<StoryCharacter> },
     TitleChanged { conversation_id: Uuid, title: String },
     /// The request was getting too big for the model, so older messages are being summarized first.
     Compacting { conversation_id: Uuid },

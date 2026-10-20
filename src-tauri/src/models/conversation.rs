@@ -74,6 +74,103 @@ pub struct WorldState {
     /// character not listed wears their default.
     #[serde(default)]
     pub outfits: std::collections::BTreeMap<Uuid, Uuid>,
+    /// Largest in-story jump one reply may make on its own, in minutes (0 = no limit). A model that
+    /// overshoots ("3 days" for a coffee) is clamped to this.
+    #[serde(default = "default_max_skip_minutes")]
+    pub max_skip_minutes: i32,
+    /// Track an arousal / climax meter per character (adult stories only; off by default).
+    #[serde(default)]
+    pub meters_enabled: bool,
+    /// Character id -> meter.
+    #[serde(default)]
+    pub meters: std::collections::BTreeMap<Uuid, Meter>,
+}
+
+fn default_max_skip_minutes() -> i32 {
+    6 * 60
+}
+
+/// How aroused a character is and how close to orgasm, both 0-100, plus how many times they have
+/// climaxed in this story. The model reports them each reply; the app keeps them in range.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Meter {
+    pub arousal: u8,
+    pub climax: u8,
+    pub orgasms: u32,
+}
+
+impl Meter {
+    /// Most a meter may rise / fall in one reply, so a model that jumps straight to 100 (or back
+    /// to 0) can't skip the build-up.
+    const MAX_RISE: i32 = 25;
+    const MAX_FALL: i32 = 30;
+
+    fn step(current: u8, reported: u8) -> u8 {
+        let current = current as i32;
+        (reported.min(100) as i32).clamp(current - Self::MAX_FALL, current + Self::MAX_RISE).clamp(0, 100) as u8
+    }
+
+    /// Takes the model's reading. Returns whether the character climaxed: the climax meter filled
+    /// up, so it is counted and emptied, and arousal drops off.
+    pub fn apply(&mut self, arousal: Option<u8>, climax: Option<u8>) -> bool {
+        if let Some(a) = arousal {
+            self.arousal = Self::step(self.arousal, a);
+        }
+        if let Some(c) = climax {
+            self.climax = Self::step(self.climax, c);
+        }
+        if self.climax >= 100 {
+            self.orgasms += 1;
+            self.climax = 0;
+            self.arousal = (self.arousal as u32 * 6 / 10) as u8;
+            return true;
+        }
+        false
+    }
+}
+
+/// The clock and weather as they were before a reply, plus what that reply did to the clock.
+/// Stored on the message so regenerating or deleting it can rewind the story.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClockSnapshot {
+    pub fictional_date_time: NaiveDateTime,
+    pub weather: WeatherCondition,
+    pub weather_notes: Option<String>,
+    #[serde(default)]
+    pub meters: std::collections::BTreeMap<Uuid, Meter>,
+    /// How far the reply moved the clock.
+    #[serde(default)]
+    pub advanced_minutes: i64,
+    /// The model gave no (readable) time-skip tag, so the flat per-message tick was used.
+    #[serde(default)]
+    pub estimated: bool,
+    /// The model asked for more than the limit and was held to it (the original ask, in minutes).
+    #[serde(default)]
+    pub clamped_from: Option<i64>,
+}
+
+impl ClockSnapshot {
+    pub fn of(state: &WorldState) -> Self {
+        Self {
+            fictional_date_time: state.fictional_date_time,
+            weather: state.weather,
+            weather_notes: state.weather_notes.clone(),
+            meters: state.meters.clone(),
+            advanced_minutes: 0,
+            estimated: false,
+            clamped_from: None,
+        }
+    }
+
+    /// Puts the clock, weather and meters back as they were (leaves the rest of the setting alone).
+    pub fn restore(&self, state: &mut WorldState) {
+        state.fictional_date_time = self.fictional_date_time;
+        state.weather = self.weather;
+        state.weather_notes = self.weather_notes.clone();
+        state.meters = self.meters.clone();
+    }
 }
 
 /// A holiday the user added to a story: every year on `month`/`day`, or once when `year` is set.
@@ -106,6 +203,9 @@ impl WorldState {
             region_code: None,
             custom_holidays: Vec::new(),
             outfits: Default::default(),
+            max_skip_minutes: default_max_skip_minutes(),
+            meters_enabled: false,
+            meters: Default::default(),
         }
     }
 }

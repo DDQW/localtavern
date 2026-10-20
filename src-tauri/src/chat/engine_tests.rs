@@ -515,7 +515,7 @@ async fn no_emotion_instruction_is_sent_without_an_expression_pack() {
     send(&f, conv, "hi").await.0.unwrap();
 
     assert!(!f.provider.requests()[0].system_instruction.clone().unwrap().contains("[emotion:"));
-    assert_eq!(messages(&f, conv)[1].text, "hi [emotion: happy]", "left alone when the feature is off");
+    assert_eq!(messages(&f, conv)[1].text, "hi", "a stray tag never reaches the chat, pack or not");
 }
 
 #[tokio::test]
@@ -624,6 +624,122 @@ async fn the_clock_cannot_be_edited_mid_reply_and_replies_continue_from_the_edit
     f.engine.set_world_state(conv, WorldState { fictional_date_time: date, ..WorldState::create_default() }).unwrap();
     send(&f, conv, "two").await.0.unwrap();
     assert_eq!(world(&f, conv).unwrap().fictional_date_time, date + chrono::Duration::minutes(5));
+}
+
+#[tokio::test]
+async fn regenerating_the_latest_reply_starts_the_clock_from_before_it() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("One. [time-skip: 2 hours]"), finish("STOP")]),
+        Script::Items(vec![chunk("Two. [time-skip: 30 minutes]"), finish("STOP")]),
+    ]);
+    let nova = add_character(&f.db, "Nova", None, &[]);
+    let conv = ready_character(&f, &nova);
+    let start = world(&f, conv).unwrap().fictional_date_time;
+
+    send(&f, conv, "go").await.0.unwrap();
+    let reply = messages(&f, conv)[1].clone();
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start + chrono::Duration::hours(2));
+    assert_eq!(reply.clock.as_ref().map(|c| (c.fictional_date_time, c.advanced_minutes)), Some((start, 120)));
+
+    f.engine.swipe_next(conv, reply.id, Arc::new(VecSink::default())).await.unwrap();
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start + chrono::Duration::minutes(30), "not 2h30");
+    // The regenerated reply was written for the clock as it was before the first one.
+    assert!(request_text(&f.provider.requests()[1]).contains("Wednesday, January 1, 2025 9:00 AM"));
+    let again = f.db.with(|c| conversations::get_message(c, reply.id)).unwrap().unwrap();
+    assert_eq!(again.clock.map(|c| (c.fictional_date_time, c.advanced_minutes)), Some((start, 30)));
+}
+
+#[tokio::test]
+async fn deleting_the_latest_reply_rewinds_the_clock_but_an_older_one_does_not() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("One. [time-skip: 1 hour]"), finish("STOP")]),
+        Script::Items(vec![chunk("Two. [time-skip: 2 hours]"), finish("STOP")]),
+    ]);
+    let nova = add_character(&f.db, "Nova", None, &[]);
+    let conv = ready_character(&f, &nova);
+    let start = world(&f, conv).unwrap().fictional_date_time;
+    send(&f, conv, "a").await.0.unwrap();
+    send(&f, conv, "b").await.0.unwrap();
+    let replies: Vec<_> = messages(&f, conv).into_iter().filter(|m| m.clock.is_some()).collect();
+    assert_eq!(replies.len(), 2);
+
+    assert_eq!(f.engine.delete_message(replies[0].id).unwrap(), None, "the later reply still depends on it");
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start + chrono::Duration::hours(3));
+    let restored = f.engine.delete_message(replies[1].id).unwrap().unwrap();
+    assert_eq!(restored.fictional_date_time, start + chrono::Duration::hours(1));
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start + chrono::Duration::hours(1));
+}
+
+#[tokio::test]
+async fn an_absurd_time_skip_is_held_to_the_limit() {
+    let f = fixture(vec![Script::Items(vec![chunk("Coffee. [time-skip: 3 days]"), finish("STOP")])]);
+    let nova = add_character(&f.db, "Nova", None, &[]);
+    let conv = ready_character(&f, &nova);
+    let start = world(&f, conv).unwrap().fictional_date_time;
+    send(&f, conv, "coffee?").await.0.unwrap();
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start + chrono::Duration::hours(6));
+    let clock = messages(&f, conv)[1].clock.clone().unwrap();
+    assert_eq!(clock.clamped_from, Some(3 * 24 * 60));
+}
+
+#[tokio::test]
+async fn meters_are_tracked_clamped_and_only_when_switched_on() {
+    use crate::models::Meter;
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Hello. [time-skip: 1 minute] [meters: arousal 90, climax 90]"), finish("STOP")]),
+        Script::Items(vec![chunk("Oh. [meters: arousal 100, climax 100]"), finish("STOP")]),
+    ]);
+    let nova = add_character(&f.db, "Nova", None, &[]);
+    let conv = ready_character(&f, &nova);
+
+    // Off by default: no instruction, nothing recorded, the tag is still removed.
+    send(&f, conv, "hi").await.0.unwrap();
+    assert!(!request_text(&f.provider.requests()[0]).contains("[meters:"));
+    assert_eq!(messages(&f, conv)[1].text, "Hello.");
+    assert!(world(&f, conv).unwrap().meters.is_empty());
+
+    let mut state = world(&f, conv).unwrap();
+    state.meters_enabled = true;
+    state.meters.insert(nova.id, Meter { arousal: 50, climax: 40, orgasms: 0 });
+    f.engine.set_world_state(conv, state).unwrap();
+    send(&f, conv, "more").await.0.unwrap();
+    let text = request_text(&f.provider.requests()[1]);
+    assert!(text.contains("[meters: arousal"), "{text}");
+    assert!(text.contains("Nova - arousal 50/100, climax 40/100"), "{text}");
+    // 50 -> 100 and 40 -> 100 are both held to +25 a reply.
+    let m = world(&f, conv).unwrap().meters[&nova.id];
+    assert_eq!((m.arousal, m.climax, m.orgasms), (75, 65, 0));
+}
+
+#[test]
+fn a_full_climax_meter_counts_an_orgasm_and_resets() {
+    use crate::models::Meter;
+    let mut m = Meter { arousal: 90, climax: 80, orgasms: 1 };
+    assert!(m.apply(Some(100), Some(100)));
+    assert_eq!((m.arousal, m.climax, m.orgasms), (60, 0, 2));
+    assert!(!m.apply(Some(0), Some(0)), "falling is held to 30 a reply");
+    assert_eq!((m.arousal, m.climax), (30, 0));
+}
+
+#[test]
+fn clock_and_meters_survive_the_database() {
+    use crate::models::{ClockSnapshot, Meter};
+    let f = fixture(vec![]);
+    let nova = add_character(&f.db, "Nova", None, &[]);
+    let conv = ready_character(&f, &nova);
+    let mut state = world(&f, conv).unwrap();
+    state.meters_enabled = true;
+    state.meters.insert(nova.id, Meter { arousal: 12, climax: 3, orgasms: 4 });
+    f.engine.set_world_state(conv, state.clone()).unwrap();
+    assert_eq!(world(&f, conv).unwrap().meters, state.meters);
+
+    let mut message = ChatMessage::new(conv, MessageRole::Character, "x");
+    let mut clock = ClockSnapshot::of(&state);
+    clock.advanced_minutes = 7;
+    clock.clamped_from = Some(9000);
+    message.clock = Some(clock.clone());
+    f.db.with(|c| conversations::add_message(c, &message)).unwrap();
+    assert_eq!(f.db.with(|c| conversations::get_message(c, message.id)).unwrap().unwrap().clock, Some(clock));
 }
 
 // ---- failure, blocking, stopping ----
@@ -1494,8 +1610,33 @@ async fn assistant_chats_remember_new_facts_about_the_user() {
     assert_eq!(memories().len(), 2, "NONE adds nothing");
 }
 
+const CAST_ASK: &str = "You keep the cast list";
+
 #[tokio::test]
-async fn roleplays_send_no_extraction_requests() {
+async fn roleplays_note_new_side_characters_and_tell_the_ui() {
+    let f = routed(vec![
+        (CAST_ASK, Ok(r#"[{"name":"Tom","age":34,"role":"bartender","appearance":"tall, red beard","adult_details":"x"},{"name":"Nova","age":30,"role":"captain"}]"#.into())),
+        ("", Ok("Tom waves from the bar.".into())),
+    ]);
+    let nova = add_character(&f.db, "Nova", None, &[]);
+    let session = f.engine.open_character(nova.id, false).unwrap();
+    let conv = session.conversation.id;
+    f.engine.set_model(conv, "fake", "fake-model").unwrap();
+
+    f.engine.set_track_story_cast(true).unwrap();
+    let sink = Arc::new(VecSink::default());
+    f.engine.send_message(conv, "Where to?".into(), vec![], sink.clone()).await.unwrap();
+    wait_until("the cast request", || f.provider.asked(CAST_ASK).len() == 1).await;
+    wait_until("the cast event", || sink.events().iter().any(|e| matches!(e, ChatEvent::CastChanged { .. }))).await;
+
+    let cast = f.engine.story_cast(conv).unwrap();
+    assert_eq!(cast.len(), 1, "the main character is not a side character");
+    assert_eq!((cast[0].name.as_str(), cast[0].age, cast[0].role.as_str()), ("Tom", Some(34), "bartender"));
+    assert_eq!(cast[0].adult_details, "x");
+}
+
+#[tokio::test]
+async fn cast_tracking_is_off_by_default() {
     let f = routed(vec![("", Ok("We set course.".into()))]);
     let nova = add_character(&f.db, "Nova", None, &[]);
     let session = f.engine.open_character(nova.id, false).unwrap();
@@ -2136,6 +2277,16 @@ impl crate::holidays::HolidaySource for FakeHolidays {
             types: vec!["Public".into()],
         }])
     }
+
+    async fn school_holidays(&self, _country: &str, year: i32) -> std::result::Result<Vec<crate::holidays::SchoolBreak>, String> {
+        Ok(vec![crate::holidays::SchoolBreak {
+            start: NaiveDate::from_ymd_opt(year, 12, 22).unwrap(),
+            end: NaiveDate::from_ymd_opt(year + 1, 1, 5).unwrap(),
+            name: "Winter Holidays".into(),
+            nationwide: false,
+            regions: vec!["DE-BY".into()],
+        }])
+    }
 }
 
 fn request_text(request: &LlmRequest) -> String {
@@ -2176,6 +2327,48 @@ async fn a_new_roleplay_is_set_in_the_characters_home_and_the_prompt_knows_holid
     assert!(text.contains("The story is set in Germany (DE-BY)."), "{text}");
     assert!(text.contains("Today is a public holiday: Christmas Day."), "{text}");
     assert!(text.contains("Nova - holiday; now: family breakfast until 12:00."), "{text}");
+}
+
+#[tokio::test]
+async fn the_prompt_says_when_school_is_out_and_frees_school_day_routines() {
+    use crate::models::{DayKind, DayPlan, Schedule, ScheduleBlock};
+    let f = fixture(vec![Script::Items(vec![chunk("No school!"), finish("STOP")])]);
+    f.engine.set_holiday_source(Arc::new(FakeHolidays));
+    let mut schedule = Schedule { home_country: Some("DE".into()), home_region: Some("DE-BY".into()), ..Default::default() };
+    schedule.days[2] = DayPlan {
+        kind: DayKind::School,
+        blocks: vec![ScheduleBlock { start: "08:00".into(), end: "13:00".into(), activity: "classes".into(), place: None }],
+    };
+    let mut nova = add_character(&f.db, "Nova", None, &[]);
+    nova.schedule = Some(schedule);
+    f.db.with(|c| characters::upsert(c, &nova)).unwrap();
+
+    let conv = ready_character(&f, &nova);
+    let mut state = f.db.with(|c| conversations::get(c, conv)).unwrap().unwrap().world_state.unwrap();
+    state.fictional_date_time = NaiveDate::from_ymd_opt(2025, 12, 31).unwrap().and_hms_opt(9, 0, 0).unwrap(); // a Wednesday
+    f.engine.set_world_state(conv, state).unwrap();
+    let overview = f.engine.holiday_overview(conv).await.unwrap();
+    assert_eq!(overview.school_breaks.len(), 1);
+
+    send(&f, conv, "Morning").await.0.unwrap();
+    let text = request_text(&f.provider.requests()[0]);
+    assert!(text.contains("School holidays: Winter Holidays until Monday, January 5."), "{text}");
+    assert!(text.contains("Nova - school holidays; now: free time"), "{text}");
+    assert!(!text.contains("classes"), "{text}");
+}
+
+#[tokio::test]
+async fn a_new_roleplay_begins_at_the_characters_story_start() {
+    use crate::models::Schedule;
+    let f = fixture(vec![]);
+    let start = NaiveDate::from_ymd_opt(2031, 3, 14).unwrap().and_hms_opt(7, 30, 0).unwrap();
+    let mut nova = add_character(&f.db, "Nova", None, &[]);
+    nova.schedule = Some(Schedule { story_start: Some(start), ..Default::default() });
+    f.db.with(|c| characters::upsert(c, &nova)).unwrap();
+
+    let conv = ready_character(&f, &nova);
+    let state = f.db.with(|c| conversations::get(c, conv)).unwrap().unwrap().world_state.unwrap();
+    assert_eq!(state.fictional_date_time, start);
 }
 
 #[tokio::test]

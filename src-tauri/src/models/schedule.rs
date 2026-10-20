@@ -1,4 +1,4 @@
-use chrono::{Datelike, NaiveDate, NaiveTime, Timelike, Weekday};
+use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Weekday};
 use serde::{Deserialize, Serialize};
 
 /// What kind of day a plan describes; named in prompts ("workday", "school day", ...).
@@ -67,6 +67,8 @@ pub struct DayPlan {
 pub struct Schedule {
     pub home_country: Option<String>,
     pub home_region: Option<String>,
+    /// The in-story date and time new roleplays with this character begin at.
+    pub story_start: Option<NaiveDateTime>,
     /// Monday to Sunday; missing days count as days off.
     pub days: Vec<DayPlan>,
     pub holiday: DayPlan,
@@ -80,6 +82,7 @@ impl Default for Schedule {
         Self {
             home_country: None,
             home_region: None,
+            story_start: None,
             days: vec![DayPlan::default(); 7],
             holiday: DayPlan::default(),
             observes_holidays: true,
@@ -98,10 +101,11 @@ pub struct ScheduleNow<'a> {
 }
 
 impl Schedule {
-    /// Nothing filled in at all (no home, no blocks, every day a plain day off).
+    /// Nothing filled in at all (no home, no start, no blocks, every day a plain day off).
     pub fn is_empty(&self) -> bool {
         let blank = |d: &DayPlan| d.kind == DayKind::Off && d.blocks.is_empty();
         self.home_country.as_deref().is_none_or(|c| c.trim().is_empty())
+            && self.story_start.is_none()
             && self.days.iter().all(blank)
             && blank(&self.holiday)
             && self.notes.as_deref().is_none_or(|n| n.trim().is_empty())

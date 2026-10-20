@@ -35,6 +35,8 @@ export interface ChatMessage {
   activeAlternateIndex: number;
   attachments: MessageAttachment[];
   detectedEmotion: string | null;
+  /** The story clock before this reply and what it did to it (roleplay replies). */
+  clock?: ClockSnapshot | null;
   timestamp: string;
   usage: LlmUsage | null;
 }
@@ -162,6 +164,27 @@ export interface WorldState {
   customHolidays: CustomHoliday[];
   /** Character id -> outfit id; characters not listed wear their default. */
   outfits: Record<Uuid, Uuid>;
+  /** Largest jump one reply may make on its own, in minutes (0 = no limit). */
+  maxSkipMinutes: number;
+  /** Track an arousal / climax meter per character. */
+  metersEnabled: boolean;
+  /** Character id -> meter. */
+  meters: Record<Uuid, Meter>;
+}
+
+export interface Meter {
+  arousal: number;
+  climax: number;
+  orgasms: number;
+}
+
+export interface ClockSnapshot {
+  fictionalDateTime: string;
+  advancedMinutes: number;
+  /** No readable time-skip tag: the flat per-message tick was used. */
+  estimated: boolean;
+  /** The model asked for this many minutes and was held to the limit. */
+  clampedFrom: number | null;
 }
 
 /** Every year on month/day, or once when `year` is set. */
@@ -184,10 +207,37 @@ export interface DatedHoliday {
   dayOff: boolean;
 }
 
+/** A side character the story introduced (not on a character card). */
+export interface StoryCharacter {
+  id: Uuid;
+  conversationId: Uuid;
+  name: string;
+  /** Age in years when the story introduced them. */
+  age: number | null;
+  role: string;
+  appearance: string;
+  /** Explicit (18+) details; only kept for characters aged 18 or more. */
+  adultDetails: string;
+  /** The in-story time of the exchange that introduced them. */
+  introducedAt: string | null;
+  introducedMessageId: Uuid | null;
+  createdAt: string;
+}
+
 export interface HolidayOverview {
   countryName: string | null;
   regions: string[];
   holidays: DatedHoliday[];
+  /** School holidays (Schulferien) in the next two weeks, for the chosen region. */
+  schoolBreaks: SchoolBreak[];
+}
+
+export interface SchoolBreak {
+  start: string;
+  end: string;
+  name: string;
+  nationwide: boolean;
+  regions: string[];
 }
 
 export type DayKind = "work" | "school" | "shift" | "off";
@@ -208,6 +258,8 @@ export interface DayPlan {
 export interface Schedule {
   homeCountry: string | null;
   homeRegion: string | null;
+  /** In-story date and time (local, no zone) that new roleplays with this character begin at. */
+  storyStart: string | null;
   /** Monday to Sunday. */
   days: DayPlan[];
   holiday: DayPlan;
@@ -397,6 +449,7 @@ export type ChatEvent =
   | { type: "messageUpdated"; message: ChatMessage }
   | { type: "messageRemoved"; messageId: Uuid }
   | { type: "worldStateChanged"; conversationId: Uuid; worldState: WorldState }
+  | { type: "castChanged"; conversationId: Uuid; cast: StoryCharacter[] }
   | { type: "titleChanged"; conversationId: Uuid; title: string }
   | { type: "compacting"; conversationId: Uuid }
   | { type: "compacted"; conversationId: Uuid }

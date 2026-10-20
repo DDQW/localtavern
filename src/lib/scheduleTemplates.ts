@@ -17,6 +17,7 @@ export function emptySchedule(): Schedule {
   return {
     homeCountry: null,
     homeRegion: null,
+    storyStart: null,
     days: Array.from({ length: 7 }, () => day("off")),
     holiday: day("off"),
     observesHolidays: true,

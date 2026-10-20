@@ -1,7 +1,7 @@
 use chrono::{Datelike, NaiveDate, Weekday};
 
-use crate::holidays::DatedHoliday;
-use crate::models::{Schedule, WorldState};
+use crate::holidays::{DatedHoliday, SchoolBreak};
+use crate::models::{DayKind, DayPlan, Meter, Schedule, WorldState};
 
 /// Days ahead of a birthday at which the model is told it is coming up.
 const BIRTHDAY_NOTICE_DAYS: i64 = 7;
@@ -18,6 +18,10 @@ pub struct WorldFacts<'a> {
     pub place: Option<String>,
     /// Holidays from the day before the story date to a week after (national + the story's own).
     pub holidays: Vec<DatedHoliday>,
+    /// School holidays where the story is set that overlap the next two weeks, earliest first.
+    pub school: Vec<SchoolBreak>,
+    /// `(name, meter)` of the characters whose arousal the story tracks (empty when it doesn't).
+    pub meters: Vec<(&'a str, Meter)>,
     /// `(name, routine)` of the characters that have one.
     pub schedules: Vec<(&'a str, &'a Schedule)>,
 }
@@ -67,17 +71,43 @@ Keep the narration consistent with this date/time and weather unless the story e
         lines.push(format!("Upcoming holidays: {}.", upcoming.join("; ")));
     }
 
+    let school_out = facts.school.iter().find(|b| b.covers(today));
+    if let Some(b) = school_out {
+        lines.push(format!(
+            "School holidays: {} until {}. Schools are closed; students are free and school-day routines do not apply.",
+            b.name,
+            b.end.format("%A, %B %-d")
+        ));
+    } else if let Some(b) = facts.school.iter().find(|b| b.start > today) {
+        lines.push(format!(
+            "School holidays start soon: {} from {} to {}.",
+            b.name,
+            b.start.format("%A, %B %-d"),
+            b.end.format("%B %-d")
+        ));
+    }
+
     let routines: Vec<String> = facts
         .schedules
         .iter()
         .filter(|(name, _)| !name.trim().is_empty())
-        .map(|&(name, schedule)| routine_line(name.trim(), schedule, state, &day_off_on))
+        .map(|&(name, schedule)| routine_line(name.trim(), schedule, state, &day_off_on, school_out.is_some()))
         .collect();
     if !routines.is_empty() {
         lines.push(format!(
             "Daily routines (where each character's schedule has them right now; the story may override it): {}",
             routines.join(" ")
         ));
+    }
+
+    let meters: Vec<String> = facts
+        .meters
+        .iter()
+        .filter(|(name, _)| !name.trim().is_empty())
+        .map(|(name, m)| format!("{} - arousal {}/100, climax {}/100 (climaxed {}x so far).", name.trim(), m.arousal, m.climax, m.orgasms))
+        .collect();
+    if !meters.is_empty() {
+        lines.push(format!("Arousal meters (kept by the story; continue from these): {}", meters.join(" ")));
     }
 
     let birthdays: Vec<String> = facts
@@ -93,10 +123,23 @@ Keep the narration consistent with this date/time and weather unless the story e
 }
 
 /// "Mira - workday; now: work (bakery) until 16:00; next: gym at 18:00."
-fn routine_line(name: &str, schedule: &Schedule, state: &WorldState, is_holiday: &dyn Fn(NaiveDate) -> bool) -> String {
+fn routine_line(name: &str, schedule: &Schedule, state: &WorldState, is_holiday: &dyn Fn(NaiveDate) -> bool, school_out: bool) -> String {
     let at = state.fictional_date_time;
+    // In school holidays a school-day plan is a free day.
+    let freed;
+    let mut schedule = schedule;
+    let mut label = None;
+    if school_out && schedule.days.iter().any(|d| d.kind == DayKind::School) {
+        let mut copy = schedule.clone();
+        for plan in copy.days.iter_mut().filter(|d| d.kind == DayKind::School) {
+            *plan = DayPlan::default();
+        }
+        label = schedule.plan_for(at.date(), is_holiday(at.date())).0.filter(|p| p.kind == DayKind::School).map(|_| "school holidays");
+        freed = copy;
+        schedule = &freed;
+    }
     let now = schedule.now(at.date(), at.time(), is_holiday);
-    let day = if now.holiday { "holiday" } else { now.kind.label() };
+    let day = if now.holiday { "holiday" } else { label.unwrap_or(now.kind.label()) };
     let mut line = format!("{name} - {day}; now: ");
     match now.current {
         Some(block) => line.push_str(&format!("{} until {}", block.describe(), block.end.trim())),

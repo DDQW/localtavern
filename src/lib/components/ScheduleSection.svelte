@@ -78,12 +78,20 @@
       Region (optional)
       <input placeholder="e.g. DE-BY" value={schedule.homeRegion ?? ""} oninput={(e) => (schedule!.homeRegion = e.currentTarget.value.toUpperCase() || null)} />
     </label>
+    <label class="field">
+      Story starts (date and time)
+      <input
+        type="datetime-local"
+        value={schedule.storyStart?.slice(0, 16) ?? ""}
+        onchange={(e) => (schedule!.storyStart = e.currentTarget.value ? `${e.currentTarget.value}:00` : null)}
+      />
+    </label>
     <label class="check">
       <input type="checkbox" bind:checked={schedule.observesHolidays} />
       Takes public holidays off
     </label>
   </div>
-  <p class="muted small">New roleplays with this character are set in this country (its public holidays apply).</p>
+  <p class="muted small">New roleplays with this character are set in this country (its public holidays apply) and begin at the start date and time, if you set one.</p>
 
   <div class="tabs" role="tablist" aria-label="Day">
     {#each [...WEEKDAYS, "Holiday"] as name, i (name)}
