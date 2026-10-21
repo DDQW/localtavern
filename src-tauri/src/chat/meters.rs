@@ -50,7 +50,9 @@ pub fn parse(answer: &str, names: &[&str]) -> Vec<(usize, MeterReading)> {
         else {
             continue;
         };
-        let rest = &line[name.trim().len()..];
+        // Skipped by characters: the match was made in lowercase, which can change a name's byte length.
+        let rest: String = line.chars().skip(name.trim().chars().count()).collect();
+        let rest = rest.as_str();
         if let Some(reading) = meter_tag::parse_values(rest) {
             found.retain(|(i, _)| *i != index);
             found.push((index, reading));
@@ -87,5 +89,12 @@ mod tests {
         let found = parse("Anna Marie: arousal 30, climax 0, orgasm no", &["Anna", "Anna Marie"]);
         assert_eq!(found.iter().map(|(i, _)| *i).collect::<Vec<_>>(), [1]);
         assert!(parse("I cannot help with that.", &["Nova"]).is_empty());
+    }
+
+    #[test]
+    fn a_name_whose_case_changes_its_length_doesnt_break_the_line() {
+        // "ẞ" is 3 bytes, its lowercase "ß" 2: slicing the line by the name's byte length split a character.
+        let found = parse("ẞ: arousal 30, climax 0, orgasm no", &["ß"]);
+        assert_eq!(found, [(0, MeterReading { arousal: Some(30), climax: Some(0), orgasm: false })]);
     }
 }
