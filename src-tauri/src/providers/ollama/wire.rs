@@ -58,6 +58,9 @@ impl OllamaOptionsSource for OllamaRequestOptions {
 pub struct OllamaMessage {
     pub role: String,
     pub content: String,
+    /// Base64 pictures; Ollama takes them beside the text rather than as content parts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 /// The subset of Ollama's generation options that map onto the generation config, plus `num_ctx`.
@@ -132,11 +135,12 @@ pub struct OllamaTagsResponse {
 pub fn to_ollama_request(request: &LlmRequest, context_size: Option<i32>) -> OllamaChatRequest {
     let mut messages = Vec::new();
     if let Some(system) = request.system_instruction.as_deref().filter(|s| !s.is_empty()) {
-        messages.push(OllamaMessage { role: "system".into(), content: system.into() });
+        messages.push(OllamaMessage { role: "system".into(), content: system.into(), images: Vec::new() });
     }
     messages.extend(request.history.iter().map(|m| OllamaMessage {
         role: if m.role == LlmRole::User { "user" } else { "assistant" }.into(),
         content: m.text.clone(),
+        images: if m.role == LlmRole::User { m.attachments.iter().flatten().filter_map(|a| a.base64()).collect() } else { Vec::new() },
     }));
 
     let cfg = &request.generation_config;

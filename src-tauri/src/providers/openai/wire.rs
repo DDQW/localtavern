@@ -12,7 +12,11 @@ use crate::models::ReasoningEffort;
 pub struct ResponsesContentPart {
     #[serde(rename = "type")]
     pub kind: String,
-    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// `input_image` parts carry a data URL here instead of text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,9 +111,17 @@ pub fn to_responses_request(request: &LlmRequest) -> ResponsesRequest {
         .iter()
         .map(|m| {
             let (role, part_kind) = if m.role == LlmRole::User { ("user", "input_text") } else { ("assistant", "output_text") };
+            let mut content = vec![ResponsesContentPart { kind: part_kind.into(), text: Some(m.text.clone()), image_url: None }];
+            if m.role == LlmRole::User {
+                content.extend(m.attachments.iter().flatten().filter_map(|a| a.data_url()).map(|url| ResponsesContentPart {
+                    kind: "input_image".into(),
+                    text: None,
+                    image_url: Some(url),
+                }));
+            }
             ResponsesInputItem {
                 role: role.into(),
-                content: vec![ResponsesContentPart { kind: part_kind.into(), text: m.text.clone() }],
+                content,
                 kind: "message".into(),
             }
         })

@@ -1,13 +1,14 @@
 //! Mistral's chat-completions wire types and the request mapper.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::llm::{LlmRequest, LlmRole};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MistralMessage {
     pub role: String,
-    pub content: String,
+    pub content: Value,
 }
 
 /// No `stream_options`: Mistral already reports usage on the final chunk, and doesn't document the
@@ -58,17 +59,17 @@ const NEXT_REPLY_NOTE: &str = "[System note: Write the next reply.]";
 pub fn to_mistral_request(request: &LlmRequest) -> MistralChatCompletionRequest {
     let mut messages = Vec::new();
     if let Some(system) = request.system_instruction.as_deref().filter(|s| !s.is_empty()) {
-        messages.push(MistralMessage { role: "system".into(), content: system.into() });
+        messages.push(MistralMessage { role: "system".into(), content: Value::from(system) });
     }
     messages.extend(request.history.iter().map(|m| MistralMessage {
         role: if m.role == LlmRole::User { "user" } else { "assistant" }.into(),
-        content: m.text.clone(),
+        content: m.chat_content(),
     }));
     // Mistral rejects a conversation that ends on an assistant turn (the next group member's reply
     // follows straight after the previous one's). Its `prefix` flag would accept it, but then the
     // model carries on writing that previous message instead of starting a new one.
     if messages.last().is_some_and(|m| m.role == "assistant") {
-        messages.push(MistralMessage { role: "user".into(), content: NEXT_REPLY_NOTE.into() });
+        messages.push(MistralMessage { role: "user".into(), content: Value::from(NEXT_REPLY_NOTE) });
     }
 
     let cfg = &request.generation_config;

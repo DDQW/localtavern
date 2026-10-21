@@ -10,7 +10,7 @@ use crate::models::ReasoningEffort;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct XaiMessage {
     pub role: String,
-    pub content: String,
+    pub content: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -60,11 +60,11 @@ pub struct XaiListModelsResponse {
 pub fn to_xai_request(request: &LlmRequest) -> XaiChatCompletionRequest {
     let mut messages = Vec::new();
     if let Some(system) = request.system_instruction.as_deref().filter(|s| !s.is_empty()) {
-        messages.push(XaiMessage { role: "system".into(), content: system.into() });
+        messages.push(XaiMessage { role: "system".into(), content: Value::from(system) });
     }
     messages.extend(request.history.iter().map(|m| XaiMessage {
         role: if m.role == LlmRole::User { "user" } else { "assistant" }.into(),
-        content: m.text.clone(),
+        content: m.chat_content(),
     }));
 
     let cfg = &request.generation_config;
