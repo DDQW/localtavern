@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
-use crate::db::rows;
+use crate::db::{json, rows};
 use crate::error::Result;
 use crate::models::{GroupActivationMode, GroupChat};
 
@@ -14,6 +14,8 @@ fn map(row: &Row) -> rusqlite::Result<GroupChat> {
         allow_self_responses: row.get("AllowSelfResponses")?,
         joint_replies: row.get("JointReplies")?,
         private_talks: row.get("PrivateTalks")?,
+        scenario: row.get("Scenario")?,
+        setting: rows::opt_blob(row, "SettingJson")?.unwrap_or_default(),
     })
 }
 
@@ -50,11 +52,20 @@ pub fn upsert(conn: &Connection, g: &GroupChat) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     let id = g.id.to_string();
     tx.execute(
-        "INSERT INTO GroupChats (Id, Name, ActivationMode, AllowSelfResponses, JointReplies, PrivateTalks)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO GroupChats (Id, Name, ActivationMode, AllowSelfResponses, JointReplies, PrivateTalks, Scenario, SettingJson)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(Id) DO UPDATE SET Name = ?2, ActivationMode = ?3, AllowSelfResponses = ?4, JointReplies = ?5,
-            PrivateTalks = ?6;",
-        params![id, g.name, g.activation_mode.to_i32(), g.allow_self_responses, g.joint_replies, g.private_talks],
+            PrivateTalks = ?6, Scenario = ?7, SettingJson = ?8;",
+        params![
+            id,
+            g.name,
+            g.activation_mode.to_i32(),
+            g.allow_self_responses,
+            g.joint_replies,
+            g.private_talks,
+            g.scenario,
+            json::to_blob(&g.setting)?,
+        ],
     )?;
     tx.execute("DELETE FROM GroupChatMembers WHERE GroupChatId = ?1;", [&id])?;
     for (index, character_id) in g.character_ids.iter().enumerate() {
@@ -76,7 +87,7 @@ pub fn delete(conn: &Connection, id: Uuid) -> Result<()> {
 mod tests {
     use super::*;
     use crate::db::open_in_memory;
-    use crate::models::Character;
+    use crate::models::{Character, GroupSetting};
     use crate::repo::characters;
 
     fn character(conn: &Connection, name: &str) -> Uuid {
@@ -96,6 +107,12 @@ mod tests {
             allow_self_responses: true,
             joint_replies: true,
             private_talks: false,
+            scenario: "Shipwrecked on {{user}}'s island.".into(),
+            setting: GroupSetting {
+                country_code: Some("DE".into()),
+                region_code: Some("DE-BY".into()),
+                story_start: chrono::NaiveDate::from_ymd_opt(2026, 7, 1).unwrap().and_hms_opt(18, 30, 0),
+            },
             ..Default::default()
         };
         upsert(&conn, &g).unwrap();

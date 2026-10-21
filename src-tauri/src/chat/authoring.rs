@@ -58,6 +58,25 @@ Reply with the scenario text only.\n\nCharacter card:\n{}{}",
     )
 }
 
+/// A group's scenario: one situation for the user and every member, from the members' cards.
+pub fn group_scenario_prompt(members: &[Character], current: &str, idea: &str) -> String {
+    let task = if current.trim().is_empty() { "Write" } else { "Rewrite and improve" };
+    let cards: Vec<String> = members.iter().map(card_context).collect();
+    let current = match current.trim() {
+        "" => String::new(),
+        text => format!("\n\nThe current scenario:\n{text}"),
+    };
+    format!(
+        "{task} the scenario of a group roleplay: the situation and setting {{{{user}}}} and these characters are in \
+together when the story starts - where they are, how they all know each other, what is going on. Their cards each \
+describe a chat with that character alone; bring them into one shared situation. 3-5 sentences, present tense, no \
+dialogue. Refer to the user only as {{{{user}}}} and to the characters by their names. Reply with the scenario text \
+only.\n\nCharacters:\n{}{current}{}",
+        cards.join("\n\n"),
+        idea_part(idea)
+    )
+}
+
 pub fn greetings_prompt(card: &Character, idea: &str, count: usize) -> String {
     format!(
         "Write {count} different opening messages for this roleplay character card - the first message of a new \
@@ -258,6 +277,20 @@ mod tests {
             first_messages: vec!["".into(), "*waves*".into()],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_group_scenario_is_drafted_from_every_members_card() {
+        let rook = Character { name: "Rook".into(), scenario: "Rook guards the gate.".into(), ..Default::default() };
+        let prompt = group_scenario_prompt(&[card(), rook], "", "a storm traps everyone in the bakery");
+        assert!(prompt.starts_with("Write the scenario of a group roleplay"), "{prompt}");
+        assert!(prompt.contains("Name: Mira") && prompt.contains("Name: Rook\nScenario: Rook guards the gate."), "{prompt}");
+        assert!(prompt.contains("to the characters by their names"), "{prompt}");
+        assert!(prompt.ends_with("The author's idea for it:\na storm traps everyone in the bakery"), "{prompt}");
+        assert!(!prompt.contains("The current scenario"), "{prompt}");
+
+        let again = group_scenario_prompt(&[card()], "They share a flat.", "");
+        assert!(again.starts_with("Rewrite and improve") && again.ends_with("The current scenario:\nThey share a flat."), "{again}");
     }
 
     #[test]

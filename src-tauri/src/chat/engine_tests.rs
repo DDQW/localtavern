@@ -2684,6 +2684,64 @@ async fn a_new_roleplay_begins_at_the_characters_story_start() {
 }
 
 #[tokio::test]
+async fn a_groups_own_scenario_and_setting_hold_for_everyone_in_it() {
+    use crate::models::{GroupSetting, Schedule};
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Alice in the group."), finish("STOP")]),
+        Script::Items(vec![chunk("Alice in private."), finish("STOP")]),
+    ]);
+    let mut alice = add_character(&f.db, "Alice", None, &[]);
+    alice.scenario = "Alice runs a bakery with {{user}}.".into();
+    let alices_start = NaiveDate::from_ymd_opt(2031, 3, 14).unwrap().and_hms_opt(7, 30, 0).unwrap();
+    alice.schedule =
+        Some(Schedule { story_start: Some(alices_start), home_country: Some("FR".into()), ..Default::default() });
+    f.db.with(|c| characters::upsert(c, &alice)).unwrap();
+    let mut bob = add_character(&f.db, "Bob", None, &[]);
+    bob.scenario = "Bob is {{user}}'s rival.".into();
+    f.db.with(|c| characters::upsert(c, &bob)).unwrap();
+
+    let start = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap().and_hms_opt(18, 30, 0).unwrap();
+    let group = GroupChat {
+        scenario: "{{user}}, {{char}} and the others are stranded on an island.".into(),
+        setting: GroupSetting { country_code: Some("DE".into()), region_code: Some("DE-BY".into()), story_start: Some(start) },
+        ..add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob])
+    };
+    f.db.with(|c| group_chats::upsert(c, &group)).unwrap();
+
+    // A new chat starts where and when the group says, not where its first member lives.
+    let conv = ready_group(&f, &group);
+    let state = world(&f, conv).unwrap();
+    assert_eq!(state.fictional_date_time, start);
+    assert_eq!((state.country_code.as_deref(), state.region_code.as_deref()), (Some("DE"), Some("DE-BY")));
+
+    // The group's scenario stands in for the cards' - in the group and in a private talk.
+    send(&f, conv, "Hi").await.0.unwrap();
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap();
+    assert!(system.contains("User, Alice and the others are stranded on an island."), "{system}");
+    assert!(!system.contains("bakery") && !system.contains("rival"), "{system}");
+
+    let talk = f.engine.open_breakout(conv, alice.id).unwrap().conversation.id;
+    send(&f, talk, "Psst").await.0.unwrap();
+    let private = f.provider.requests()[1].system_instruction.clone().unwrap();
+    assert!(private.contains("stranded on an island") && !private.contains("bakery"), "{private}");
+}
+
+#[tokio::test]
+async fn a_group_without_its_own_scenario_keeps_the_members_scenarios() {
+    let f = fixture(vec![Script::Items(vec![chunk("Hi."), finish("STOP")])]);
+    let mut alice = add_character(&f.db, "Alice", None, &[]);
+    alice.scenario = "Alice runs a bakery.".into();
+    f.db.with(|c| characters::upsert(c, &alice)).unwrap();
+    let bob = add_character(&f.db, "Bob", None, &[]);
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+
+    send(&f, conv, "Hi").await.0.unwrap();
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap();
+    assert!(system.contains("Alice's scenario: Alice runs a bakery."), "{system}");
+}
+
+#[tokio::test]
 async fn without_a_home_country_a_new_roleplay_uses_the_last_story_country() {
     let f = fixture(vec![]);
     let conv = ready_roleplay(&f);

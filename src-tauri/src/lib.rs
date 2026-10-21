@@ -129,6 +129,7 @@ pub fn run() {
             commands::holiday_countries,
             commands::holiday_overview,
             commands::draft_scenario,
+            commands::draft_group_scenario,
             commands::draft_greetings,
             commands::draft_lore_entries,
             commands::draft_schedule,

@@ -267,17 +267,26 @@ struct StorySetting {
     start: Option<chrono::NaiveDateTime>,
 }
 
-/// Where a new roleplay is set: the character's home (in a group, the first member with one),
+/// Where a new roleplay is set: a group's own setting, else the character's home (in a group, the
+/// first member with one),
 /// else the country last picked for any story. It begins at the first cast member's story start,
 /// if any has one.
 fn default_setting(conn: &Connection, conversation: &Conversation) -> Result<StorySetting> {
-    let cast: Vec<Uuid> = match (conversation.character_id, conversation.group_chat_id) {
+    let group = match (conversation.character_id, conversation.group_chat_id) {
+        (None, Some(id)) => group_chats::get(conn, id)?,
+        _ => None,
+    };
+    let cast: Vec<Uuid> = match (conversation.character_id, &group) {
         (Some(id), _) => vec![id],
-        (None, Some(group)) => group_chats::get(conn, group)?.map(|g| g.character_ids).unwrap_or_default(),
+        (None, Some(group)) => group.character_ids.clone(),
         _ => Vec::new(),
     };
-    let mut start = None;
-    let mut home = None;
+    let setting = group.map(|g| g.setting).unwrap_or_default();
+    let mut start = setting.story_start;
+    let mut home = setting
+        .country_code
+        .filter(|c| !c.trim().is_empty())
+        .map(|country| (country, setting.region_code.filter(|r| !r.trim().is_empty())));
     for id in cast {
         if let Some(schedule) = characters::get(conn, id)?.and_then(|c| c.schedule) {
             start = start.or(schedule.story_start);
@@ -531,6 +540,25 @@ present, keep it as its own final paragraph, still naming whose details they are
 
     pub async fn draft_scenario(&self, card: &Character, idea: &str) -> Result<String> {
         let answer = authoring::parse_text(&self.one_shot(authoring::scenario_prompt(card, idea)).await?);
+        if answer.is_empty() {
+            return Err(Error::Other("The model returned an empty answer - try again.".into()));
+        }
+        Ok(answer)
+    }
+
+    /// A group's scenario from its members' cards (rewriting `current` when there is one).
+    pub async fn draft_group_scenario(&self, character_ids: &[Uuid], current: &str, idea: &str) -> Result<String> {
+        let members = self.db().with(|c| {
+            let mut members = Vec::new();
+            for id in character_ids {
+                members.extend(characters::get(c, *id)?);
+            }
+            Ok(members)
+        })?;
+        if members.is_empty() {
+            return Err(Error::Other("Add some members to the group first.".into()));
+        }
+        let answer = authoring::parse_text(&self.one_shot(authoring::group_scenario_prompt(&members, current, idea)).await?);
         if answer.is_empty() {
             return Err(Error::Other("The model returned an empty answer - try again.".into()));
         }
@@ -1424,6 +1452,15 @@ present, keep it as its own final paragraph, still naming whose details they are
         }
         if let Some(text) = world_text.as_deref() {
             pctx = pctx.with_world_state_text(text);
+        }
+        // A group's own scenario holds for everyone in it, its private talks included.
+        let group_scenario = match (&ctx.group, &ctx.breakout) {
+            (Some(group), _) => Some(group.scenario.as_str()),
+            (None, Some(b)) => b.group_scenario.as_deref(),
+            _ => None,
+        };
+        if let Some(scenario) = group_scenario.filter(|s| !s.trim().is_empty()) {
+            pctx = pctx.with_scenario(scenario);
         }
 
         let mut request = prompting::assemble(&pctx, &KeywordWorldInfoScanner);

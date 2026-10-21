@@ -15,6 +15,8 @@ pub struct PromptAssemblyContext<'a> {
     pub authors_note_text: Option<&'a str>,
     pub user_memories: &'a [UserMemory],
     pub world_state_text: Option<&'a str>,
+    /// A group's own scenario, in place of the characters' card scenarios.
+    pub scenario: Option<&'a str>,
 }
 
 impl<'a> PromptAssemblyContext<'a> {
@@ -30,6 +32,7 @@ impl<'a> PromptAssemblyContext<'a> {
             authors_note_text: None,
             user_memories: &[],
             world_state_text: None,
+            scenario: None,
         }
     }
 
@@ -65,6 +68,11 @@ impl<'a> PromptAssemblyContext<'a> {
 
     pub fn with_world_state_text(mut self, text: &'a str) -> Self {
         self.world_state_text = Some(text);
+        self
+    }
+
+    pub fn with_scenario(mut self, text: &'a str) -> Self {
+        self.scenario = Some(text);
         self
     }
 }

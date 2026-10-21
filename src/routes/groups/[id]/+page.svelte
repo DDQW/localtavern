@@ -2,8 +2,9 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, errorText } from "$lib/api";
+  import AiDraft from "$lib/components/AiDraft.svelte";
   import Avatar from "$lib/components/Avatar.svelte";
-  import type { Character, GroupActivationMode, GroupChat } from "$lib/types";
+  import type { Character, Country, GroupActivationMode, GroupChat } from "$lib/types";
   import { move, newId } from "$lib/util";
 
   const MODES: { id: GroupActivationMode; label: string; help: string }[] = [
@@ -14,6 +15,9 @@
 
   let form = $state<GroupChat | null>(null);
   let characters = $state<Character[]>([]);
+  let countries = $state<Country[]>([]);
+  let scenarioDraft = $state<string | null>(null);
+  let scenarioBefore = $state<string | null>(null);
   let error = $state("");
   let saving = $state(false);
   const isNew = $derived(page.params.id === "new");
@@ -23,9 +27,20 @@
     void (async () => {
       try {
         characters = await api.listCharacters();
-        const loaded =
+        void api.holidayCountries().then((list) => (countries = list)).catch(() => {});
+        const loaded: GroupChat | undefined =
           wanted === "new"
-            ? { id: newId(), name: "", characterIds: [], activationMode: "manual" as const, allowSelfResponses: false, jointReplies: false, privateTalks: true }
+            ? {
+                id: newId(),
+                name: "",
+                characterIds: [],
+                activationMode: "manual",
+                allowSelfResponses: false,
+                jointReplies: false,
+                privateTalks: true,
+                scenario: "",
+                setting: { countryCode: null, regionCode: null, storyStart: null },
+              }
             : (await api.listGroupChats()).find((g) => g.id === wanted);
         if (loaded) form = loaded;
         else error = "That group no longer exists.";
@@ -41,6 +56,18 @@
   function toggle(id: string, on: boolean) {
     if (!form) return;
     form.characterIds = on ? [...form.characterIds, id] : form.characterIds.filter((x) => x !== id);
+  }
+
+  async function draftScenario(idea: string) {
+    if (!form) return;
+    scenarioDraft = await api.draftGroupScenario($state.snapshot(form.characterIds), form.scenario, idea);
+  }
+
+  function useScenario() {
+    if (!form || scenarioDraft === null) return;
+    scenarioBefore = form.scenario;
+    form.scenario = scenarioDraft;
+    scenarioDraft = null;
   }
 
   async function save() {
@@ -149,6 +176,58 @@
         </ol>
       {/if}
 
+      <h2>Story</h2>
+      <label class="field">
+        Scenario
+        <textarea rows="4" bind:value={form.scenario} placeholder={"Where {{user}} and the members are and what's going on - for everyone in the group"}></textarea>
+      </label>
+      <p class="muted small">
+        Used for the whole group, in place of the members' own scenarios (each card's is written for a chat with that character alone). Leave
+        it empty to keep theirs.
+      </p>
+      <AiDraft generate={draftScenario} placeholder={"Optional: e.g. a storm traps everyone at the lodge"}>
+        {#if scenarioDraft !== null}
+          <div class="preview">{scenarioDraft}</div>
+          <div class="btnrow">
+            <button type="button" onclick={useScenario}>Use as scenario</button>
+            <button type="button" class="ghost" onclick={() => (scenarioDraft = null)}>Discard</button>
+          </div>
+        {/if}
+        {#if scenarioBefore !== null}
+          <button type="button" class="ghost" onclick={() => { form!.scenario = scenarioBefore!; scenarioBefore = null; }}>Undo scenario change</button>
+        {/if}
+      </AiDraft>
+
+      <div class="setting">
+        <label class="field">
+          Set in (country)
+          {#if countries.length}
+            <select value={form.setting.countryCode ?? ""} onchange={(e) => (form!.setting.countryCode = e.currentTarget.value || null)}>
+              <option value="">— the members' home —</option>
+              {#each countries as c (c.countryCode)}<option value={c.countryCode}>{c.name}</option>{/each}
+            </select>
+          {:else}
+            <input maxlength="2" placeholder="e.g. DE" value={form.setting.countryCode ?? ""} oninput={(e) => (form!.setting.countryCode = e.currentTarget.value.toUpperCase() || null)} />
+          {/if}
+        </label>
+        <label class="field">
+          Region (optional)
+          <input placeholder="e.g. DE-BY" value={form.setting.regionCode ?? ""} oninput={(e) => (form!.setting.regionCode = e.currentTarget.value.toUpperCase() || null)} />
+        </label>
+        <label class="field">
+          Story starts (date and time)
+          <input
+            type="datetime-local"
+            value={form.setting.storyStart?.slice(0, 16) ?? ""}
+            onchange={(e) => (form!.setting.storyStart = e.currentTarget.value ? `${e.currentTarget.value}:00` : null)}
+          />
+        </label>
+      </div>
+      <p class="muted small">
+        New chats with this group are set here (its public holidays apply) and begin at this date and time. Whatever you leave empty comes from
+        the members' own settings. A chat that's already running keeps its clock: change that in its Story panel.
+      </p>
+
       <div class="actionbar">
         <button class="primary" type="submit" disabled={saving || !form.name.trim()}>{saving ? "Saving…" : "Save"}</button>
         <a class="cancel" href="/groups">Cancel</a>
@@ -200,6 +279,20 @@
 
   .grow {
     flex: 1;
+  }
+
+  .setting {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 12px;
+  }
+
+  .preview {
+    white-space: pre-wrap;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 6px;
   }
 
   .cancel {

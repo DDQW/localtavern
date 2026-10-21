@@ -357,6 +357,17 @@ pub async fn draft_scenario(state: State<'_, AppState>, character: Character, id
 }
 
 #[tauri::command]
+pub async fn draft_group_scenario(
+    state: State<'_, AppState>,
+    character_ids: Vec<Uuid>,
+    current: String,
+    idea: String,
+) -> Result<String> {
+    let engine = state.engine.clone();
+    engine.draft_group_scenario(&character_ids, &current, &idea).await
+}
+
+#[tauri::command]
 pub async fn draft_greetings(state: State<'_, AppState>, character: Character, idea: String, count: usize) -> Result<Vec<String>> {
     let engine = state.engine.clone();
     engine.draft_greetings(&character, &idea, count).await

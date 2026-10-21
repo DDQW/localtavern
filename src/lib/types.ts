@@ -538,6 +538,17 @@ export interface GroupChat {
   jointReplies: boolean;
   /** A member may take the user aside into a private talk on their own. */
   privateTalks: boolean;
+  /** The group's own scenario; when set, it stands in for the members' own. */
+  scenario: string;
+  /** Where and when the group's new chats are set; unset parts fall back to the members'. */
+  setting: GroupSetting;
+}
+
+export interface GroupSetting {
+  countryCode: string | null;
+  regionCode: string | null;
+  /** Local date and time, "YYYY-MM-DDTHH:MM:SS". */
+  storyStart: string | null;
 }
 
 // ---- picture generation ----

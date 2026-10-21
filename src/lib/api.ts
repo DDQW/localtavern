@@ -134,6 +134,8 @@ export interface Api {
   polishAppearance(text: string): Promise<string>;
 
   draftScenario(character: Character, idea: string): Promise<string>;
+  /** A group's scenario from its members' cards, rewriting `current` when there is one. */
+  draftGroupScenario(characterIds: Uuid[], current: string, idea: string): Promise<string>;
   draftGreetings(character: Character, idea: string, count: number): Promise<string[]>;
   draftLoreEntries(request: LoreDraftRequest): Promise<WorldInfoEntry[]>;
   draftSchedule(character: Character, idea: string): Promise<Schedule>;
@@ -271,6 +273,7 @@ const tauriApi: Api = {
   polishAppearance: (text) => invoke("polish_appearance", { text }),
 
   draftScenario: (character, idea) => invoke("draft_scenario", { character, idea }),
+  draftGroupScenario: (characterIds, current, idea) => invoke("draft_group_scenario", { characterIds, current, idea }),
   draftGreetings: (character, idea, count) => invoke("draft_greetings", { character, idea, count }),
   draftLoreEntries: (request) => invoke("draft_lore_entries", { request }),
   draftSchedule: (character, idea) => invoke("draft_schedule", { character, idea }),

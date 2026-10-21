@@ -242,7 +242,10 @@ fn resolve_block_text(block: &PromptBlock, ctx: &PromptAssemblyContext, macros: 
         PromptBlockType::CharacterDescription => {
             join_per_character(ctx.characters, macros, description_with_personality, "description")
         }
-        PromptBlockType::Scenario => join_per_character(ctx.characters, macros, |c| c.scenario.clone(), "scenario"),
+        PromptBlockType::Scenario => match ctx.scenario {
+            Some(scenario) => scenario.trim().to_string(),
+            None => join_per_character(ctx.characters, macros, |c| c.scenario.clone(), "scenario"),
+        },
         PromptBlockType::ExampleDialogue => {
             join_per_character(ctx.characters, macros, |c| c.example_dialogue.clone(), "example dialogue")
         }

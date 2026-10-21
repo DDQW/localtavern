@@ -68,6 +68,8 @@ pub struct Breakout {
     pub parent: Conversation,
     /// The group's name.
     pub group_name: String,
+    /// The group's own scenario, when it has one.
+    pub group_scenario: Option<String>,
     /// Everyone in the group, this talk's character included (to name who said what).
     pub group_cast: Vec<Character>,
     pub group_messages: Vec<ChatMessage>,
@@ -181,8 +183,16 @@ fn load_breakout(conn: &Connection, parent_id: Uuid) -> Result<Option<Breakout>>
     let all = chat_history(conn, parent_id)?;
     let summary = summaries::get(conn, parent_id)?;
     let group_messages = summary.as_ref().map_or(&all[..], |s| s.uncovered(&all)).to_vec();
+    let group_scenario = group.as_ref().map(|g| g.scenario.clone()).filter(|s| !s.trim().is_empty());
     let group_name = group.map(|g| g.name).unwrap_or_else(|| parent.title.clone());
-    Ok(Some(Breakout { parent, group_name, group_cast, group_messages, group_summary: summary.map(|s| s.text) }))
+    Ok(Some(Breakout {
+        parent,
+        group_name,
+        group_scenario,
+        group_cast,
+        group_messages,
+        group_summary: summary.map(|s| s.text),
+    }))
 }
 
 fn load_private_talks(conn: &Connection, conversation_id: Uuid) -> Result<Vec<PrivateTalk>> {

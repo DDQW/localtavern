@@ -148,6 +148,8 @@ const groups: GroupChat[] = [
     allowSelfResponses: false,
     jointReplies: true,
     privateTalks: true,
+    scenario: "",
+    setting: { countryCode: null, regionCode: null, storyStart: null },
   },
 ];
 
@@ -805,6 +807,12 @@ export const mockApi: Api = {
   async draftScenario(character, idea) {
     await sleep(500);
     return `{{char}} and {{user}} meet ${idea.trim() || "aboard the research vessel"}. ${character.name} is wary but curious.`;
+  },
+  async draftGroupScenario(characterIds, current, idea) {
+    await sleep(500);
+    const names = characterIds.map((id) => characters.find((c) => c.id === id)?.name ?? "someone").join(" and ");
+    const base = `{{user}}, ${names} are snowed in at a mountain lodge ${idea.trim() || "for the winter festival"}.`;
+    return current.trim() ? `${base} ${current.trim()}` : base;
   },
   async draftGreetings(_character, _idea, count) {
     await sleep(500);
