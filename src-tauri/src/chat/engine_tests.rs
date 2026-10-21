@@ -1210,6 +1210,37 @@ async fn round_robin_groups_hand_the_floor_to_the_next_member_each_turn() {
 }
 
 #[tokio::test]
+async fn a_group_reply_written_as_a_transcript_keeps_only_the_speakers_part() {
+    let f = fixture(vec![
+        // Alice's turn, written as a transcript; the trailing tag still counts.
+        Script::Items(vec![chunk("Alice: *grins* \"Hi!\"\n\nBo"), chunk("b: \"Hey!\"\n\nUser: \"Hello?\"\n[next: Bob]"), finish("STOP")]),
+        Script::Items(vec![chunk("**Bob:** \"Hey, both.\""), finish("STOP")]),
+        // Swiping Bob's reply cuts the new take too.
+        Script::Items(vec![chunk("\"Again.\"\nAlice: \"Stop it.\""), finish("STOP")]),
+    ]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob]);
+    joint(&f, &group);
+    let conv = ready_group(&f, &group);
+    no_clock(&f, conv);
+
+    let (result, events) = send(&f, conv, "Hello both").await;
+    result.unwrap();
+
+    let texts: Vec<String> = messages(&f, conv).iter().skip(1).map(|m| m.text.clone()).collect();
+    assert_eq!(texts, ["*grins* \"Hi!\"", "\"Hey, both.\""]);
+    assert_eq!(speakers(&f, conv), [Some(alice.id), Some(bob.id)], "the [next: Bob] after the cut part still counts");
+    assert!(!streamed_text(&events).contains("Hey!"), "the other speaker's line never shows: {}", streamed_text(&events));
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap();
+    assert!(system.contains("without \"Alice:\" in front"), "{system}");
+    assert_eq!(f.provider.requests()[1].history.last().unwrap().text, "Alice: *grins* \"Hi!\"", "the next prompt sees a clean turn");
+
+    let bobs = messages(&f, conv)[2].clone();
+    f.engine.swipe_next(conv, bobs.id, Arc::new(VecSink::default())).await.unwrap();
+    assert_eq!(messages(&f, conv)[2].text, "\"Again.\"");
+}
+
+#[tokio::test]
 async fn trigger_word_groups_reply_in_the_order_names_are_mentioned_and_hear_each_other() {
     let f = fixture(vec![
         Script::Items(vec![chunk("Cara speaking."), finish("STOP")]),

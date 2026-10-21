@@ -38,6 +38,7 @@ use crate::powershell::exec::{CommandRunner, ExecError, ExecutionResult, Pwsh};
 use crate::powershell::filter::ToolCallFilter;
 use crate::powershell::settings as tool_settings;
 use crate::prompting::powershell_tool::{self, PowerShellToolCallRequest, ToolResult};
+use crate::prompting::group_reply::SpeakerCut;
 use crate::prompting::reply_tags::{self, ReplyTags};
 use crate::prompting::{
     self, breakout, emotion_tag, next_speaker_tag, photo_tag, roles, time_skip_tag, world_state, KeywordWorldInfoScanner,
@@ -176,6 +177,16 @@ struct AssembleOptions<'a> {
     next_speakers: &'a [&'a str],
     /// A group reply may take the user aside into a private talk (`[private]` tag).
     offer_private: bool,
+}
+
+/// In a group roleplay: what keeps `speaker`'s reply to their own part (the other members' and the
+/// user's lines are cut). `None` elsewhere.
+fn speaker_cut(ctx: &ReplyContext, speaker: Option<&Character>) -> Option<SpeakerCut> {
+    let me = speaker.filter(|_| ctx.group.is_some() && ctx.conversation.mode == ConversationMode::Roleplay)?;
+    let user = roles::user_name(ctx.persona.as_ref());
+    let others: Vec<&str> =
+        ctx.characters.iter().filter(|c| c.id != me.id).map(|c| c.name.as_str()).chain(std::iter::once(user)).collect();
+    SpeakerCut::new(&me.name, &others)
 }
 
 /// The nudge Continue appends as a trailing user turn (a system note), so the model extends rather
@@ -966,8 +977,13 @@ present, keep it as its own final paragraph, still naming whose details they are
         let raw_prompt = format_prompt(&request);
 
         sink.emit(ChatEvent::Continuing { message_id: target.id });
-        let result = self.stream_reply(&ctx.conversation.provider_id, request, target.id, &sink, &token, false).await;
+        let cut = speaker_cut(&ctx, speaker.as_ref());
+        let result = self.stream_reply(&ctx.conversation.provider_id, request, target.id, &sink, &token, false, cut.as_ref()).await;
         let StreamResult { text: added, reasoning: added_reasoning, usage, end, .. } = result;
+        let added = match &cut {
+            Some(cut) => cut.apply_continuation(&added),
+            None => added,
+        };
 
         let failed = matches!(end, StreamEnd::Failed(_));
         if !failed && !(added.is_empty() && added_reasoning.is_empty()) {
@@ -1476,7 +1492,9 @@ present, keep it as its own final paragraph, still naming whose details they are
     }
 
     /// Streams one request, pushing coalesced deltas to the sink. Whatever arrived before a stop or
-    /// failure is returned along with how it ended.
+    /// failure is returned along with how it ended. With a `cut`, text from where another group
+    /// member's line starts is kept (for its trailing tags) but no longer shown.
+    #[allow(clippy::too_many_arguments)]
     async fn stream_reply(
         &self,
         provider_id: &str,
@@ -1485,6 +1503,7 @@ present, keep it as its own final paragraph, still naming whose details they are
         sink: &Arc<dyn EventSink>,
         token: &CancellationToken,
         tools: bool,
+        cut: Option<&SpeakerCut>,
     ) -> StreamResult {
         let provider = match self.inner.providers.get(provider_id) {
             Ok(p) => p,
@@ -1516,6 +1535,7 @@ present, keep it as its own final paragraph, still naming whose details they are
         let mut finish_reason: Option<String> = None;
         // With the tool on, a `<powershell-run>` tag is held back from the UI and ends the stream.
         let mut tool_filter = tools.then(ToolCallFilter::new);
+        let mut cut_off = false;
         let mut ticker = tokio::time::interval(STREAM_FLUSH_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -1551,7 +1571,16 @@ present, keep it as its own final paragraph, still naming whose details they are
                         result.text.push_str(&chunk.delta_text);
                         result.shown_text.push_str(&shown);
                         result.reasoning.push_str(&chunk.thought_delta_text);
-                        pending_text.push_str(&shown);
+                        if !cut_off {
+                            if let Some(at) = cut.and_then(|c| c.find(&result.text)) {
+                                // Show up to where the other speaker's line starts, then nothing more.
+                                cut_off = true;
+                                let unseen = result.text.len() - shown.len();
+                                pending_text.push_str(result.text.get(unseen.min(at)..at).unwrap_or_default());
+                            } else {
+                                pending_text.push_str(&shown);
+                            }
+                        }
                         pending_reasoning.push_str(&chunk.thought_delta_text);
                         if chunk.usage.is_some() {
                             result.usage = chunk.usage;
@@ -1698,7 +1727,8 @@ present, keep it as its own final paragraph, still naming whose details they are
         message.raw_prompt_text = Some(format_prompt(&request));
         self.update_conversation(conversation_id, |c| c.updated_at = Utc::now())?;
 
-        let result = self.stream_reply(&ctx.conversation.provider_id, request, message.id, sink, token, tools).await;
+        let cut = speaker_cut(&ctx, speaker.as_ref());
+        let result = self.stream_reply(&ctx.conversation.provider_id, request, message.id, sink, token, tools, cut.as_ref()).await;
         let StreamResult { text, shown_text, reasoning, usage, images: generated, end } = result;
 
         let succeeded = matches!(end, StreamEnd::Completed);
@@ -1711,7 +1741,10 @@ present, keep it as its own final paragraph, still naming whose details they are
             photo = self.photo_to_draw(tags.photo.clone())?;
             next = tags.next.as_deref().and_then(|name| next_speaker_tag::resolve(name, &others));
             private = offer_private && tags.private;
-            message.text = clean;
+            message.text = match &cut {
+                Some(cut) => cut.apply(&clean),
+                None => clean,
+            };
             message.detected_emotion = match_emotion(speaker.as_ref(), tags.emotion);
             message.clock = clock;
         } else if matches!(end, StreamEnd::ToolCall(_)) {
@@ -1903,7 +1936,8 @@ present, keep it as its own final paragraph, still naming whose details they are
         let raw_prompt = format_prompt(&request);
 
         sink.emit(ChatEvent::Regenerating { message_id });
-        let result = self.stream_reply(&ctx.conversation.provider_id, request, message_id, &sink, &token, false).await;
+        let cut = speaker_cut(&ctx, speaker.as_ref());
+        let result = self.stream_reply(&ctx.conversation.provider_id, request, message_id, &sink, &token, false, cut.as_ref()).await;
         let StreamResult { text, reasoning, usage, images: generated, end, .. } = result;
 
         let succeeded = matches!(end, StreamEnd::Completed);
@@ -1913,6 +1947,10 @@ present, keep it as its own final paragraph, still naming whose details they are
             target.usage = usage;
             let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, moves_clock, &sink)?;
             photo = self.photo_to_draw(tags.photo.clone())?;
+            let clean = match &cut {
+                Some(cut) => cut.apply(&clean),
+                None => clean,
+            };
             target.add_alternate(clean, reasoning, Some(raw_prompt));
             target.detected_emotion = match_emotion(speaker.as_ref(), tags.emotion);
             if moves_clock {

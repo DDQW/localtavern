@@ -59,10 +59,14 @@ pub fn reply_rules(user: &str, characters: &[Character], speaker: Option<&Charac
             cast = join_names(&names, "and"),
         );
         let others: Vec<&str> = names.iter().copied().filter(|n| speaker.is_some_and(|me| me.name != *n)).collect();
-        let members = if others.is_empty() {
-            String::new()
-        } else {
-            format!(" Don't write lines or actions for {}: they speak in their own turns.", join_names(&others, "or"))
+        let members = match (others.is_empty(), speaker) {
+            (false, Some(me)) => format!(
+                " Don't write lines or actions for {}: they speak in their own turns, so end the reply where {me}'s part ends. Start it \
+straight with {me}'s words or actions, without \"{me}:\" in front - the app labels every message itself.",
+                join_names(&others, "or"),
+                me = me.name,
+            ),
+            _ => String::new(),
         };
         (roles, members, "a character")
     } else {
@@ -148,7 +152,8 @@ mod tests {
         assert!(rules.starts_with("Roles: the user plays Alex; you play Alice, Bob and Cara, one reply at a time, and this reply is Alice's."), "{rules}");
         assert!(rules.contains("never one of the characters"), "{rules}");
         assert!(rules.contains("starts with the name of the character who spoke it"), "{rules}");
-        assert!(rules.contains("Don't write lines or actions for Bob or Cara: they speak in their own turns."), "{rules}");
+        assert!(rules.contains("Don't write lines or actions for Bob or Cara: they speak in their own turns, so end the reply where Alice's part ends."), "{rules}");
+        assert!(rules.contains("without \"Alice:\" in front"), "{rules}");
         assert!(rules.contains("never retell Alex's actions as if a character did them"), "{rules}");
         assert!(!rules.contains("\"you\" usually means"), "{rules}");
     }
