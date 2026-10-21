@@ -21,7 +21,12 @@ pub fn format_prompt(request: &LlmRequest) -> String {
 
     for message in &request.history {
         let role = if message.role == LlmRole::User { "User" } else { "Model" };
-        out.push_str(&format!("=== {role} ===\n{}\n\n", message.text));
+        out.push_str(&format!("=== {role} ===\n{}\n", message.text));
+        let pictures = message.attachments.iter().flatten().count();
+        if pictures > 0 {
+            out.push_str(&format!("[{pictures} picture(s) attached]\n"));
+        }
+        out.push('\n');
     }
 
     out.trim_end().to_string()
