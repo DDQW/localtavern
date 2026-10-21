@@ -78,6 +78,16 @@ impl LlmProvider for OllamaProvider {
                 body.think = None;
                 self.post_chat(&body, &base_url).await?
             }
+            Err(e) if body.think.is_some() => {
+                let asked = body.think.as_ref().and_then(|t| t.as_str()).unwrap_or_default().to_string();
+                match errors::retry_think_level(&e, &asked) {
+                    Some(level) => {
+                        body.think = level.map(serde_json::Value::from);
+                        self.post_chat(&body, &base_url).await?
+                    }
+                    None => return Err(e),
+                }
+            }
             other => other?,
         };
         Ok(stream::read_chunks(response.bytes_stream()).boxed())
@@ -165,6 +175,33 @@ mod tests {
             .mount(&server)
             .await;
         let mut req = request("gemma4", "Hello");
+        req.generation_config.reasoning_effort = Some(crate::models::ReasoningEffort::High);
+
+        let chunks: Vec<_> = provider(&server.uri()).stream_completion(req).await.unwrap().collect().await;
+
+        assert_eq!(chunks[0].as_ref().unwrap().delta_text, "Hi");
+    }
+
+    #[tokio::test]
+    async fn a_template_that_rejects_the_thinking_level_is_retried_with_one_it_lists() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("\"think\":\"high\""))
+            .respond_with(ResponseTemplate::new(500).set_body_raw(
+                r#"{"error":"Jinja Exception: Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low."}"#,
+                "application/json",
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("\"think\":\"xhigh\""))
+            .respond_with(ResponseTemplate::new(200).set_body_raw("{\"message\":{\"content\":\"Hi\"},\"done\":true}
+", "application/x-ndjson"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut req = request("qwen", "Hello");
         req.generation_config.reasoning_effort = Some(crate::models::ReasoningEffort::High);
 
         let chunks: Vec<_> = provider(&server.uri()).stream_completion(req).await.unwrap().collect().await;

@@ -27,6 +27,25 @@ pub fn is_thinking_unsupported(error: &ProviderError) -> bool {
     error.http_status == Some(400) && error.message.contains("does not support thinking")
 }
 
+/// A chat template that validates `reasoning_effort` itself (Qwen's, for one) fails with
+/// `Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low.` when
+/// the level isn't one of its own. Returns the level to retry with: the one asked for if listed,
+/// "xhigh" for a "high" request, otherwise `None` (retry without `think`).
+pub fn retry_think_level(error: &ProviderError, asked: &str) -> Option<Option<String>> {
+    let (_, tail) = error.message.split_once("Unexpected reasoning effort")?;
+    let (_, list) = tail.split_once("Supported types are ")?;
+    let list = list.split('.').next().unwrap_or_default();
+    let levels: Vec<&str> = list
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty() && *w != "and" && *w != "default")
+        .collect();
+    Some(match asked {
+        "high" if levels.contains(&"xhigh") => Some("xhigh".to_string()),
+        a if levels.contains(&a) => Some(a.to_string()),
+        _ => None,
+    })
+}
+
 /// Ollama has no auth concept, so the one error worth calling out specially is "server not
 /// reachable" - a stopped or never-started local server, which is the common case rather than an
 /// edge case.
