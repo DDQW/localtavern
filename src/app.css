@@ -301,3 +301,20 @@ label.field input {
 .listrow .title {
   font-weight: 600;
 }
+
+/* ---- phone ---- */
+
+@media (max-width: 760px) {
+  .page {
+    padding: 16px 14px 32px;
+  }
+
+  .page > header {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .listrow {
+    flex-wrap: wrap;
+  }
+}

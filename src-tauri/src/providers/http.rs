@@ -13,10 +13,18 @@ use super::error::ProviderError;
 /// A client suited to long-lived streaming replies: no overall timeout (a thinking model can stream
 /// for minutes) but a bounded connect phase and a generous per-read stall limit.
 pub fn build_client() -> reqwest::Client {
-    reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(180))
-        .user_agent(concat!("LocalTavern/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("LocalTavern/", env!("CARGO_PKG_VERSION")));
+    // The platform verifier needs a JVM-side component on Android; the Mozilla roots do without.
+    #[cfg(target_os = "android")]
+    let builder = builder.tls_certs_only(
+        webpki_root_certs::TLS_SERVER_ROOT_CERTS
+            .iter()
+            .filter_map(|der| reqwest::Certificate::from_der(der).ok()),
+    );
+    builder
         .build()
         .expect("reqwest client configuration is static and valid")
 }

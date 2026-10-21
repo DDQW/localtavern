@@ -7,6 +7,7 @@
   import StoryPanel from "./StoryPanel.svelte";
   import PictureDialog from "./PictureDialog.svelte";
   import ToolApprovalDialog from "./ToolApprovalDialog.svelte";
+  import { ui } from "$lib/ui.svelte";
 
   const PAGE = 60;
 
@@ -36,6 +37,7 @@
     chat.conversationId;
     visible = PAGE;
     stick = true;
+    ui.storyOpen = false;
     void scrollToBottom();
   });
 
@@ -95,7 +97,13 @@
   </div>
 
   {#if chat.isRoleplay}
-    <StoryPanel />
+    <!-- On a phone the story panel is a drawer, opened from the header. -->
+    {#if ui.storyOpen}
+      <button class="backdrop" aria-label="Close story panel" onclick={() => (ui.storyOpen = false)}></button>
+    {/if}
+    <div class="story" class:open={ui.storyOpen}>
+      <StoryPanel />
+    </div>
   {/if}
 </div>
 
@@ -114,6 +122,49 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
+  }
+
+  .story {
+    display: contents;
+  }
+
+  .backdrop {
+    display: none;
+  }
+
+  @media (max-width: 760px) {
+    .story {
+      display: block;
+      position: fixed;
+      inset: 0 0 0 auto;
+      width: min(340px, 88vw);
+      z-index: 40;
+      transform: translateX(100%);
+      transition: transform 0.18s ease-out;
+      box-shadow: var(--shadow);
+    }
+
+    .story.open {
+      transform: none;
+    }
+
+    .story :global(.panel) {
+      width: 100%;
+      height: 100%;
+      padding-top: calc(env(safe-area-inset-top) + 12px);
+      padding-bottom: calc(env(safe-area-inset-bottom) + 24px);
+    }
+
+    .backdrop {
+      display: block;
+      position: fixed;
+      inset: 0;
+      z-index: 35;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: rgb(0 0 0 / 0.45);
+    }
   }
 
   .scroller {

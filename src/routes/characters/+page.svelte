@@ -110,6 +110,7 @@
 <style>
   header input {
     width: 260px;
+    max-width: 100%;
   }
 
   .grow {
@@ -141,7 +142,7 @@
 
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
     gap: 14px;
   }
 

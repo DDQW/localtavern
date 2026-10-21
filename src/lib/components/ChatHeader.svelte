@@ -4,10 +4,13 @@
   import { chat } from "$lib/chat.svelte";
   import type { Character } from "$lib/types";
   import ContextMeter from "./ContextMeter.svelte";
+  import { ui } from "$lib/ui.svelte";
 
   let providers = $state<{ id: string; name: string }[]>([]);
   let allCharacters = $state<Character[]>([]);
   let showPrompt = $state(false);
+  // Phone only: the pickers fold away behind a button so the messages get the screen.
+  let showPickers = $state(false);
   let refreshing = $state(false);
 
   $effect(() => {
@@ -50,14 +53,18 @@
         <span class="muted subtitle">{conversation.title}</span>
       {/if}
       <span class="spacer"></span>
-      <ContextMeter />
+      <span class="meter"><ContextMeter /></span>
       {#if isAssistant}
         <button class="ghost" onclick={() => (showPrompt = !showPrompt)} aria-expanded={showPrompt}>System prompt</button>
       {/if}
-      <button onclick={newChat} disabled={chat.busy} title="Start a new chat">＋ New chat</button>
+      <button class="narrow" onclick={() => (showPickers = !showPickers)} aria-expanded={showPickers} title="Persona, preset, model and history">⚙</button>
+      {#if chat.isRoleplay}
+        <button class="narrow" onclick={() => (ui.storyOpen = true)} title="Story panel">Story</button>
+      {/if}
+      <button onclick={newChat} disabled={chat.busy} title="Start a new chat" aria-label="New chat">＋<span class="wide"> New chat</span></button>
     </div>
 
-    <div class="pickers">
+    <div class="pickers" class:open={showPickers}>
       <label class="field">
         Persona
         <select value={conversation.personaId ?? ""} onchange={(e) => chat.setPersona(e.currentTarget.value || null)}>
@@ -198,5 +205,72 @@
 
   .prompt textarea {
     width: 100%;
+  }
+
+  .narrow {
+    display: none;
+  }
+
+  @media (max-width: 760px) {
+    .head {
+      padding: 8px 12px;
+      gap: 8px;
+    }
+
+    .titlebar {
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+
+    /* The meter gets a line of its own under the title and buttons. */
+    .meter {
+      order: 1;
+      flex-basis: 100%;
+    }
+
+    h1 {
+      flex: 1;
+      font-size: 17px;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .subtitle,
+    .spacer,
+    .wide {
+      display: none;
+    }
+
+    .narrow {
+      display: inline-block;
+    }
+
+    .pickers:not(.open) {
+      display: none;
+    }
+
+    .pickers {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .field select,
+    .model select,
+    .history select {
+      max-width: none;
+      width: 100%;
+    }
+
+    .model,
+    .history {
+      grid-column: 1 / -1;
+    }
+
+    .model .with-button select {
+      flex: 1;
+    }
   }
 </style>

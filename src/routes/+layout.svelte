@@ -2,6 +2,7 @@
   import { page } from "$app/state";
   import "../app.css";
   import Lightbox from "$lib/components/Lightbox.svelte";
+  import { ui } from "$lib/ui.svelte";
 
   let { children } = $props();
 
@@ -22,9 +23,20 @@
   // A character chat belongs under "Roleplay"; a conversation opened from History under neither.
   const activeItem = (href: string) =>
     href === "/roleplay" ? active(href) || path.startsWith("/character/") || path.startsWith("/group/") : active(href);
+
+  // On a phone the menu is a drawer: going somewhere closes it.
+  $effect(() => {
+    path;
+    ui.navOpen = false;
+  });
 </script>
 
-<div class="app">
+<div class="app" class:nav-open={ui.navOpen}>
+  <header class="topbar">
+    <button class="ghost menu" onclick={() => (ui.navOpen = !ui.navOpen)} aria-label="Menu" aria-expanded={ui.navOpen}>☰</button>
+    <span class="brand">LocalTavern</span>
+  </header>
+
   <nav class="sidebar" aria-label="Main">
     <div class="brand">LocalTavern</div>
 
@@ -44,6 +56,10 @@
     </a>
   </nav>
 
+  {#if ui.navOpen}
+    <button class="backdrop" aria-label="Close menu" onclick={() => (ui.navOpen = false)}></button>
+  {/if}
+
   <main class="main">
     {@render children()}
   </main>
@@ -56,6 +72,13 @@
     display: grid;
     grid-template-columns: 208px 1fr;
     height: 100vh;
+    height: 100dvh;
+    /* Android draws the app edge to edge, under the status and navigation bars. */
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
+  .topbar {
+    display: none;
   }
 
   .sidebar {
@@ -115,7 +138,64 @@
 
   .main {
     min-width: 0;
-    height: 100vh;
+    min-height: 0;
     overflow: hidden;
+  }
+
+  /* Phone: a slim top bar, and the sidebar slides in over the page. */
+  @media (max-width: 760px) {
+    .app {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .topbar .brand {
+      padding: 0;
+    }
+
+    .menu {
+      font-size: 20px;
+      padding: 4px 10px;
+    }
+
+    .sidebar {
+      position: fixed;
+      inset: 0 auto 0 0;
+      width: min(260px, 80vw);
+      z-index: 40;
+      overflow-y: auto;
+      padding-top: calc(env(safe-area-inset-top) + 12px);
+      padding-bottom: calc(env(safe-area-inset-bottom) + 12px);
+      transform: translateX(-100%);
+      transition: transform 0.18s ease-out;
+      box-shadow: var(--shadow);
+    }
+
+    .nav-open .sidebar {
+      transform: none;
+    }
+
+    .item {
+      padding: 11px 10px;
+    }
+
+    .backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 35;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: rgb(0 0 0 / 0.45);
+    }
   }
 </style>

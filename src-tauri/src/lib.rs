@@ -10,6 +10,7 @@ pub mod import;
 pub mod library;
 pub mod llm;
 pub mod models;
+pub mod picked;
 pub mod powershell;
 pub mod prompting;
 pub mod providers;
@@ -88,6 +89,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             let data_dir = resolve_data_dir(app)?;
             app.manage(build_state(data_dir)?);

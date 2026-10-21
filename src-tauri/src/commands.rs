@@ -33,7 +33,7 @@ use crate::repo::{
 };
 use crate::secrets::KeyringSecretStore;
 use crate::prompting::appearance::AppearanceSubject;
-use crate::{library, prompting, settings};
+use crate::{library, picked, prompting, settings};
 
 pub struct AppState {
     pub db: Db,
@@ -48,6 +48,13 @@ pub struct AppState {
     pub sign_ins: Mutex<HashMap<String, CancellationToken>>,
     pub images_dir: PathBuf,
     pub data_dir: PathBuf,
+}
+
+impl AppState {
+    /// Where picked files that aren't plain paths (Android content URIs) are copied while importing.
+    fn scratch_dir(&self) -> PathBuf {
+        self.data_dir.join("picked")
+    }
 }
 
 /// Forwards engine events to the frontend over a Tauri channel.
@@ -590,8 +597,9 @@ pub fn save_default_personas(state: State<'_, AppState>, personas: settings::Def
 
 /// Copies a picked image into the app's own storage so it survives the original moving.
 #[tauri::command]
-pub fn store_image(state: State<'_, AppState>, path: String) -> Result<String> {
-    let stored = images::store_file(&state.images_dir, Path::new(&path))?;
+pub fn store_image(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<String> {
+    let picked = picked::open(&app, &state.scratch_dir(), &path)?;
+    let stored = images::store_file(&state.images_dir, picked.path())?;
     Ok(stored.to_string_lossy().into_owned())
 }
 
@@ -609,15 +617,16 @@ pub fn delete_character(state: State<'_, AppState>, character_id: Uuid) -> Resul
 
 /// Imports a SillyTavern `.json` or `.png` card.
 #[tauri::command]
-pub fn import_character(state: State<'_, AppState>, path: String) -> Result<Character> {
-    state.db.with(|c| library::import_character(c, &state.images_dir, Path::new(&path)))
+pub fn import_character(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<Character> {
+    let picked = picked::open(&app, &state.scratch_dir(), &path)?;
+    state.db.with(|c| library::import_character(c, &state.images_dir, picked.path()))
 }
 
 /// Writes the character (as currently edited) to `path` as a character-card-v2 JSON file.
 #[tauri::command]
-pub fn export_character_card(state: State<'_, AppState>, character: Character, path: String) -> Result<()> {
+pub fn export_character_card(app: AppHandle, state: State<'_, AppState>, character: Character, path: String) -> Result<()> {
     let json = state.db.with(|c| library::export_character_card(c, &character))?;
-    std::fs::write(&path, json).map_err(|e| Error::Other(format!("Couldn't write {path}: {e}")))
+    picked::write(&app, &path, json.as_bytes())
 }
 
 /// Imports a sprite folder: one image per emotion, named after the emotion.

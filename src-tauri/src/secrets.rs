@@ -1,6 +1,6 @@
-//! Per-provider API keys in the OS credential store (Windows Credential Manager). The C# app used
-//! the packaged-app PasswordVault, which is sandboxed per package and unreadable from here, so keys
-//! are entered once in this app.
+//! Per-provider API keys in the OS credential store (Windows Credential Manager; on Android,
+//! SharedPreferences encrypted with a Keystore key). The C# app used the packaged-app PasswordVault,
+//! which is sandboxed per package and unreadable from here, so keys are entered once in this app.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -8,12 +8,34 @@ use std::sync::Mutex;
 use crate::error::{Error, Result};
 use crate::providers::{ApiKeyProvider, SecretStore};
 
+// keyring's own `Entry` only picks a store on desktop platforms, so Android sets keyring-core's
+// default store itself and uses its `Entry` directly.
+#[cfg(not(target_os = "android"))]
+use keyring::{Entry, Error as KeyringError};
+#[cfg(target_os = "android")]
+use keyring_core::{Entry, Error as KeyringError};
+
 const SERVICE: &str = "LocalTavern";
 
 pub struct KeyringSecretStore;
 
-fn entry(provider_id: &str) -> Result<keyring::Entry> {
-    keyring::Entry::new(SERVICE, provider_id).map_err(|e| Error::Other(format!("credential store: {e}")))
+fn entry(provider_id: &str) -> Result<Entry> {
+    #[cfg(target_os = "android")]
+    android_store()?;
+    Entry::new(SERVICE, provider_id).map_err(|e| Error::Other(format!("credential store: {e}")))
+}
+
+#[cfg(target_os = "android")]
+fn android_store() -> Result<()> {
+    static STORE: std::sync::OnceLock<std::result::Result<(), String>> = std::sync::OnceLock::new();
+    STORE
+        .get_or_init(|| {
+            let store = android_native_keyring_store::Store::new().map_err(|e| e.to_string())?;
+            keyring_core::set_default_store(store);
+            Ok(())
+        })
+        .clone()
+        .map_err(|e| Error::Other(format!("credential store: {e}")))
 }
 
 impl ApiKeyProvider for KeyringSecretStore {
@@ -31,7 +53,7 @@ impl SecretStore for KeyringSecretStore {
 
     fn delete_api_key(&self, provider_id: &str) -> Result<()> {
         match entry(provider_id)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
             Err(e) => Err(Error::Other(format!("Couldn't remove the key from the credential store: {e}"))),
         }
     }

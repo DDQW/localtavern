@@ -5,9 +5,12 @@
   import { fileUrl } from "$lib/media";
   import type { ImageMode, Uuid } from "$lib/types";
 
+  // A touch keyboard has no Shift+Enter, so there Enter is a newline and the Send button sends.
+  const touch = typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches;
+
   /** Enter sends; Shift+Enter inserts a newline (the textarea's default). */
   function onkeydown(event: KeyboardEvent) {
-    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+    if (touch || event.key !== "Enter" || event.shiftKey || event.isComposing) return;
     event.preventDefault();
     void chat.send();
   }
@@ -97,7 +100,7 @@
       bind:value={chat.input}
       {onkeydown}
       rows="1"
-      placeholder="Message…  (Enter to send, Shift+Enter for a new line)"
+      placeholder={touch ? "Message…" : "Message…  (Enter to send, Shift+Enter for a new line)"}
       aria-label="Message"
     ></textarea>
 

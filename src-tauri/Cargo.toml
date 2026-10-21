@@ -40,6 +40,7 @@ tokio-util = "0.7.19"
 tauri-plugin-dialog = "2.8.0"
 getrandom = "0.4"
 sha2 = "0.11"
+tauri-plugin-fs = "2.7.1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
@@ -53,3 +54,8 @@ strip = true
 [dev-dependencies]
 tempfile = "3.27.0"
 wiremock = "0.6.5"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-native-keyring-store = "1.0.0"
+keyring-core = "1.0.1"
+webpki-root-certs = "1.0.10"
