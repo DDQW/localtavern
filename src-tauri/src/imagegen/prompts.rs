@@ -28,7 +28,8 @@ pub fn instruction(mode: ImageMode, style: PromptStyle, subject: &str) -> String
         ImageMode::Character => (
             format!(
                 "{subject} as they look right now, full body: species or race, gender, apparent age, build, skin, hair, \
-eyes, every piece of clothing and accessory, then their pose, expression and the surroundings in the current scene"
+eyes, what they are wearing right now as the story describes it (every piece of clothing and accessory, or none), \
+then their pose, expression and the surroundings in the current scene"
             ),
             "full body portrait",
         ),
@@ -42,19 +43,21 @@ eyes, makeup or markings, headwear or jewelry, and their expression right now"
         ImageMode::Persona => (
             format!(
                 "{subject} (the user's character) as they look right now, full body: species or race, gender, apparent age, \
-build, skin, hair, eyes, clothing and accessories, then pose, expression and surroundings"
+build, skin, hair, eyes, what they are wearing right now as the story describes it (or nothing), then pose, \
+expression and surroundings"
             ),
             "full body portrait",
         ),
         ImageMode::Scene => (
             "the current scene as a single picture: the location, time of day, lighting and mood, then each character present - \
-what they look like, what they wear and what they are doing"
+what they look like, what they are wearing as the story describes it (if anything) and what they are doing"
                 .to_string(),
             "scenery",
         ),
         ImageMode::LastMessage => (
             "only the moment in the last message as a single picture: the location, lighting, each character in it - what they \
-look like, wear and do - ignoring earlier events that are no longer visible"
+look like, what they are wearing as the story describes it (if anything) and what they do - ignoring earlier events \
+that are no longer visible"
                 .to_string(),
             "scenery",
         ),
@@ -261,6 +264,7 @@ Outfit: \"navy flight jacket, boots\""),
         let tags = instruction(ImageMode::Character, PromptStyle::Tags, "Alice");
         assert!(tags.starts_with("[System note:") && tags.ends_with(']'));
         assert!(tags.contains("Alice as they look right now"));
+        assert!(tags.contains("as the story describes it"), "clothing follows the story rather than being assumed: {tags}");
         assert!(tags.contains("starting with \"full body portrait\""));
 
         let face = instruction(ImageMode::Face, PromptStyle::Natural, "Bob");

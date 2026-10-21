@@ -13,8 +13,8 @@ pub fn build_instruction(character_name: &str, user_name: &str) -> String {
     format!(
         "Most replies send no photo. Only when {character_name} actually sends {user_name} a photo in this reply (for example a selfie \
 or a picture over the phone, because the story calls for it), end the reply with one last line in exactly this form, square brackets \
-included: [photo: <what the photo shows, as a camera would see it: who is in it, their pose, expression and clothing, the place and \
-the lighting>]. Write the description only inside the brackets, not in the story text. Never add the line when no photo is sent."
+included: [photo: <what the photo shows, as a camera would see it: who is in it, their pose, expression and what they are \
+wearing (if anything), the place and the lighting>]. Write the description only inside the brackets, not in the story text. Never add the line when no photo is sent."
     )
 }
 
