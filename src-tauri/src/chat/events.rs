@@ -26,6 +26,8 @@ pub enum ChatEvent {
     /// The story's side-character list changed (someone new was introduced, or learned about).
     CastChanged { conversation_id: Uuid, cast: Vec<StoryCharacter> },
     TitleChanged { conversation_id: Uuid, title: String },
+    /// The character sent the user a photo in the story (`[photo: ...]`); the app draws it.
+    PhotoSent { conversation_id: Uuid, message_id: Uuid, character_id: Option<Uuid>, description: String },
     /// The request was getting too big for the model, so older messages are being summarized first.
     Compacting { conversation_id: Uuid },
     /// A compaction finished (or failed - an `Error` says so); the context meter is out of date.

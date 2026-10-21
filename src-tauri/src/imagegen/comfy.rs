@@ -247,6 +247,18 @@ pub async fn generate(client: &reqwest::Client, url: &str, custom_workflow: &str
     Ok(GeneratedImage { data, mime_type })
 }
 
+/// Best-effort: moves ComfyUI's models off the graphics card. They stay cached in RAM, so the next
+/// picture is back on the card in a second or two. Needed on a shared card: ComfyUI otherwise keeps
+/// ~10 GB of VRAM while idle (its memory manager doesn't release it on AMD).
+pub async fn free_vram(client: &reqwest::Client, url: &str) {
+    let _ = client
+        .post(format!("{url}/free"))
+        .header("content-type", "application/json")
+        .body(json!({ "unload_models": true }).to_string())
+        .send()
+        .await;
+}
+
 /// Best-effort: stops whatever ComfyUI is running.
 pub async fn interrupt(client: &reqwest::Client, url: &str) {
     let _ = client.post(format!("{url}/interrupt")).send().await;
@@ -367,6 +379,19 @@ mod tests {
         let image = generate(&super::super::client(), &server.uri(), "", &request()).await.unwrap();
         assert_eq!(image.data, PNG);
         assert_eq!(image.mime_type, "image/png");
+    }
+
+    #[tokio::test]
+    async fn freeing_vram_asks_comfyui_to_unload_its_models() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/free"))
+            .and(wiremock::matchers::body_json(json!({"unload_models": true})))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        free_vram(&super::super::client(), &server.uri()).await;
     }
 
     #[tokio::test]

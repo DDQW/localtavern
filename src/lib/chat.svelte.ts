@@ -66,6 +66,13 @@ class ChatStore {
   scanning = $state(false);
   /** The picture being made for this chat, if any. */
   picture = $state<PictureJob | null>(null);
+  /** Photos characters sent while another picture was being drawn; drawn next, in order. */
+  private photoQueue: ImagePromptDraft[] = [];
+  /** Conversations with a streaming call still running (open or not). */
+  private inFlight = new Set<Uuid>();
+  /** What a still-generating conversation looked like when it was left, kept up to date from its
+   * events until it is opened again or finishes. */
+  private parked = new Map<Uuid, { messages: UiMessage[]; approval: ToolApproval | null; error: string }>();
 
   get conversationId(): Uuid | null {
     return this.session?.conversation.id ?? null;
@@ -104,16 +111,29 @@ class ChatStore {
 
   /** Makes `session` the open conversation. */
   load(session: ChatSession) {
+    // A reply still streaming in the chat being left keeps going; its events are collected in `parked`.
+    const leaving = this.conversationId;
+    if (leaving && leaving !== session.conversation.id && this.inFlight.has(leaving)) {
+      this.parked.set(leaving, {
+        messages: this.messages,
+        approval: this.approval,
+        error: this.error,
+      });
+    }
+    const resumed = this.parked.get(session.conversation.id);
+    this.parked.delete(session.conversation.id);
+
     this.session = session;
-    this.messages = session.messages.map((m) => toUi(m));
-    this.error = "";
+    this.messages = resumed ? resumed.messages : session.messages.map((m) => toUi(m));
+    this.error = resumed?.error ?? "";
     this.input = "";
     this.pendingAttachments = [];
-    this.busy = false;
-    this.approval = null;
+    this.busy = !!resumed;
+    this.approval = resumed?.approval ?? null;
     this.context = null;
     this.compacting = false;
     this.picture = null;
+    this.photoQueue = [];
     this.cast = [];
     this.scanning = false;
     void this.refreshCast();
@@ -299,9 +319,65 @@ class ChatStore {
     else this.messages.push(toUi(message));
   }
 
+  /** Applies the events that matter to a conversation that was left mid-reply. */
+  private handleParked(conversationId: Uuid, event: ChatEvent) {
+    const parked = this.parked.get(conversationId);
+    if (!parked) return;
+    const find = (id: Uuid) => parked.messages.find((m) => m.id === id);
+    switch (event.type) {
+      case "messageAdded":
+        parked.messages.push(toUi(event.message, event.message.role !== "user" && event.message.text === ""));
+        break;
+      case "regenerating": {
+        const m = find(event.messageId);
+        if (m) {
+          m.streaming = true;
+          m.text = "";
+          m.reasoningText = null;
+        }
+        break;
+      }
+      case "continuing": {
+        const m = find(event.messageId);
+        if (m) m.streaming = true;
+        break;
+      }
+      case "delta": {
+        const m = find(event.messageId);
+        if (m) {
+          m.text += event.text;
+          if (event.reasoning) m.reasoningText = (m.reasoningText ?? "") + event.reasoning;
+        }
+        break;
+      }
+      case "messageUpdated": {
+        const i = parked.messages.findIndex((m) => m.id === event.message.id);
+        if (i >= 0) parked.messages[i] = toUi(event.message);
+        else parked.messages.push(toUi(event.message));
+        break;
+      }
+      case "messageRemoved":
+        parked.messages = parked.messages.filter((m) => m.id !== event.messageId);
+        break;
+      case "toolApproval":
+        parked.approval = { requestId: event.requestId, command: event.command, elevate: event.elevate };
+        break;
+      case "error":
+        parked.error = event.message;
+        break;
+      case "finished":
+        // Nothing left to show: opening the chat again loads the finished reply from the database.
+        this.parked.delete(conversationId);
+        break;
+    }
+  }
+
   /** Applies one engine event. Events from a conversation that is no longer open are ignored. */
   private handle(conversationId: Uuid, event: ChatEvent) {
-    if (this.conversationId !== conversationId) return;
+    if (this.conversationId !== conversationId) {
+      this.handleParked(conversationId, event);
+      return;
+    }
 
     switch (event.type) {
       case "messageAdded":
@@ -352,6 +428,9 @@ class ChatStore {
       case "titleChanged":
         if (this.session) this.session.conversation.title = event.title;
         break;
+      case "photoSent":
+        void this.drawSentPhoto(event.characterId, event.description);
+        break;
       case "error":
         this.error = event.message;
         break;
@@ -379,14 +458,24 @@ class ChatStore {
     this.pendingAttachments = [];
     this.error = "";
     this.busy = true;
+    await this.stream(id, (onEvent) => api.sendMessage(id, text, attachments, onEvent));
+  }
+
+  /** Runs one streaming call for conversation `id`, which stays "generating" even if the user
+   * opens another chat meanwhile. */
+  private async stream(id: Uuid, start: (onEvent: (e: ChatEvent) => void) => Promise<void>) {
+    this.inFlight.add(id);
     try {
-      await api.sendMessage(id, text, attachments, (e) => this.handle(id, e));
+      await start((e) => this.handle(id, e));
     } catch (e) {
+      // The engine has already reported its own errors as events; this covers a failed call.
       if (this.conversationId === id) {
-        // The engine has already reported its own errors as events; this covers a failed call.
         this.error ||= errorText(e);
         this.busy = false;
       }
+    } finally {
+      this.inFlight.delete(id);
+      this.parked.delete(id);
     }
   }
 
@@ -395,14 +484,7 @@ class ChatStore {
     if (!id || this.busy) return;
     this.error = "";
     this.busy = true;
-    try {
-      await api.pickSpeaker(id, characterId, (e) => this.handle(id, e));
-    } catch (e) {
-      if (this.conversationId === id) {
-        this.error ||= errorText(e);
-        this.busy = false;
-      }
-    }
+    await this.stream(id, (onEvent) => api.pickSpeaker(id, characterId, onEvent));
   }
 
   /** Answers the open tool-approval question (see `approval`). */
@@ -423,14 +505,7 @@ class ChatStore {
     if (!id || !this.canContinue) return;
     this.error = "";
     this.busy = true;
-    try {
-      await api.continueMessage(id, (e) => this.handle(id, e));
-    } catch (e) {
-      if (this.conversationId === id) {
-        this.error ||= errorText(e);
-        this.busy = false;
-      }
-    }
+    await this.stream(id, (onEvent) => api.continueMessage(id, onEvent));
   }
 
   /** Has the model draft the user's next message into the input box, to be edited and sent by hand. */
@@ -458,14 +533,7 @@ class ChatStore {
     if (!id || this.busy) return;
     this.error = "";
     this.busy = true;
-    try {
-      await api.swipeNext(id, message.id, (e) => this.handle(id, e));
-    } catch (e) {
-      if (this.conversationId === id) {
-        this.error ||= errorText(e);
-        this.busy = false;
-      }
-    }
+    await this.stream(id, (onEvent) => api.swipeNext(id, message.id, onEvent));
   }
 
   async swipePrevious(message: UiMessage) {
@@ -558,7 +626,25 @@ class ChatStore {
     } catch (e) {
       if (this.conversationId === id) this.error = errorText(e);
     } finally {
-      if (this.conversationId === id) this.picture = null;
+      if (this.conversationId === id) {
+        this.picture = null;
+        const next = this.photoQueue.shift();
+        if (next) void this.renderPicture(next);
+      }
+    }
+  }
+
+  /** A photo the character sent in the story: drawn straight away (no review), or after the
+   * picture already being drawn. */
+  private async drawSentPhoto(characterId: Uuid | null, description: string) {
+    const id = this.conversationId;
+    try {
+      const draft = await api.photoDraft(characterId, description);
+      if (this.conversationId !== id) return;
+      if (this.picture) this.photoQueue.push(draft);
+      else await this.renderPicture(draft);
+    } catch (e) {
+      if (this.conversationId === id) this.error = errorText(e);
     }
   }
 

@@ -66,6 +66,13 @@ async fn make_room(state: &AppState, jobs: &ImageJobs, settings: &ImageGenSettin
     }
 }
 
+/// After a picture (finished, failed or stopped): hands the graphics card back to Ollama.
+async fn give_back(jobs: &ImageJobs, settings: &ImageGenSettings) {
+    if settings.unload_ollama_first {
+        imagegen::release_vram(&jobs.client, settings).await;
+    }
+}
+
 /// The render request for a reviewed draft, using the active backend's checkpoint and sampler.
 pub fn render_request(settings: &ImageGenSettings, draft: &ImagePromptDraft) -> ImageRequest {
     let backend = settings.active();
@@ -113,6 +120,32 @@ pub async fn image_prompt(
     engine.image_prompt(conversation_id, mode, character_id, &settings).await
 }
 
+/// The draft for a photo a character sent in the story: the global prefix, the character's base
+/// look (so it looks like them) and the model's description, in the portrait size a phone photo has.
+pub fn photo_draft_for(settings: &ImageGenSettings, character: Option<&Character>, description: &str) -> ImagePromptDraft {
+    let look = character.map(|c| c.picture_style.base_look.as_str()).unwrap_or_default();
+    ImagePromptDraft {
+        mode: ImageMode::Character,
+        prompt: prompts::combine(&settings.prompt_prefix, look, description),
+        negative_prompt: settings.negative_prompt.clone(),
+        width: settings.width,
+        height: settings.height,
+        character_id: character.map(|c| c.id),
+    }
+}
+
+#[tauri::command]
+pub fn photo_draft(state: State<'_, AppState>, character_id: Option<Uuid>, description: String) -> Result<ImagePromptDraft> {
+    let (settings, character) = state.db.with(|c| {
+        let character = match character_id {
+            Some(id) => crate::repo::characters::get(c, id)?,
+            None => None,
+        };
+        Ok((imagegen::settings::load(c)?, character))
+    })?;
+    Ok(photo_draft_for(&settings, character.as_ref(), &description))
+}
+
 /// Renders a (reviewed) draft and adds the picture to the chat. `None` when stopped.
 #[tauri::command]
 pub async fn generate_image(
@@ -128,7 +161,9 @@ pub async fn generate_image(
     let request = render_request(&settings, &draft);
     let (token, _guard) = jobs.claim(conversation_id)?;
     make_room(&state, &jobs, &settings).await;
-    let Some(image) = imagegen::generate(&jobs.client, &settings, &request, &token).await? else {
+    let rendered = imagegen::generate(&jobs.client, &settings, &request, &token).await;
+    give_back(&jobs, &settings).await;
+    let Some(image) = rendered? else {
         return Ok(None);
     };
     state.engine.add_picture(conversation_id, &draft, &image).map(Some)
@@ -225,7 +260,9 @@ pub async fn draw_character_picture(
     let request = character_request(&settings, &character, &shot, outfit_id)?;
     let (token, _guard) = jobs.claim(character.id)?;
     make_room(&state, &jobs, &settings).await;
-    let Some(image) = imagegen::generate(&jobs.client, &settings, &request, &token).await? else {
+    let rendered = imagegen::generate(&jobs.client, &settings, &request, &token).await;
+    give_back(&jobs, &settings).await;
+    let Some(image) = rendered? else {
         return Ok(None);
     };
     let path = images::store_bytes(&state.images_dir, &image.data, &image.mime_type)?;
@@ -315,5 +352,16 @@ mod tests {
         assert!(character_request(&settings, &nova, &happy, Some(Uuid::new_v4())).is_err());
         nova.picture_style.base_look.clear();
         assert!(character_request(&settings, &nova, &happy, None).unwrap_err().to_string().contains("base look"));
+    }
+
+    #[test]
+    fn photo_drafts_put_the_characters_look_before_the_description() {
+        let settings = ImageGenSettings { prompt_prefix: "best quality".into(), ..Default::default() };
+        let nova = nova();
+        let draft = photo_draft_for(&settings, Some(&nova), "selfie, winking, cafe at night");
+        assert_eq!(draft.prompt, "best quality, 1girl, silver hair, selfie, winking, cafe at night");
+        assert_eq!((draft.width, draft.height, draft.character_id), (832, 1216, Some(nova.id)));
+        let nobody = photo_draft_for(&settings, None, "a sunset over the harbour");
+        assert_eq!((nobody.prompt.as_str(), nobody.character_id), ("best quality, a sunset over the harbour", None));
     }
 }

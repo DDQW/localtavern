@@ -1,4 +1,5 @@
-//! The tags a roleplay reply ends with - `[time-skip: ...]`, `[emotion: ...]`, `[meters: ...]` -
+//! The tags a roleplay reply ends with - `[time-skip: ...]`, `[emotion: ...]`, `[meters: ...]`,
+//! `[photo: ...]` -
 //! peeled off together, in whatever order the model wrote them, so one missing or misplaced tag
 //! can't leave another in the visible text or hide it from its parser.
 
@@ -8,12 +9,12 @@ use chrono::Duration;
 use regex::Regex;
 
 use super::meter_tag::{self, MeterReading};
-use super::{emotion_tag, time_skip_tag};
+use super::{emotion_tag, photo_tag, time_skip_tag};
 
 /// One or more tags at the very end of a reply, each optionally wrapped in `*`, `_` or backticks.
 static TAIL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)(?:[\s*_`]*[\[(]\s*(?:time[-_ ]?(?:skip|jump|passed|elapsed)|emotion|meters?)\s*[:=][^\])]*[\])])+[\s*_`]*$",
+        r"(?i)(?:[\s*_`]*[\[(]\s*(?:time[-_ ]?(?:skip|jump|passed|elapsed)|emotion|meters?|photo|picture|image|selfie)\s*[:=][^\])]*[\])])+[\s*_`]*$",
     )
     .unwrap()
 });
@@ -24,6 +25,8 @@ pub struct ReplyTags {
     /// Lowercased, not yet checked against any character's expression keys.
     pub emotion: Option<String>,
     pub meters: Option<MeterReading>,
+    /// What a photo the character sent in the story shows, for the app to draw.
+    pub photo: Option<String>,
 }
 
 /// Splits the trailing tags off `text`, returning the text without them and what they said.
@@ -36,6 +39,7 @@ pub fn peel(text: &str) -> (String, ReplyTags) {
         skip: time_skip_tag::parse_tail(tail),
         emotion: emotion_tag::parse_tail(tail),
         meters: meter_tag::parse_tail(tail),
+        photo: photo_tag::parse_tail(tail),
     };
     (text[..found.start()].trim_end().to_string(), tags)
 }
@@ -57,6 +61,29 @@ mod tests {
             assert_eq!(tags.emotion.as_deref(), Some("happy"), "{text}");
             assert_eq!(tags.meters, Some(MeterReading { arousal: Some(30), climax: Some(5), orgasm: false }), "{text}");
         }
+    }
+
+    #[test]
+    fn peels_a_photo_tag_alongside_the_others() {
+        let (clean, tags) = peel("She holds up her phone and snaps one.\n\n[photo: selfie, silver hair, winking, cafe at night]\n[emotion: happy]");
+        assert_eq!(clean, "She holds up her phone and snaps one.");
+        assert_eq!(tags.photo.as_deref(), Some("selfie, silver hair, winking, cafe at night"));
+        assert_eq!(tags.emotion.as_deref(), Some("happy"));
+        assert_eq!(peel("No photo here. [emotion: sad]").1.photo, None);
+    }
+
+    #[test]
+    fn peels_a_long_photo_description_the_way_a_local_model_wrote_it() {
+        // Gemma 4 26B's actual answer to "Send me a pic :)" with the photo instruction.
+        let reply = "She snaps a quick selfie, tilting her head.
+
+*texts* Just lounging at home enjoying the sun. Here you go! ;)
+
+[photo: A close-up selfie of Nova looking directly into the lens with a teasing smile. Her long silver hair falls across her shoulder, catching the sunlight. She is wearing a simple white ribbed tank top. The background shows her sunlit bedroom wall.]";
+        let (clean, tags) = peel(reply);
+        assert!(clean.ends_with("Here you go! ;)"), "{clean}");
+        let photo = tags.photo.unwrap();
+        assert!(photo.starts_with("A close-up selfie of Nova") && photo.ends_with("sunlit bedroom wall."), "{photo}");
     }
 
     #[test]

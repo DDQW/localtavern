@@ -92,6 +92,14 @@ pub async fn generate(
     }
 }
 
+/// Best-effort: has the image server give the graphics card back once a picture is done. Only
+/// ComfyUI needs telling - the A1111 family frees its working memory after each picture itself.
+pub async fn release_vram(client: &reqwest::Client, settings: &ImageGenSettings) {
+    if settings.backend == ImageBackend::ComfyUi {
+        comfy::free_vram(client, &settings.comfy.url).await;
+    }
+}
+
 /// A seed every backend accepts (ComfyUI rejects -1) that also survives a round trip through
 /// JavaScript numbers.
 pub fn random_seed() -> i64 {

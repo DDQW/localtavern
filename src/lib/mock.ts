@@ -478,7 +478,18 @@ export const mockApi: Api = {
       onEvent({ type: "finished" });
       return;
     }
-    await stream(conversationId, reply, onEvent, SAMPLE_REPLY, false);
+    // Asking a roleplay character for a photo gets one, like a real model's [photo: ...] tag would.
+    const wantsPhoto = c.mode === "roleplay" && /\b(photo|pic|picture|selfie)\b/i.test(text);
+    await stream(conversationId, reply, onEvent, wantsPhoto ? "She grins, holds up her phone and snaps a quick selfie for you." : SAMPLE_REPLY, false);
+    if (wantsPhoto && imageSettings.autoPhotos) {
+      onEvent({
+        type: "photoSent",
+        conversationId,
+        messageId: reply.id,
+        characterId: c.characterId,
+        description: "selfie of a young woman, silver hair, winking, neon cafe at night",
+      });
+    }
     onEvent({ type: "finished" });
   },
   async swipeNext(conversationId, messageId, onEvent) {
@@ -991,6 +1002,17 @@ export const mockApi: Api = {
     };
     return draft;
   },
+  async photoDraft(characterId, description) {
+    const character = characters.find((c) => c.id === characterId);
+    return {
+      mode: "character",
+      prompt: [imageSettings.promptPrefix, character?.pictureStyle.baseLook ?? "", description].filter((p) => p.trim()).join(", "),
+      negativePrompt: imageSettings.negativePrompt,
+      width: imageSettings.width,
+      height: imageSettings.height,
+      characterId: character?.id ?? null,
+    };
+  },
   async generateImage(conversationId, draft) {
     imageRunning.set(conversationId, true);
     for (let i = 0; i < 15; i++) {
@@ -1035,6 +1057,7 @@ let imageSettings: ImageGenSettings = {
   promptStyle: "tags",
   reviewPrompt: true,
   unloadOllamaFirst: true,
+  autoPhotos: true,
 };
 const imageRunning = new Map<Uuid, boolean>();
 

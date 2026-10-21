@@ -40,7 +40,7 @@ use crate::powershell::settings as tool_settings;
 use crate::prompting::powershell_tool::{self, PowerShellToolCallRequest, ToolResult};
 use crate::prompting::reply_tags::{self, ReplyTags};
 use crate::prompting::{
-    self, emotion_tag, roles, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext,
+    self, emotion_tag, photo_tag, roles, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext,
 };
 use crate::providers::{LlmGeneratedImage, LlmProviderRegistry, ProviderError};
 use crate::repo::{characters, conversations, group_chats, story_characters, summaries, user_memories};
@@ -1273,6 +1273,12 @@ present, keep it as its own final paragraph, still naming whose details they are
         if options.reply_tags && conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_some() {
             append_instruction(&mut request, time_skip_tag::build_instruction());
         }
+        if let Some(character) = options.speaker.filter(|_| options.reply_tags && conversation.mode == ConversationMode::Roleplay) {
+            if self.db().with(crate::imagegen::settings::load)?.auto_photos {
+                let user = roles::user_name(ctx.persona.as_ref());
+                append_instruction(&mut request, &photo_tag::build_instruction(&character.name, user));
+            }
+        }
         // The picture rides on the user's turn, but the system notes after it come last and the model
         // answers those - so say outright that there is a picture to look at.
         let pictures = history.iter().rev().find(|m| m.role == MessageRole::User).map_or(0, |m| m.attachments.len());
@@ -1424,6 +1430,14 @@ present, keep it as its own final paragraph, still naming whose details they are
         Ok((clean, tags, Some(report)))
     }
 
+    /// A `[photo: ...]` description to announce, when Settings ask for photos to be drawn.
+    fn photo_to_draw(&self, photo: Option<String>) -> Result<Option<String>> {
+        match photo {
+            Some(description) if self.db().with(crate::imagegen::settings::load)?.auto_photos => Ok(Some(description)),
+            _ => Ok(None),
+        }
+    }
+
     fn emit_failure(&self, error: &ProviderError, sink: &Arc<dyn EventSink>) {
         sink.emit(ChatEvent::Error { message: user_message(error), kind: Some(error.kind) });
     }
@@ -1488,9 +1502,11 @@ present, keep it as its own final paragraph, still naming whose details they are
         let StreamResult { text, shown_text, reasoning, usage, images: generated, end } = result;
 
         let succeeded = matches!(end, StreamEnd::Completed);
+        let mut photo = None;
         if succeeded {
             message.usage = usage;
             let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, true, sink)?;
+            photo = self.photo_to_draw(tags.photo.clone())?;
             message.text = clean;
             message.detected_emotion = match_emotion(speaker.as_ref(), tags.emotion);
             message.clock = clock;
@@ -1513,6 +1529,14 @@ present, keep it as its own final paragraph, still naming whose details they are
             message.finalize_generation();
             self.db().with(|c| conversations::add_message(c, &message))?;
             sink.emit(ChatEvent::MessageUpdated { message: message.clone() });
+            if let Some(description) = photo {
+                sink.emit(ChatEvent::PhotoSent {
+                    conversation_id,
+                    message_id: message.id,
+                    character_id: speaker_id,
+                    description,
+                });
+            }
         }
 
         match end {
@@ -1679,9 +1703,11 @@ present, keep it as its own final paragraph, still naming whose details they are
 
         let succeeded = matches!(end, StreamEnd::Completed);
         let reasoning = nonempty(reasoning);
+        let mut photo = None;
         if succeeded {
             target.usage = usage;
             let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, moves_clock, &sink)?;
+            photo = self.photo_to_draw(tags.photo.clone())?;
             target.add_alternate(clean, reasoning, Some(raw_prompt));
             target.detected_emotion = match_emotion(speaker.as_ref(), tags.emotion);
             if moves_clock {
@@ -1699,8 +1725,17 @@ present, keep it as its own final paragraph, still naming whose details they are
         self.db().with(|c| conversations::update_message(c, &target))?;
         let reply_text = target.text.clone();
         let target_id = target.id;
+        let photographer = target.speaker_character_id;
         // Also restores the original text on the UI when nothing new arrived.
         sink.emit(ChatEvent::MessageUpdated { message: target });
+        if let Some(description) = photo {
+            sink.emit(ChatEvent::PhotoSent {
+                conversation_id: ctx.conversation.id,
+                message_id: target_id,
+                character_id: photographer,
+                description,
+            });
+        }
 
         match end {
             StreamEnd::Failed(error) => self.emit_failure(&error, &sink),

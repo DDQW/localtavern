@@ -170,6 +170,8 @@ export interface Api {
   stopCharacterPicture(characterId: Uuid): Promise<void>;
   /** The chat model's description for a picture; null when stopped (stopGeneration). */
   imagePrompt(conversationId: Uuid, mode: ImageMode, characterId: Uuid | null): Promise<ImagePromptDraft | null>;
+  /** The ready-to-draw draft for a photo a character sent in the story. */
+  photoDraft(characterId: Uuid | null, description: string): Promise<ImagePromptDraft>;
   /** Renders a draft and adds it to the chat; null when stopped (stopImage). */
   generateImage(conversationId: Uuid, draft: ImagePromptDraft): Promise<ChatMessage | null>;
   stopImage(conversationId: Uuid): Promise<void>;
@@ -299,6 +301,7 @@ const tauriApi: Api = {
   drawCharacterPicture: (character, shot, outfitId) => invoke("draw_character_picture", { character, shot, outfitId }),
   stopCharacterPicture: (characterId) => invoke("stop_character_picture", { characterId }),
   imagePrompt: (conversationId, mode, characterId) => invoke("image_prompt", { conversationId, mode, characterId }),
+  photoDraft: (characterId, description) => invoke("photo_draft", { characterId, description }),
   generateImage: (conversationId, draft) => invoke("generate_image", { conversationId, draft }),
   stopImage: (conversationId) => invoke("stop_image", { conversationId }),
   deletePicture: (messageId) => invoke("delete_picture", { messageId }),

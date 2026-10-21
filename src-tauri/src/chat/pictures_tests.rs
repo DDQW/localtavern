@@ -255,3 +255,44 @@ fn dressing_falls_back_to_the_defaults() {
     assert_eq!(dressed.expressions, nova.expressions, "an outfit without pictures keeps the default portraits");
     assert!(dressed.description.ends_with("Currently wearing: red ball gown, long gloves"));
 }
+
+#[tokio::test]
+async fn a_photo_the_character_sends_is_announced_and_kept_out_of_the_text() {
+    let f = fixture(vec![Script::Items(vec![
+        chunk("She snaps a quick selfie and sends it.\n\n[photo: selfie of a young woman, silver hair, winking, neon cafe at night]"),
+        finish("STOP"),
+    ])]);
+    let conv = ready_roleplay(&f);
+    let nova = f.engine.resume(conv).unwrap().characters[0].id;
+
+    let (result, events) = send(&f, conv, "Send me a pic?").await;
+    result.unwrap();
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap_or_default();
+    assert!(system.contains("Only when Nova actually sends User a photo"), "{system}");
+    assert!(system.contains("square brackets included"), "{system}");
+
+    let reply = messages(&f, conv).into_iter().find(|m| m.role == MessageRole::Character).unwrap();
+    assert_eq!(reply.text, "She snaps a quick selfie and sends it.");
+    let sent: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            ChatEvent::PhotoSent { message_id, character_id, description, .. } => Some((*message_id, *character_id, description.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sent, [(reply.id, Some(nova), "selfie of a young woman, silver hair, winking, neon cafe at night".to_string())]);
+}
+
+#[tokio::test]
+async fn no_photo_instruction_or_event_when_auto_photos_are_off() {
+    let f = fixture(vec![Script::Items(vec![chunk("Here. [photo: a sunset]"), finish("STOP")])]);
+    f.db.with(|c| crate::imagegen::settings::save(c, ImageGenSettings { auto_photos: false, ..Default::default() })).unwrap();
+    let conv = ready_roleplay(&f);
+    let (result, events) = send(&f, conv, "hi").await;
+    result.unwrap();
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap_or_default();
+    assert!(!system.contains("sends User a photo"), "{system}");
+    assert!(!events.iter().any(|e| matches!(e, ChatEvent::PhotoSent { .. })), "nothing to draw");
+    let reply = messages(&f, conv).into_iter().find(|m| m.role == MessageRole::Character).unwrap();
+    assert_eq!(reply.text, "Here.", "a stray tag is still kept out of the story");
+}

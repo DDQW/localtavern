@@ -166,11 +166,19 @@
       <input type="checkbox" bind:checked={settings.reviewPrompt} /> Let me review and edit the prompt before drawing
     </label>
     <label class="check">
-      <input type="checkbox" bind:checked={settings.unloadOllamaFirst} /> Unload Ollama's model before drawing
+      <input type="checkbox" bind:checked={settings.autoPhotos} /> Draw the photos characters send in the story
     </label>
     <p class="muted small">
-      Keep this on when Ollama and the image server share one graphics card: two big models rarely fit in its memory
-      together, and then both slow to a crawl. Ollama loads its model again with your next message.
+      When a character sends you a picture in a roleplay (a selfie over the phone, a snapshot of where they are), the model
+      describes it and the photo is drawn into the chat right away, without the review step.
+    </p>
+    <label class="check">
+      <input type="checkbox" bind:checked={settings.unloadOllamaFirst} /> Share the graphics card with Ollama
+    </label>
+    <p class="muted small">
+      Unloads Ollama's model before each picture and has ComfyUI free the card again afterwards. Keep this on when both run
+      on one graphics card: two big models rarely fit in its memory together, and then both slow to a crawl. Ollama loads
+      its model again with your next message.
     </p>
 
     {#if settings.backend === "comfyUi"}

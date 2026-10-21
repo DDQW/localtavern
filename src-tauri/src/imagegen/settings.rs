@@ -62,6 +62,8 @@ pub struct ImageGenSettings {
     pub review_prompt: bool,
     /// Unload Ollama's model before rendering, so the two don't fight over one graphics card.
     pub unload_ollama_first: bool,
+    /// Draw the photos characters send in the story (`[photo: ...]` tags) automatically.
+    pub auto_photos: bool,
 }
 
 impl Default for ImageGenSettings {
@@ -87,6 +89,7 @@ impl Default for ImageGenSettings {
             prompt_style: PromptStyle::Tags,
             review_prompt: true,
             unload_ollama_first: true,
+            auto_photos: true,
         }
     }
 }

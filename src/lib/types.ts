@@ -451,6 +451,8 @@ export type ChatEvent =
   | { type: "worldStateChanged"; conversationId: Uuid; worldState: WorldState }
   | { type: "castChanged"; conversationId: Uuid; cast: StoryCharacter[] }
   | { type: "titleChanged"; conversationId: Uuid; title: string }
+  /** The character sent the user a photo in the story; the app draws it. */
+  | { type: "photoSent"; conversationId: Uuid; messageId: Uuid; characterId: Uuid | null; description: string }
   | { type: "compacting"; conversationId: Uuid }
   | { type: "compacted"; conversationId: Uuid }
   | { type: "toolApproval"; requestId: Uuid; command: string; elevate: boolean }
@@ -560,6 +562,8 @@ export interface ImageGenSettings {
   reviewPrompt: boolean;
   /** Unload Ollama's model before rendering (one graphics card shared by both). */
   unloadOllamaFirst: boolean;
+  /** Draw the photos characters send in the story automatically. */
+  autoPhotos: boolean;
 }
 
 export interface ImageBackendOptions {

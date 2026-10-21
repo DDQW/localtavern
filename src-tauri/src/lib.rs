@@ -187,6 +187,7 @@ pub fn run() {
             image_commands::stop_character_picture,
             image_commands::image_prompt,
             image_commands::generate_image,
+            image_commands::photo_draft,
             image_commands::stop_image,
             image_commands::delete_picture,
         ])
