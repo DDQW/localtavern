@@ -13,12 +13,15 @@ use crate::models::{ChatMessage, MessageRole};
 /// Roughly how much of a private talk a member carries back into the group (the newest part).
 const MEMORY_CHARS: usize = 8000;
 
-/// One line for a group reply's system instruction: the speaker may take the user aside.
+/// One line for a group reply's system instruction: the speaker may take the user aside. Framed as
+/// ordinary behaviour, not a rare exception: people step aside for a quiet word all the time.
 pub fn private_tag_instruction(character: &str, user: &str) -> String {
     format!(
-        "Most replies stay in the group. Only when {character} wants to talk with {user} alone, away from the others, and the moment \
-allows it, end the reply with one last line in exactly this form, square brackets included: [private]. The app then takes {character} \
-and {user} to a private conversation."
+        "{character} can take {user} aside whenever that would come naturally: to say something not meant for the others' ears (a \
+remark about someone, a secret, a worry, a confession, a bit of flirting, a plan) or just for a moment alone with {user}. Then show \
+{character} drawing {user} aside, keep the private part itself for later, and end the reply with one last line in exactly this form, \
+square brackets included: [private]. The app then takes {character} and {user} to a private conversation, where {character} goes on. \
+Leave the line out when everything {character} wants to say can be said in front of the others."
     )
 }
 
@@ -197,7 +200,11 @@ mod tests {
     fn rules_name_the_group_and_the_others() {
         let rules = rules("Mira", "Alex", "The Crew", &["Bob", "Cara"]);
         assert!(rules.starts_with("This is a private conversation between Alex and Mira, away from the group chat \"The Crew\" with Bob and Cara."), "{rules}");
-        assert!(private_tag_instruction("Mira", "Alex").contains("[private]"));
+        let aside = private_tag_instruction("Mira", "Alex");
+        assert!(aside.starts_with("Mira can take Alex aside whenever that would come naturally: to say something not meant for the others' ears"), "{aside}");
+        assert!(aside.contains("keep the private part itself for later"), "{aside}");
+        assert!(aside.contains("square brackets included: [private]."), "{aside}");
+        assert!(!aside.contains("Most replies") && !aside.contains("Only when"), "not framed as a rare exception: {aside}");
         assert_eq!(marker_text("Alex", "Mira"), "Alex and Mira stepped away from the group to talk in private.");
     }
 }
