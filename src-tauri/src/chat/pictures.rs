@@ -9,8 +9,8 @@ use super::{images, load_reply_context, user_message, AssembleOptions, ChatEngin
 use crate::error::{Error, Result};
 use crate::imagegen::prompts::{self, ImageMode};
 use crate::imagegen::{GeneratedImage, ImageGenSettings, PromptStyle};
-use crate::llm::{LlmMessage, LlmRequest, LlmRole};
-use crate::models::{Character, ChatMessage, MessageAttachment, MessageRole, PromptBlockType};
+use crate::llm::{LlmGenerationConfig, LlmMessage, LlmRequest, LlmRole};
+use crate::models::{Character, ChatMessage, MessageAttachment, MessageRole, PromptBlockType, ReasoningEffort};
 use crate::prompting::roles;
 use crate::repo::conversations;
 
@@ -115,8 +115,10 @@ impl ChatEngine {
             ),
             _ => "When asked for a picture description, give only the description.".to_string(),
         });
-        // A tool offer or a web search would only get in the way.
+        // A tool offer or a web search would only get in the way, and a tag list needs no long
+        // reasoning (a thinking model at a high level could otherwise think for minutes).
         request.enable_web_search = Some(false);
+        request.generation_config.reasoning_effort = Some(ReasoningEffort::Low);
 
         let provider = self.inner.providers.get(&ctx.conversation.provider_id).map_err(|e| Error::Other(user_message(&e)))?;
         let outcome = tokio::select! {
@@ -214,7 +216,7 @@ Description:
             model,
             system_instruction: None,
             history: vec![LlmMessage::new(LlmRole::User, prompt)],
-            generation_config: Default::default(),
+            generation_config: LlmGenerationConfig { reasoning_effort: Some(ReasoningEffort::Low), ..Default::default() },
             enable_web_search: None,
         };
         let provider = self.inner.providers.get(&provider_id).map_err(|e| Error::Other(user_message(&e)))?;

@@ -1034,6 +1034,7 @@ let imageSettings: ImageGenSettings = {
   negativePrompt: "lowres, bad anatomy, bad hands, extra fingers, blurry, watermark, text, signature",
   promptStyle: "tags",
   reviewPrompt: true,
+  unloadOllamaFirst: true,
 };
 const imageRunning = new Map<Uuid, boolean>();
 

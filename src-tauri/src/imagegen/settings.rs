@@ -60,6 +60,8 @@ pub struct ImageGenSettings {
     pub prompt_style: PromptStyle,
     /// Show the model-written prompt for editing before anything is rendered.
     pub review_prompt: bool,
+    /// Unload Ollama's model before rendering, so the two don't fight over one graphics card.
+    pub unload_ollama_first: bool,
 }
 
 impl Default for ImageGenSettings {
@@ -84,6 +86,7 @@ impl Default for ImageGenSettings {
             negative_prompt: "lowres, bad anatomy, bad hands, extra fingers, blurry, watermark, text, signature".into(),
             prompt_style: PromptStyle::Tags,
             review_prompt: true,
+            unload_ollama_first: true,
         }
     }
 }

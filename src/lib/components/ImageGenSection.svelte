@@ -165,6 +165,13 @@
     <label class="check">
       <input type="checkbox" bind:checked={settings.reviewPrompt} /> Let me review and edit the prompt before drawing
     </label>
+    <label class="check">
+      <input type="checkbox" bind:checked={settings.unloadOllamaFirst} /> Unload Ollama's model before drawing
+    </label>
+    <p class="muted small">
+      Keep this on when Ollama and the image server share one graphics card: two big models rarely fit in its memory
+      together, and then both slow to a crawl. Ollama loads its model again with your next message.
+    </p>
 
     {#if settings.backend === "comfyUi"}
       <label class="check">

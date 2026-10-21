@@ -558,6 +558,8 @@ export interface ImageGenSettings {
   negativePrompt: string;
   promptStyle: PromptStyle;
   reviewPrompt: boolean;
+  /** Unload Ollama's model before rendering (one graphics card shared by both). */
+  unloadOllamaFirst: boolean;
 }
 
 export interface ImageBackendOptions {

@@ -52,6 +52,20 @@ impl ImageJobs {
     }
 }
 
+/// Frees the graphics card for the image server when Settings ask for it (see `imagegen::ollama`).
+async fn make_room(state: &AppState, jobs: &ImageJobs, settings: &ImageGenSettings) {
+    if !settings.unload_ollama_first {
+        return;
+    }
+    let Ok(ollama) = state.db.with(crate::settings::load_ollama_options) else {
+        return;
+    };
+    let unloaded = imagegen::ollama::unload_all(&jobs.client, &ollama.base_url).await;
+    if !unloaded.is_empty() {
+        eprintln!("Unloaded {} from Ollama to make room for a picture", unloaded.join(", "));
+    }
+}
+
 /// The render request for a reviewed draft, using the active backend's checkpoint and sampler.
 pub fn render_request(settings: &ImageGenSettings, draft: &ImagePromptDraft) -> ImageRequest {
     let backend = settings.active();
@@ -113,6 +127,7 @@ pub async fn generate_image(
     let settings = state.db.with(imagegen::settings::load)?;
     let request = render_request(&settings, &draft);
     let (token, _guard) = jobs.claim(conversation_id)?;
+    make_room(&state, &jobs, &settings).await;
     let Some(image) = imagegen::generate(&jobs.client, &settings, &request, &token).await? else {
         return Ok(None);
     };
@@ -209,6 +224,7 @@ pub async fn draw_character_picture(
     let settings = state.db.with(imagegen::settings::load)?;
     let request = character_request(&settings, &character, &shot, outfit_id)?;
     let (token, _guard) = jobs.claim(character.id)?;
+    make_room(&state, &jobs, &settings).await;
     let Some(image) = imagegen::generate(&jobs.client, &settings, &request, &token).await? else {
         return Ok(None);
     };

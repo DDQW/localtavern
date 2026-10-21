@@ -55,6 +55,11 @@ async fn the_model_describes_the_character_and_the_draft_gets_prefixes_and_size(
     let system = request.system_instruction.clone().unwrap_or_default();
     assert!(!system.contains("Write Nova's next reply"), "the preset's reply prompt is left out: {system}");
     assert_eq!(request.enable_web_search, Some(false));
+    assert_eq!(
+        request.generation_config.reasoning_effort,
+        Some(crate::models::ReasoningEffort::Low),
+        "a tag list needs no long reasoning"
+    );
 }
 
 #[tokio::test]
