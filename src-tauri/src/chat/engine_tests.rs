@@ -489,6 +489,8 @@ async fn attachments_are_saved_on_the_user_message_and_sent_with_it() {
     assert_eq!(user.attachments[0].mime_type, "image/png");
     let sent = f.provider.requests()[0].history[0].attachments.clone().unwrap();
     assert_eq!(sent[0].image_path, "C:/pics/cat.png");
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap_or_default();
+    assert!(system.contains("includes a picture"), "the model is told there is a picture: {system}");
 }
 
 #[tokio::test]

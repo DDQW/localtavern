@@ -1273,6 +1273,12 @@ present, keep it as its own final paragraph, still naming whose details they are
         if options.reply_tags && conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_some() {
             append_instruction(&mut request, time_skip_tag::build_instruction());
         }
+        // The picture rides on the user's turn, but the system notes after it come last and the model
+        // answers those - so say outright that there is a picture to look at.
+        let pictures = history.iter().rev().find(|m| m.role == MessageRole::User).map_or(0, |m| m.attachments.len());
+        if pictures > 0 {
+            append_instruction(&mut request, &roles::picture_rule(pictures, conversation.mode == ConversationMode::Roleplay));
+        }
         Ok(request)
     }
 

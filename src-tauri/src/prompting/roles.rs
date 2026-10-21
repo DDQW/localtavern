@@ -26,6 +26,16 @@ pub fn system_note(text: &str) -> String {
     format!("[System note: {}]", text.trim())
 }
 
+/// Tells the model the user's latest message carries picture(s) it can see, and to answer them.
+pub fn picture_rule(count: usize, roleplay: bool) -> String {
+    let what = if count == 1 { "a picture".to_string() } else { format!("{count} pictures") };
+    if roleplay {
+        format!("The user's latest message includes {what}: something they are showing the character(s). Look at it and react in character to what it actually shows.")
+    } else {
+        format!("The user's latest message includes {what}. Look at it and answer with what it actually shows.")
+    }
+}
+
 /// The rules sent with every roleplay reply, whatever the preset says (a preset's own system prompt
 /// is the user's to edit, and may be anything). `speaker` is whose reply this is; a one-character
 /// chat falls back to that character. `None` when there is no character to play.
