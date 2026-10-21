@@ -82,6 +82,17 @@ straight with {me}'s words or actions, without \"{me}:\" in front - the app labe
     ))
 }
 
+/// The last turn of a group reply's request: whose reply this is, said where the model reads it
+/// last. Without it the request ends on the previous member's reply, and a model plans (and
+/// reasons through) the whole scene - every member's answer - to write one of them.
+pub fn group_turn_note(speaker: &str, others: &[&str]) -> String {
+    let others = join_names(others, "and");
+    system_note(&format!(
+        "Now write {speaker}'s reply, and only {speaker}'s. Any reply from {others} comes in a message of its own, so don't plan, \
+think through or write their replies: think only about what {speaker} says and does next."
+    ))
+}
+
 /// The trailing note asking for the user's own next message (Impersonate). It goes into the last
 /// user turn, not the system prompt - a system-prompt nudge alone lost to strong character cards -
 /// and says outright that the usual sides are swapped for this one message.
@@ -169,6 +180,14 @@ mod tests {
     #[test]
     fn no_character_means_no_rules() {
         assert_eq!(reply_rules("Alex", &[], None), None);
+    }
+
+    #[test]
+    fn the_group_turn_note_names_the_speaker_and_leaves_the_others_out() {
+        let note = group_turn_note("Alice", &["Bob", "Cara"]);
+        assert!(note.starts_with("[System note: Now write Alice's reply, and only Alice's. Any reply from Bob and Cara comes in a message of its own"), "{note}");
+        assert!(note.contains("don't plan, think through or write their replies"), "{note}");
+        assert!(note.ends_with("think only about what Alice says and does next.]"), "{note}");
     }
 
     #[test]

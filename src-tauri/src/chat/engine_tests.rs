@@ -1212,8 +1212,14 @@ async fn round_robin_groups_hand_the_floor_to_the_next_member_each_turn() {
 #[tokio::test]
 async fn a_group_reply_written_as_a_transcript_keeps_only_the_speakers_part() {
     let f = fixture(vec![
-        // Alice's turn, written as a transcript; the trailing tag still counts.
-        Script::Items(vec![chunk("Alice: *grins* \"Hi!\"\n\nBo"), chunk("b: \"Hey!\"\n\nUser: \"Hello?\"\n[next: Bob]"), finish("STOP")]),
+        // Alice's turn, written as a transcript. The stream stops at Bob's line, so the model never
+        // gets to write the rest of the scene (or the tag after it).
+        Script::Items(vec![
+            chunk("Alice: *grins* \"Hi!\"\n\nBo"),
+            chunk("b: \"Hey!\"\n\nUser: \"Hello?\""),
+            chunk("\n[next: Bob]"),
+            finish("STOP"),
+        ]),
         Script::Items(vec![chunk("**Bob:** \"Hey, both.\""), finish("STOP")]),
         // Swiping Bob's reply cuts the new take too.
         Script::Items(vec![chunk("\"Again.\"\nAlice: \"Stop it.\""), finish("STOP")]),
@@ -1227,17 +1233,21 @@ async fn a_group_reply_written_as_a_transcript_keeps_only_the_speakers_part() {
     let (result, events) = send(&f, conv, "Hello both").await;
     result.unwrap();
 
-    let texts: Vec<String> = messages(&f, conv).iter().skip(1).map(|m| m.text.clone()).collect();
-    assert_eq!(texts, ["*grins* \"Hi!\"", "\"Hey, both.\""]);
-    assert_eq!(speakers(&f, conv), [Some(alice.id), Some(bob.id)], "the [next: Bob] after the cut part still counts");
+    assert_eq!(messages(&f, conv)[1].text, "*grins* \"Hi!\"");
+    assert_eq!(speakers(&f, conv), [Some(alice.id)], "nothing past the cut is read, the tag included");
     assert!(!streamed_text(&events).contains("Hey!"), "the other speaker's line never shows: {}", streamed_text(&events));
     let system = f.provider.requests()[0].system_instruction.clone().unwrap();
     assert!(system.contains("without \"Alice:\" in front"), "{system}");
-    assert_eq!(f.provider.requests()[1].history.last().unwrap().text, "Alice: *grins* \"Hi!\"", "the next prompt sees a clean turn");
 
-    let bobs = messages(&f, conv)[2].clone();
+    send(&f, conv, "And Bob?").await.0.unwrap();
+    let history = &f.provider.requests()[1].history;
+    let texts: Vec<&str> = history.iter().map(|m| m.text.as_str()).collect();
+    assert!(texts.contains(&"Alice: *grins* \"Hi!\""), "the next prompt sees a clean turn: {texts:?}");
+    assert_eq!(messages(&f, conv)[3].text, "\"Hey, both.\"");
+
+    let bobs = messages(&f, conv)[3].clone();
     f.engine.swipe_next(conv, bobs.id, Arc::new(VecSink::default())).await.unwrap();
-    assert_eq!(messages(&f, conv)[2].text, "\"Again.\"");
+    assert_eq!(messages(&f, conv)[3].text, "\"Again.\"");
 }
 
 #[tokio::test]
@@ -1256,8 +1266,13 @@ async fn trigger_word_groups_reply_in_the_order_names_are_mentioned_and_hear_eac
     assert_eq!(speakers(&f, conv), [Some(cara.id), Some(alice.id)]);
     // The second speaker's prompt already contains the first one's reply, labelled with her name.
     let second = &f.provider.requests()[1];
-    assert_eq!(second.history.last().unwrap().text, "Cara: Cara speaking.");
-    assert_eq!(second.history.last().unwrap().role, LlmRole::Model);
+    let before_note = &second.history[second.history.len() - 2];
+    assert_eq!(before_note.text, "Cara: Cara speaking.");
+    assert_eq!(before_note.role, LlmRole::Model);
+    // ...and ends by saying, last of all, whose reply this is.
+    let note = second.history.last().unwrap();
+    assert_eq!(note.role, LlmRole::User);
+    assert!(note.text.starts_with("[System note: Now write Alice's reply, and only Alice's. Any reply from Cara"), "{}", note.text);
     // ...and is told it is now Alice's turn, by name - not a literal {{char}}.
     let system = second.system_instruction.clone().unwrap();
     assert!(system.starts_with("Write Alice's next reply"), "{system}");
@@ -1295,7 +1310,7 @@ async fn with_joint_replies_a_reply_can_hand_the_message_on_once_per_member() {
     assert!(first.contains("Leave it at Alice's reply") && first.contains("naming exactly one of Bob or Cara."), "{first}");
     let second = requests[1].system_instruction.clone().unwrap();
     assert!(second.contains("naming exactly one of Cara."), "only members who haven't answered are offered: {second}");
-    assert_eq!(requests[1].history.last().unwrap().text, "Alice: Alice waves. \"Bob saw it too.\"");
+    assert_eq!(requests[1].history[requests[1].history.len() - 2].text, "Alice: Alice waves. \"Bob saw it too.\"");
 }
 
 #[tokio::test]

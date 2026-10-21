@@ -1488,12 +1488,20 @@ present, keep it as its own final paragraph, still naming whose details they are
         if pictures > 0 {
             append_instruction(&mut request, &roles::picture_rule(pictures, conversation.mode == ConversationMode::Roleplay));
         }
+        // A group reply's request ends by saying whose reply it is, after everything else.
+        if let Some(me) = options.speaker.filter(|_| options.reply_tags && !options.as_user && ctx.group.is_some()) {
+            let others: Vec<&str> = ctx.characters.iter().filter(|c| c.id != me.id).map(|c| c.name.as_str()).collect();
+            if !others.is_empty() {
+                request.history.push(LlmMessage::new(LlmRole::User, roles::group_turn_note(&me.name, &others)));
+            }
+        }
         Ok(request)
     }
 
     /// Streams one request, pushing coalesced deltas to the sink. Whatever arrived before a stop or
-    /// failure is returned along with how it ended. With a `cut`, text from where another group
-    /// member's line starts is kept (for its trailing tags) but no longer shown.
+    /// failure is returned along with how it ended. With a `cut`, the reply ends where another group
+    /// member's (or the user's) line starts: nothing past it is shown, and the model isn't left to
+    /// write the rest of the scene.
     #[allow(clippy::too_many_arguments)]
     async fn stream_reply(
         &self,
@@ -1535,7 +1543,6 @@ present, keep it as its own final paragraph, still naming whose details they are
         let mut finish_reason: Option<String> = None;
         // With the tool on, a `<powershell-run>` tag is held back from the UI and ends the stream.
         let mut tool_filter = tools.then(ToolCallFilter::new);
-        let mut cut_off = false;
         let mut ticker = tokio::time::interval(STREAM_FLUSH_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -1571,17 +1578,14 @@ present, keep it as its own final paragraph, still naming whose details they are
                         result.text.push_str(&chunk.delta_text);
                         result.shown_text.push_str(&shown);
                         result.reasoning.push_str(&chunk.thought_delta_text);
-                        if !cut_off {
-                            if let Some(at) = cut.and_then(|c| c.find(&result.text)) {
-                                // Show up to where the other speaker's line starts, then nothing more.
-                                cut_off = true;
-                                let unseen = result.text.len() - shown.len();
-                                pending_text.push_str(result.text.get(unseen.min(at)..at).unwrap_or_default());
-                            } else {
-                                pending_text.push_str(&shown);
-                            }
-                        }
                         pending_reasoning.push_str(&chunk.thought_delta_text);
+                        if let Some(at) = cut.and_then(|c| c.find(&result.text)) {
+                            // Show up to where the other speaker's line starts, and stop there.
+                            let unseen = result.text.len() - shown.len();
+                            pending_text.push_str(result.text.get(unseen.min(at)..at).unwrap_or_default());
+                            break;
+                        }
+                        pending_text.push_str(&shown);
                         if chunk.usage.is_some() {
                             result.usage = chunk.usage;
                         }
