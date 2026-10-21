@@ -66,8 +66,10 @@ class ChatStore {
   scanning = $state(false);
   /** The picture being made for this chat, if any. */
   picture = $state<PictureJob | null>(null);
-  /** Photos characters sent while another picture was being drawn; drawn next, in order. */
-  private photoQueue: ImagePromptDraft[] = [];
+  /** Photos characters sent while a picture was already under way in their chat; drawn next, in order. */
+  private photoQueue = new Map<Uuid, ImagePromptDraft[]>();
+  /** Pictures being rendered, by conversation (open or not), so a chat opened again shows its render. */
+  private rendering = new Map<Uuid, ImagePromptDraft>();
   /** Conversations with a streaming call still running (open or not). */
   private inFlight = new Set<Uuid>();
   /** What a still-generating conversation looked like when it was left, kept up to date from its
@@ -132,8 +134,9 @@ class ChatStore {
     this.approval = resumed?.approval ?? null;
     this.context = null;
     this.compacting = false;
-    this.picture = null;
-    this.photoQueue = [];
+    const rendering = this.rendering.get(session.conversation.id);
+    this.picture = rendering ? { phase: "render", draft: rendering } : null;
+    this.nextPhoto(session.conversation.id);
     this.cast = [];
     this.scanning = false;
     void this.refreshCast();
@@ -372,10 +375,12 @@ class ChatStore {
     }
   }
 
-  /** Applies one engine event. Events from a conversation that is no longer open are ignored. */
+  /** Applies one engine event. A conversation that is no longer open only keeps its parked state
+   * and its photos. */
   private handle(conversationId: Uuid, event: ChatEvent) {
     if (this.conversationId !== conversationId) {
-      this.handleParked(conversationId, event);
+      if (event.type === "photoSent") void this.drawSentPhoto(conversationId, event.characterId, event.description);
+      else this.handleParked(conversationId, event);
       return;
     }
 
@@ -429,7 +434,7 @@ class ChatStore {
         if (this.session) this.session.conversation.title = event.title;
         break;
       case "photoSent":
-        void this.drawSentPhoto(event.characterId, event.description);
+        void this.drawSentPhoto(conversationId, event.characterId, event.description);
         break;
       case "error":
         this.error = event.message;
@@ -601,6 +606,7 @@ class ChatStore {
     if (this.conversationId !== id) return;
     if (!draft) {
       this.picture = null; // stopped or failed
+      this.nextPhoto(id);
       return;
     }
     if (review) this.picture = { phase: "review", draft };
@@ -614,38 +620,49 @@ class ChatStore {
     this.picture = { phase: "review", draft };
   }
 
-  /** Renders a (reviewed) draft. The chat stays usable meanwhile. */
-  async renderPicture(draft: ImagePromptDraft) {
-    const id = this.conversationId;
+  /** Renders a (reviewed) draft into chat `id`, the open one by default. The chat stays usable
+   * meanwhile, and the render carries on when another chat is opened. */
+  async renderPicture(draft: ImagePromptDraft, id: Uuid | null = this.conversationId) {
     if (!id) return;
-    this.error = "";
-    this.picture = { phase: "render", draft };
+    this.rendering.set(id, draft);
+    if (this.conversationId === id) {
+      this.error = "";
+      this.picture = { phase: "render", draft };
+    }
     try {
       const message = await api.generateImage(id, draft);
-      if (message && this.conversationId === id) this.messages.push(toUi(message));
+      if (message) {
+        if (this.conversationId === id) this.messages.push(toUi(message));
+        else this.parked.get(id)?.messages.push(toUi(message));
+      }
     } catch (e) {
       if (this.conversationId === id) this.error = errorText(e);
     } finally {
-      if (this.conversationId === id) {
-        this.picture = null;
-        const next = this.photoQueue.shift();
-        if (next) void this.renderPicture(next);
-      }
+      this.rendering.delete(id);
+      if (this.conversationId === id) this.picture = null;
+      this.nextPhoto(id);
     }
   }
 
-  /** A photo the character sent in the story: drawn straight away (no review), or after the
-   * picture already being drawn. */
-  private async drawSentPhoto(characterId: Uuid | null, description: string) {
-    const id = this.conversationId;
+  /** A photo a character sent in chat `id` (open or not): drawn straight away with no review, or
+   * after the picture already under way there. */
+  private async drawSentPhoto(id: Uuid, characterId: Uuid | null, description: string) {
     try {
       const draft = await api.photoDraft(characterId, description);
-      if (this.conversationId !== id) return;
-      if (this.picture) this.photoQueue.push(draft);
-      else await this.renderPicture(draft);
+      this.photoQueue.set(id, [...(this.photoQueue.get(id) ?? []), draft]);
+      this.nextPhoto(id);
     } catch (e) {
       if (this.conversationId === id) this.error = errorText(e);
     }
+  }
+
+  /** Starts chat `id`'s next queued photo, unless a picture is already under way there. */
+  private nextPhoto(id: Uuid) {
+    if (this.rendering.has(id) || (this.conversationId === id && this.picture)) return;
+    const [next, ...rest] = this.photoQueue.get(id) ?? [];
+    if (rest.length) this.photoQueue.set(id, rest);
+    else this.photoQueue.delete(id);
+    if (next) void this.renderPicture(next, id);
   }
 
   /** Draws a picture again from exactly the same draft (a new seed when the seed is random). */
@@ -675,12 +692,17 @@ class ChatStore {
   }
 
   cancelPictureReview() {
-    if (this.picture?.phase === "review") this.picture = null;
+    const id = this.conversationId;
+    if (!id || this.picture?.phase !== "review") return;
+    this.picture = null;
+    this.nextPhoto(id);
   }
 
+  /** Stops the picture under way, and the photos waiting behind it. */
   async stopPicture() {
     const id = this.conversationId;
     if (!id || !this.picture) return;
+    this.photoQueue.delete(id);
     if (this.picture.phase === "prompt") await api.stopGeneration(id);
     else if (this.picture.phase === "render") await api.stopImage(id);
   }

@@ -12,11 +12,11 @@ use super::meter_tag::{self, MeterReading};
 use super::{emotion_tag, photo_tag, time_skip_tag};
 
 /// One or more tags at the very end of a reply, each optionally wrapped in `*`, `_` or backticks.
+/// A `[...]` tag may hold parentheses (photo descriptions do, SD weights like `(red hair:1.2)` too);
+/// a `(...)` one may not. Either may close with the other bracket.
 static TAIL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)(?:[\s*_`]*[\[(]\s*(?:time[-_ ]?(?:skip|jump|passed|elapsed)|emotion|meters?|photo|picture|image|selfie)\s*[:=][^\])]*[\])])+[\s*_`]*$",
-    )
-    .unwrap()
+    const KEYS: &str = r"\s*(?:time[-_ ]?(?:skip|jump|passed|elapsed)|emotion|meters?|photo|picture|image|selfie)\s*[:=]";
+    Regex::new(&format!(r"(?i)(?:[\s*_`]*(?:\[{KEYS}[^\[\]]*|\({KEYS}[^\])]*)[\])])+[\s*_`]*$")).unwrap()
 });
 
 #[derive(Debug, Default, PartialEq)]
@@ -84,6 +84,17 @@ mod tests {
         assert!(clean.ends_with("Here you go! ;)"), "{clean}");
         let photo = tags.photo.unwrap();
         assert!(photo.starts_with("A close-up selfie of Nova") && photo.ends_with("sunlit bedroom wall."), "{photo}");
+    }
+
+    #[test]
+    fn parentheses_inside_a_bracketed_photo_tag_dont_end_it() {
+        let (clean, tags) = peel("Here!\n\n[photo: Nova (smiling) at the cafe, (silver hair:1.2)]\n[emotion: happy]");
+        assert_eq!(clean, "Here!");
+        assert_eq!(tags.photo.as_deref(), Some("Nova (smiling) at the cafe, (silver hair:1.2)"));
+        assert_eq!(tags.emotion.as_deref(), Some("happy"));
+        // A mismatched closing bracket is still tolerated, and can't swallow the story before a later tag.
+        assert_eq!(peel("Fine. [emotion: happy)").0, "Fine.");
+        assert_eq!(peel("Fine. [photo: x) She left. [emotion: sad]").0, "Fine. [photo: x) She left.");
     }
 
     #[test]

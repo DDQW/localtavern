@@ -18,12 +18,20 @@ the lighting>]. Write the description only inside the brackets, not in the story
     )
 }
 
-static ANY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)[\[(]\s*(?:photo|picture|image|selfie)\s*[:=]\s*([^\])]*?)\s*[\])]").unwrap());
+/// `[photo: ...]` up to its `]`, so parentheses in the description survive; otherwise a `(...)` tag or
+/// a `[...)` one with mismatched brackets.
+static ANY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\[\s*(?:photo|picture|image|selfie)\s*[:=]([^\[\]]*)\]|[\[(]\s*(?:photo|picture|image|selfie)\s*[:=]([^\[\])]*)[\])]",
+    )
+    .unwrap()
+});
 
 /// The description in a photo tag anywhere in `tail` (the trailing tags peeled off a reply).
 pub fn parse_tail(tail: &str) -> Option<String> {
-    ANY.captures(tail).map(|c| c[1].trim().trim_matches(['"', '*', '_']).trim().to_string()).filter(|d| !d.is_empty())
+    let captures = ANY.captures(tail)?;
+    let description = captures.get(1).or_else(|| captures.get(2))?.as_str();
+    Some(description.trim().trim_matches(['"', '*', '_']).trim().to_string()).filter(|d| !d.is_empty())
 }
 
 #[cfg(test)]
@@ -46,6 +54,8 @@ mod tests {
         );
         assert_eq!(parse_tail("(Picture = \"her desk, laptop, coffee\")").as_deref(), Some("her desk, laptop, coffee"));
         assert_eq!(parse_tail("[selfie: smiling at the beach]").as_deref(), Some("smiling at the beach"));
+        assert_eq!(parse_tail("[photo: her (silver) hair, (smile:1.2)]").as_deref(), Some("her (silver) hair, (smile:1.2)"));
+        assert_eq!(parse_tail("[photo: the harbour)").as_deref(), Some("the harbour"));
         assert_eq!(parse_tail("[photo: ]"), None);
         assert_eq!(parse_tail("[emotion: happy]"), None);
     }

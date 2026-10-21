@@ -37,7 +37,10 @@ pub struct ScheduleBlock {
 impl ScheduleBlock {
     fn minutes(&self) -> Option<(u32, u32)> {
         let parse = |s: &str| NaiveTime::parse_from_str(s.trim(), "%H:%M").ok().map(|t| t.hour() * 60 + t.minute());
-        Some((parse(&self.start)?, parse(&self.end)?)).filter(|_| !self.activity.trim().is_empty())
+        if self.activity.trim().is_empty() {
+            return None;
+        }
+        Some((parse(&self.start)?, parse(&self.end)?))
     }
 
     fn overnight(&self) -> bool {

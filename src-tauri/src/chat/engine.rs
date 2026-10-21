@@ -1273,8 +1273,11 @@ present, keep it as its own final paragraph, still naming whose details they are
         if options.reply_tags && conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_some() {
             append_instruction(&mut request, time_skip_tag::build_instruction());
         }
-        if let Some(character) = options.speaker.filter(|_| options.reply_tags && conversation.mode == ConversationMode::Roleplay) {
-            if self.db().with(crate::imagegen::settings::load)?.auto_photos {
+        if let Some(character) = options.speaker {
+            if options.reply_tags
+                && conversation.mode == ConversationMode::Roleplay
+                && self.db().with(crate::imagegen::settings::load)?.auto_photos
+            {
                 let user = roles::user_name(ctx.persona.as_ref());
                 append_instruction(&mut request, &photo_tag::build_instruction(&character.name, user));
             }
