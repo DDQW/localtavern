@@ -12,6 +12,7 @@ fn map(row: &Row) -> rusqlite::Result<GroupChat> {
         character_ids: Vec::new(), // filled in by the caller
         activation_mode: rows::int_enum(row, "ActivationMode", GroupActivationMode::from_i32)?,
         allow_self_responses: row.get("AllowSelfResponses")?,
+        joint_replies: row.get("JointReplies")?,
     })
 }
 
@@ -48,9 +49,9 @@ pub fn upsert(conn: &Connection, g: &GroupChat) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     let id = g.id.to_string();
     tx.execute(
-        "INSERT INTO GroupChats (Id, Name, ActivationMode, AllowSelfResponses) VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(Id) DO UPDATE SET Name = ?2, ActivationMode = ?3, AllowSelfResponses = ?4;",
-        params![id, g.name, g.activation_mode.to_i32(), g.allow_self_responses],
+        "INSERT INTO GroupChats (Id, Name, ActivationMode, AllowSelfResponses, JointReplies) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(Id) DO UPDATE SET Name = ?2, ActivationMode = ?3, AllowSelfResponses = ?4, JointReplies = ?5;",
+        params![id, g.name, g.activation_mode.to_i32(), g.allow_self_responses, g.joint_replies],
     )?;
     tx.execute("DELETE FROM GroupChatMembers WHERE GroupChatId = ?1;", [&id])?;
     for (index, character_id) in g.character_ids.iter().enumerate() {
@@ -90,6 +91,7 @@ mod tests {
             character_ids: ids.to_vec(),
             activation_mode: GroupActivationMode::RoundRobin,
             allow_self_responses: true,
+            joint_replies: true,
             ..Default::default()
         };
         upsert(&conn, &g).unwrap();

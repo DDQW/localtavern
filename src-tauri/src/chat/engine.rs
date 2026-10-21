@@ -2,7 +2,7 @@
 //! deletes messages. It mirrors the C# `ChatViewModel`, minus everything UI-shaped - progress is
 //! reported through an [`EventSink`] and the UI just renders what it's told.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,7 +31,7 @@ use crate::group_chats::strategy_for;
 use crate::holidays::{self, Country, DatedHoliday, HolidaySource, SchoolBreak};
 use crate::llm::{LlmMessage, LlmRequest, LlmRole};
 use crate::models::{
-    Character, ChatMessage, ClockSnapshot, Conversation, ConversationMode, ConversationSummary, LlmUsage, MessageAttachment, MessageRole, Persona,
+    Character, ChatMessage, ClockSnapshot, Conversation, ConversationMode, ConversationSummary, GroupChat, LlmUsage, MessageAttachment, MessageRole, Persona,
     PromptBlockType, PromptPreset, Schedule, StoryCharacter, WorldInfoEntry, WorldState,
 };
 use crate::powershell::exec::{CommandRunner, ExecError, ExecutionResult, Pwsh};
@@ -40,7 +40,7 @@ use crate::powershell::settings as tool_settings;
 use crate::prompting::powershell_tool::{self, PowerShellToolCallRequest, ToolResult};
 use crate::prompting::reply_tags::{self, ReplyTags};
 use crate::prompting::{
-    self, emotion_tag, photo_tag, roles, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext,
+    self, emotion_tag, next_speaker_tag, photo_tag, roles, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext,
 };
 use crate::providers::{LlmGeneratedImage, LlmProviderRegistry, ProviderError};
 use crate::repo::{characters, conversations, group_chats, story_characters, summaries, user_memories};
@@ -85,10 +85,22 @@ pub struct ToolDecision {
 /// Most tool round trips one turn may take before the assistant is cut off.
 const MAX_TOOL_ITERATIONS: usize = 5;
 
+/// How one reply went.
+struct Replied {
+    /// Finished (`false`: stopped or failed).
+    completed: bool,
+    /// In a group with joint replies: the member this reply handed the user's message on to.
+    next: Option<Uuid>,
+}
+
+impl Replied {
+    const STOPPED: Self = Self { completed: false, next: None };
+}
+
 /// What one model turn came to.
 enum Turn {
-    /// Finished (`true`) or stopped / failed (`false`).
-    Done(bool),
+    /// Finished or stopped / failed.
+    Done(Replied),
     /// The reply ended in a tool call; the partial reply before it was kept.
     ToolCall(PowerShellToolCallRequest),
 }
@@ -156,6 +168,9 @@ struct AssembleOptions<'a> {
     /// Impersonate: the model writes the user's message, so the character-side roleplay rules are
     /// left out (its own trailing instruction says who is who).
     as_user: bool,
+    /// Group members who may still answer the user's latest message: the reply may name one in a
+    /// `[next: ...]` tag (joint replies).
+    next_speakers: &'a [&'a str],
 }
 
 /// The nudge Continue appends as a trailing user turn (a system note), so the model extends rather
@@ -802,7 +817,8 @@ present, keep it as its own final paragraph, still naming whose details they are
             if ctx.conversation.model.trim().is_empty() {
                 return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
             }
-            engine.generate_new(conversation_id, Some(character_id), &inner_sink, &token).await.map(|_| ())
+            let group = ctx.group.as_ref().expect("checked above");
+            engine.group_round(conversation_id, group, &ctx.messages, vec![character_id], &inner_sink, &token).await
         })
         .await
     }
@@ -1155,16 +1171,51 @@ present, keep it as its own final paragraph, still naming whose details they are
             let latest_user_text =
                 history.iter().rev().find(|m| m.role == MessageRole::User).map(|m| m.text.clone()).unwrap_or_default();
             let speakers = strategy_for(group.activation_mode).select_next_speakers(group, &ctx.characters, &history, &latest_user_text);
-            for speaker in speakers {
-                if !self.generate_new(conversation_id, Some(speaker), &sink, &token).await? {
-                    break; // a stop or failure ends the round, not just this voice
-                }
-            }
-            return Ok(());
+            return self.group_round(conversation_id, group, &history, speakers, &sink, &token).await;
         }
 
         let speaker_id = (ctx.characters.len() == 1).then(|| ctx.characters[0].id);
-        self.generate_new(conversation_id, speaker_id, &sink, &token).await.map(|_| ())
+        self.generate_new(conversation_id, speaker_id, &[], &sink, &token).await.map(|_| ())
+    }
+
+    /// Has `speakers` answer the user's latest message, one after another. With joint replies on,
+    /// each reply may hand the message on to a member who hasn't answered it yet (the model decides,
+    /// with a `[next: ...]` tag), and that member answers right after - so nobody answers one message
+    /// twice that way. A stop or failure ends the round, not just that voice.
+    async fn group_round(
+        &self,
+        conversation_id: Uuid,
+        group: &GroupChat,
+        history: &[ChatMessage],
+        speakers: Vec<Uuid>,
+        sink: &Arc<dyn EventSink>,
+        token: &CancellationToken,
+    ) -> Result<()> {
+        // Whoever already answered since the user's last message (a manual pick adds a voice).
+        let mut answered: Vec<Uuid> = history
+            .iter()
+            .rev()
+            .take_while(|m| m.role != MessageRole::User)
+            .filter_map(|m| m.speaker_character_id)
+            .collect();
+        let mut queue = VecDeque::from(speakers);
+        while let Some(speaker) = queue.pop_front() {
+            let candidates: Vec<Uuid> = if group.joint_replies {
+                let free = |id: &Uuid| *id != speaker && !answered.contains(id) && !queue.contains(id);
+                group.character_ids.iter().copied().filter(free).collect()
+            } else {
+                Vec::new()
+            };
+            let replied = self.generate_new(conversation_id, Some(speaker), &candidates, sink, token).await?;
+            if !replied.completed {
+                break;
+            }
+            answered.push(speaker);
+            if let Some(next) = replied.next {
+                queue.push_front(next);
+            }
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------------ generation
@@ -1272,6 +1323,10 @@ present, keep it as its own final paragraph, still naming whose details they are
         }
         if options.reply_tags && conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_some() {
             append_instruction(&mut request, time_skip_tag::build_instruction());
+        }
+        if let Some(character) = options.speaker.filter(|_| options.reply_tags && !options.next_speakers.is_empty()) {
+            let user = roles::user_name(ctx.persona.as_ref());
+            append_instruction(&mut request, &next_speaker_tag::build_instruction(&character.name, options.next_speakers, user));
         }
         if let Some(character) = options.speaker {
             if options.reply_tags
@@ -1448,29 +1503,30 @@ present, keep it as its own final paragraph, still naming whose details they are
     /// Generates one character's reply. In Assistant chats with the PowerShell tool on, a reply may
     /// end in a tool call: the command is run (after the user's approval) and its result fed back
     /// for another turn, each turn its own bubble, up to [`MAX_TOOL_ITERATIONS`] round trips.
-    /// Returns whether the exchange completed (`false`: stopped or failed).
+    /// `next_speakers` are the group members the reply may hand the user's message on to.
     async fn generate_new(
         &self,
         conversation_id: Uuid,
         speaker_id: Option<Uuid>,
+        next_speakers: &[Uuid],
         sink: &Arc<dyn EventSink>,
         token: &CancellationToken,
-    ) -> Result<bool> {
+    ) -> Result<Replied> {
         let tools = self.db().with(|c| {
             let assistant = conversations::get(c, conversation_id)?.is_some_and(|conv| conv.mode == ConversationMode::Assistant);
             Ok(assistant && tool_settings::load(c)?.enabled)
         })?;
 
         for round_trips in 0.. {
-            match self.generate_turn(conversation_id, speaker_id, sink, token, tools).await? {
-                Turn::Done(completed) => return Ok(completed),
+            match self.generate_turn(conversation_id, speaker_id, next_speakers, sink, token, tools).await? {
+                Turn::Done(replied) => return Ok(replied),
                 Turn::ToolCall(call) => {
                     if round_trips >= MAX_TOOL_ITERATIONS {
                         self.append_tool_message(conversation_id, "Tool call limit reached for this turn.", sink)?;
-                        return Ok(true);
+                        return Ok(Replied { completed: true, next: None });
                     }
                     if !self.run_tool_call(conversation_id, call, sink, token).await? {
-                        return Ok(false);
+                        return Ok(Replied::STOPPED);
                     }
                 }
             }
@@ -1482,12 +1538,16 @@ present, keep it as its own final paragraph, still naming whose details they are
         &self,
         conversation_id: Uuid,
         speaker_id: Option<Uuid>,
+        next_speakers: &[Uuid],
         sink: &Arc<dyn EventSink>,
         token: &CancellationToken,
         tools: bool,
     ) -> Result<Turn> {
         let ctx = self.db().with(|c| load_reply_context(c, conversation_id))?;
         let speaker = speaker_id.and_then(|id| ctx.characters.iter().find(|c| c.id == id)).cloned();
+        let others: Vec<(Uuid, &str)> =
+            ctx.characters.iter().filter(|c| next_speakers.contains(&c.id)).map(|c| (c.id, c.name.as_str())).collect();
+        let other_names: Vec<&str> = others.iter().map(|(_, name)| *name).collect();
 
         let mut message = ChatMessage::new(conversation_id, MessageRole::Character, "");
         message.speaker_character_id = speaker_id;
@@ -1496,7 +1556,7 @@ present, keep it as its own final paragraph, still naming whose details they are
         let request = self.assemble(
             &ctx,
             &ctx.messages,
-            AssembleOptions { speaker: speaker.as_ref(), reply_tags: true, tools, ..Default::default() },
+            AssembleOptions { speaker: speaker.as_ref(), reply_tags: true, tools, next_speakers: &other_names, ..Default::default() },
         )?;
         message.raw_prompt_text = Some(format_prompt(&request));
         self.update_conversation(conversation_id, |c| c.updated_at = Utc::now())?;
@@ -1506,10 +1566,12 @@ present, keep it as its own final paragraph, still naming whose details they are
 
         let succeeded = matches!(end, StreamEnd::Completed);
         let mut photo = None;
+        let mut next = None;
         if succeeded {
             message.usage = usage;
             let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, true, sink)?;
             photo = self.photo_to_draw(tags.photo.clone())?;
+            next = tags.next.as_deref().and_then(|name| next_speaker_tag::resolve(name, &others));
             message.text = clean;
             message.detected_emotion = match_emotion(speaker.as_ref(), tags.emotion);
             message.clock = clock;
@@ -1545,9 +1607,9 @@ present, keep it as its own final paragraph, still naming whose details they are
         match end {
             StreamEnd::Failed(error) => {
                 self.emit_failure(&error, sink);
-                Ok(Turn::Done(false))
+                Ok(Turn::Done(Replied::STOPPED))
             }
-            StreamEnd::Cancelled => Ok(Turn::Done(false)),
+            StreamEnd::Cancelled => Ok(Turn::Done(Replied::STOPPED)),
             StreamEnd::ToolCall(call) => Ok(Turn::ToolCall(call)),
             StreamEnd::Completed => {
                 self.spawn_enrichment(&ctx, last_user_text(&ctx.messages), message.text.clone(), message.id, sink.clone());
@@ -1556,7 +1618,7 @@ present, keep it as its own final paragraph, still naming whose details they are
                     let user_text = ctx.messages.last().map(|m| m.text.clone()).unwrap_or_default();
                     self.spawn_title(&ctx.conversation, user_text, message.text.clone(), sink.clone());
                 }
-                Ok(Turn::Done(true))
+                Ok(Turn::Done(Replied { completed: true, next }))
             }
         }
     }

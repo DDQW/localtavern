@@ -18,6 +18,9 @@ pub struct GroupChat {
     pub character_ids: Vec<Uuid>,
     pub activation_mode: GroupActivationMode,
     pub allow_self_responses: bool,
+    /// Each reply may hand the user's message on to a member who hasn't answered it yet (the model
+    /// decides, with a `[next: ...]` tag), so several can answer one message.
+    pub joint_replies: bool,
 }
 
 impl Default for GroupChat {
@@ -28,6 +31,7 @@ impl Default for GroupChat {
             character_ids: Vec::new(),
             activation_mode: GroupActivationMode::Manual,
             allow_self_responses: false,
+            joint_replies: false,
         }
     }
 }

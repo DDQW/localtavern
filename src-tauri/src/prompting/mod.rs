@@ -7,6 +7,7 @@ pub mod context;
 pub mod defaults;
 pub mod emotion_tag;
 pub mod meter_tag;
+pub mod next_speaker_tag;
 pub mod photo_tag;
 pub mod powershell_tool;
 pub mod reply_tags;

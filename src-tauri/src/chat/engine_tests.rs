@@ -1234,6 +1234,78 @@ async fn trigger_word_groups_reply_in_the_order_names_are_mentioned_and_hear_eac
     assert!(!system.contains("{{char}}"), "{system}");
 }
 
+fn joint(f: &Fixture, group: &GroupChat) {
+    let joint = GroupChat { joint_replies: true, ..group.clone() };
+    f.db.with(|c| group_chats::upsert(c, &joint)).unwrap();
+}
+
+#[tokio::test]
+async fn with_joint_replies_a_reply_can_hand_the_message_on_once_per_member() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Alice waves. \"Bob saw it too.\"\n\n[next: bob]"), finish("STOP")]),
+        // Alice already answered, so naming her again ends the round.
+        Script::Items(vec![chunk("Bob nods.\n[next: Alice]"), finish("STOP")]),
+    ]);
+    let members: Vec<Character> = ["Alice", "Bob", "Cara"].iter().map(|n| add_character(&f.db, n, None, &[])).collect();
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &members.iter().collect::<Vec<_>>());
+    joint(&f, &group);
+    let conv = ready_group(&f, &group);
+    no_clock(&f, conv);
+
+    send(&f, conv, "Did you two see the comet?").await.0.unwrap();
+
+    assert_eq!(speakers(&f, conv), [Some(members[0].id), Some(members[1].id)]);
+    let texts: Vec<String> = messages(&f, conv).iter().skip(1).map(|m| m.text.clone()).collect();
+    assert_eq!(texts, ["Alice waves. \"Bob saw it too.\"", "Bob nods."], "the tags never show");
+
+    let requests = f.provider.requests();
+    assert_eq!(requests.len(), 2);
+    let first = requests[0].system_instruction.clone().unwrap();
+    assert!(first.contains("Leave it at Alice's reply") && first.contains("naming exactly one of Bob or Cara."), "{first}");
+    let second = requests[1].system_instruction.clone().unwrap();
+    assert!(second.contains("naming exactly one of Cara."), "only members who haven't answered are offered: {second}");
+    assert_eq!(requests[1].history.last().unwrap().text, "Alice: Alice waves. \"Bob saw it too.\"");
+}
+
+#[tokio::test]
+async fn without_joint_replies_the_tag_is_neither_asked_for_nor_followed() {
+    let f = fixture(vec![Script::Items(vec![chunk("Alice waves.\n[next: Bob]"), finish("STOP")])]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+
+    send(&f, conv, "Hi").await.0.unwrap();
+
+    assert_eq!(speakers(&f, conv), [Some(alice.id)]);
+    assert_eq!(messages(&f, conv)[1].text, "Alice waves.");
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap();
+    assert!(!system.contains("[next: <name>]"), "{system}");
+}
+
+#[tokio::test]
+async fn a_manual_pick_can_be_handed_on_but_not_back() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Bob first.\n[next: Alice]"), finish("STOP")]),
+        Script::Items(vec![chunk("Alice too."), finish("STOP")]),
+        Script::Items(vec![chunk("Bob again."), finish("STOP")]),
+    ]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::Manual, &[&alice, &bob]);
+    joint(&f, &group);
+    let conv = ready_group(&f, &group);
+
+    send(&f, conv, "Hello both").await.0.unwrap();
+    f.engine.pick_speaker(conv, bob.id, Arc::new(VecSink::default())).await.unwrap();
+    assert_eq!(speakers(&f, conv), [Some(bob.id), Some(alice.id)]);
+    let alices = f.provider.requests()[1].system_instruction.clone().unwrap();
+    assert!(!alices.contains("[next: <name>]"), "everyone has answered, so nobody is offered: {alices}");
+
+    // Picking Bob again for the same message adds his voice without offering anyone else.
+    f.engine.pick_speaker(conv, bob.id, Arc::new(VecSink::default())).await.unwrap();
+    assert_eq!(speakers(&f, conv), [Some(bob.id), Some(alice.id), Some(bob.id)]);
+    assert!(!f.provider.requests()[2].system_instruction.clone().unwrap().contains("[next: <name>]"));
+}
+
 #[tokio::test]
 async fn a_failed_voice_ends_the_round_for_everyone_after_it() {
     let f = fixture(vec![Script::FailToStart(ProviderError::new("busy", ProviderErrorKind::RateLimit))]);

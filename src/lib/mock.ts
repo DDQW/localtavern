@@ -146,6 +146,7 @@ const groups: GroupChat[] = [
     characterIds: [characters[0].id, characters[1].id],
     activationMode: "triggerWord",
     allowSelfResponses: false,
+    jointReplies: true,
   },
 ];
 

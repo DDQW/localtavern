@@ -528,6 +528,8 @@ export interface GroupChat {
   characterIds: Uuid[];
   activationMode: GroupActivationMode;
   allowSelfResponses: boolean;
+  /** A reply may hand the user's message on to another member, so several answer it (the model decides). */
+  jointReplies: boolean;
 }
 
 // ---- picture generation ----

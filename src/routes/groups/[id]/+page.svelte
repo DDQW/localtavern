@@ -25,7 +25,7 @@
         characters = await api.listCharacters();
         const loaded =
           wanted === "new"
-            ? { id: newId(), name: "", characterIds: [], activationMode: "manual" as const, allowSelfResponses: false }
+            ? { id: newId(), name: "", characterIds: [], activationMode: "manual" as const, allowSelfResponses: false, jointReplies: false }
             : (await api.listGroupChats()).find((g) => g.id === wanted);
         if (loaded) form = loaded;
         else error = "That group no longer exists.";
@@ -91,6 +91,15 @@
         <input type="checkbox" bind:checked={form.allowSelfResponses} />
         Let a character reply twice in a row
       </label>
+
+      <label class="check">
+        <input type="checkbox" bind:checked={form.jointReplies} />
+        Let several characters answer one message
+      </label>
+      <p class="muted small">
+        After each reply the model decides whether another member would chime in too, and if so they answer right after. Each member answers a
+        message at most once this way.
+      </p>
 
       <h2>Members</h2>
       {#if characters.length === 0}

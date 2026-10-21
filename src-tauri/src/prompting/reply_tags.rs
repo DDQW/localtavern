@@ -1,5 +1,5 @@
 //! The tags a roleplay reply ends with - `[time-skip: ...]`, `[emotion: ...]`, `[meters: ...]`,
-//! `[photo: ...]` -
+//! `[photo: ...]`, `[next: ...]` -
 //! peeled off together, in whatever order the model wrote them, so one missing or misplaced tag
 //! can't leave another in the visible text or hide it from its parser.
 
@@ -9,13 +9,13 @@ use chrono::Duration;
 use regex::Regex;
 
 use super::meter_tag::{self, MeterReading};
-use super::{emotion_tag, photo_tag, time_skip_tag};
+use super::{emotion_tag, next_speaker_tag, photo_tag, time_skip_tag};
 
 /// One or more tags at the very end of a reply, each optionally wrapped in `*`, `_` or backticks.
 /// A `[...]` tag may hold parentheses (photo descriptions do, SD weights like `(red hair:1.2)` too);
 /// a `(...)` one may not. Either may close with the other bracket.
 static TAIL: LazyLock<Regex> = LazyLock::new(|| {
-    const KEYS: &str = r"\s*(?:time[-_ ]?(?:skip|jump|passed|elapsed)|emotion|meters?|photo|picture|image|selfie)\s*[:=]";
+    const KEYS: &str = r"\s*(?:time[-_ ]?(?:skip|jump|passed|elapsed)|emotion|meters?|photo|picture|image|selfie|next(?:[-_ ]?(?:speaker|up))?)\s*[:=]";
     Regex::new(&format!(r"(?i)(?:[\s*_`]*(?:\[{KEYS}[^\[\]]*|\({KEYS}[^\])]*)[\])])+[\s*_`]*$")).unwrap()
 });
 
@@ -27,6 +27,8 @@ pub struct ReplyTags {
     pub meters: Option<MeterReading>,
     /// What a photo the character sent in the story shows, for the app to draw.
     pub photo: Option<String>,
+    /// The group member this reply hands the user's message on to, as the model wrote the name.
+    pub next: Option<String>,
 }
 
 /// Splits the trailing tags off `text`, returning the text without them and what they said.
@@ -40,6 +42,7 @@ pub fn peel(text: &str) -> (String, ReplyTags) {
         emotion: emotion_tag::parse_tail(tail),
         meters: meter_tag::parse_tail(tail),
         photo: photo_tag::parse_tail(tail),
+        next: next_speaker_tag::parse_tail(tail),
     };
     (text[..found.start()].trim_end().to_string(), tags)
 }
@@ -95,6 +98,15 @@ mod tests {
         // A mismatched closing bracket is still tolerated, and can't swallow the story before a later tag.
         assert_eq!(peel("Fine. [emotion: happy)").0, "Fine.");
         assert_eq!(peel("Fine. [photo: x) She left. [emotion: sad]").0, "Fine. [photo: x) She left.");
+    }
+
+    #[test]
+    fn peels_a_next_speaker_tag_alongside_the_others() {
+        let (clean, tags) = peel("Alice laughs. \"Ask Bob, he was there.\"\n\n[emotion: happy]\n[next: Bob]");
+        assert_eq!(clean, "Alice laughs. \"Ask Bob, he was there.\"");
+        assert_eq!(tags.next.as_deref(), Some("Bob"));
+        assert_eq!(tags.emotion.as_deref(), Some("happy"));
+        assert_eq!(peel("Just me. [emotion: sad]").1.next, None);
     }
 
     #[test]
