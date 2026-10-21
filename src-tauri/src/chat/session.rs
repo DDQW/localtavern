@@ -44,8 +44,50 @@ pub struct ChatSession {
     /// The cached model list for the conversation's provider.
     pub models: Vec<String>,
     pub memory_count: usize,
-    /// For a private talk: the title of the group conversation it belongs to.
-    pub parent_title: Option<String>,
+    /// For a group conversation and each of its private talks: the "room" they make up together,
+    /// to switch between them.
+    pub room: Option<Room>,
+}
+
+/// A group conversation and its private talks, which the chat page shows as one place with tabs.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Room {
+    pub group_conversation_id: Uuid,
+    /// The group's name.
+    pub title: String,
+    /// Everyone in the group, in order: whom a private talk can be with.
+    pub members: Vec<RoomMember>,
+    /// The private talks, in the group's member order.
+    pub talks: Vec<RoomTalk>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomMember {
+    pub id: Uuid,
+    pub name: String,
+    pub avatar_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomTalk {
+    pub conversation_id: Uuid,
+    pub character_id: Uuid,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// The room around a group conversation (`group_conversation_id`) with these members, in order.
+fn room(conn: &Connection, group_conversation_id: Uuid, title: String, cast: &[Character]) -> Result<Room> {
+    let position = |id: Uuid| cast.iter().position(|c| c.id == id).unwrap_or(usize::MAX);
+    let mut talks: Vec<RoomTalk> = conversations::get_breakouts(conn, group_conversation_id)?
+        .into_iter()
+        .filter_map(|c| Some(RoomTalk { conversation_id: c.id, character_id: c.character_id?, updated_at: c.updated_at }))
+        .collect();
+    talks.sort_by_key(|t| position(t.character_id));
+    let members = cast.iter().map(|c| RoomMember { id: c.id, name: c.name.clone(), avatar_path: c.avatar_path.clone() }).collect();
+    Ok(Room { group_conversation_id, title, members, talks })
 }
 
 /// The loaded state a reply is generated from.
@@ -244,9 +286,9 @@ pub fn build_session(conn: &Connection, provider_ids: &[String], conversation_id
             None => conversations::get_assistants_without_character(conn)?,
         },
         ConversationMode::Roleplay => {
-            if let Some(parent) = ctx.conversation.parent_conversation_id {
-                // A private talk lists its group conversation and that conversation's other talks.
-                conversations::get(conn, parent)?.into_iter().chain(conversations::get_breakouts(conn, parent)?).collect()
+            if let Some(group_id) = ctx.breakout.as_ref().and_then(|b| b.parent.group_chat_id) {
+                // A private talk is part of its group chat: it lists the group's chats.
+                conversations::get_by_group_chat(conn, group_id)?
             } else if let Some(id) = ctx.conversation.character_id {
                 conversations::get_by_character_and_mode(conn, id, ConversationMode::Roleplay)?
             } else if let Some(id) = ctx.conversation.group_chat_id {
@@ -265,7 +307,11 @@ pub fn build_session(conn: &Connection, provider_ids: &[String], conversation_id
 
     let models = settings::cached_models(conn, &ctx.conversation.provider_id)?;
     let memory_count = user_memories::get_all(conn)?.len();
-    let parent_title = ctx.breakout.as_ref().map(|b| b.group_name.clone());
+    let room = match (&ctx.group, &ctx.breakout) {
+        (Some(group), _) => Some(room(conn, ctx.conversation.id, group.name.clone(), &ctx.characters)?),
+        (None, Some(b)) => Some(room(conn, b.parent.id, b.group_name.clone(), &b.group_cast)?),
+        _ => None,
+    };
 
     Ok(ChatSession {
         conversation: ctx.conversation,
@@ -280,7 +326,7 @@ pub fn build_session(conn: &Connection, provider_ids: &[String], conversation_id
         providers: provider_ids.to_vec(),
         models,
         memory_count,
-        parent_title,
+        room,
     })
 }
 

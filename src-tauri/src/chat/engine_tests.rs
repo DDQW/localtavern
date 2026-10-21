@@ -1380,7 +1380,10 @@ async fn a_private_talk_hears_the_group_but_the_group_and_other_talks_never_hear
     let talk = f.engine.open_breakout(conv, alice.id).unwrap();
     assert_eq!(talk.conversation.parent_conversation_id, Some(conv));
     assert_eq!(talk.conversation.character_id, Some(alice.id));
-    assert_eq!(talk.parent_title.as_deref(), Some("The Crew"));
+    let room = talk.room.as_ref().expect("a private talk is part of its group's room");
+    assert_eq!((room.group_conversation_id, room.title.as_str()), (conv, "The Crew"));
+    assert_eq!(room.talks.iter().map(|t| (t.conversation_id, t.character_id)).collect::<Vec<_>>(), [(talk.conversation.id, alice.id)]);
+    assert!(talk.history.iter().any(|h| h.id == conv) && talk.history.iter().all(|h| h.id != talk.conversation.id), "its History lists the group's chats");
     assert!(talk.messages.is_empty());
     assert_eq!(f.engine.open_breakout(conv, alice.id).unwrap().conversation.id, talk.conversation.id, "resumed, not duplicated");
     assert!(f.engine.open_breakout(conv, Uuid::new_v4()).is_err());
@@ -1508,7 +1511,12 @@ fn private_talks_stay_out_of_the_characters_own_chats_and_go_with_their_group() 
     let group = add_group(&f, GroupActivationMode::Manual, &[&alice, &bob]);
     let conv = ready_group(&f, &group);
     let talk = f.engine.open_breakout(conv, alice.id).unwrap();
-    assert!(talk.history.iter().any(|h| h.id == conv) && talk.history.iter().any(|h| h.id == talk.conversation.id));
+    assert!(talk.history.iter().any(|h| h.id == conv), "a talk's History lists its group's chats");
+    let bobs = f.engine.open_breakout(conv, bob.id).unwrap().conversation.id;
+    let room = f.engine.resume(conv).unwrap().room.expect("the group chat shows its room");
+    let talks: Vec<_> = room.talks.iter().map(|t| (t.character_id, t.conversation_id)).collect();
+    assert_eq!(talks, [(alice.id, talk.conversation.id), (bob.id, bobs)], "in member order");
+    assert!(f.engine.open_character(alice.id, false).unwrap().room.is_none());
 
     let own = f.engine.open_character(alice.id, false).unwrap();
     assert_ne!(own.conversation.id, talk.conversation.id, "opening Alice starts her own chat, not the private talk");

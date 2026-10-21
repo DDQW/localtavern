@@ -42,11 +42,22 @@
     return () => clearTimeout(timer);
   });
 
+  // Private talks belong to their group chat: listed under it, not on their own.
+  const topLevel = $derived(conversations.filter((c) => !c.parentConversationId));
+  const talksOf = (id: string) => conversations.filter((c) => c.parentConversationId === id);
+  const titleOf = (id: string) => {
+    const c = conversations.find((x) => x.id === id);
+    const parent = c?.parentConversationId ? conversations.find((x) => x.id === c.parentConversationId) : undefined;
+    return parent ? `${parent.title || "Group chat"} › ${c?.title || "Private talk"}` : c?.title || "";
+  };
+
   async function remove(conversation: Conversation) {
-    if (!confirm(`Delete “${conversation.title || "Untitled chat"}” and all its messages?`)) return;
+    const talks = talksOf(conversation.id).length;
+    const extra = talks ? ` and its ${talks === 1 ? "private talk" : `${talks} private talks`}` : "";
+    if (!confirm(`Delete “${conversation.title || "Untitled chat"}”${extra} and all messages?`)) return;
     try {
       await api.deleteConversation(conversation.id);
-      conversations = conversations.filter((c) => c.id !== conversation.id);
+      conversations = conversations.filter((c) => c.id !== conversation.id && c.parentConversationId !== conversation.id);
     } catch (e) {
       error = errorText(e);
     }
@@ -60,7 +71,7 @@
   <header>
     <h1>History</h1>
     <input type="search" placeholder="Search all messages…" bind:value={query} aria-label="Search all messages" />
-    <span class="muted count">{conversations.length} conversations</span>
+    <span class="muted count">{topLevel.length} conversations</span>
   </header>
 
   {#if error}<p class="err">{error}</p>{/if}
@@ -75,7 +86,7 @@
       {#each hits as hit (hit.message.id)}
         <li class="card row">
           <a class="main" href="/chat/{hit.message.conversationId}">
-            <div class="title">{hit.conversationTitle || "Untitled chat"} <span class="muted">· {hit.message.role === "user" ? "you" : "reply"} · {when(hit.message.timestamp)}</span></div>
+            <div class="title">{titleOf(hit.message.conversationId) || hit.conversationTitle || "Untitled chat"} <span class="muted">· {hit.message.role === "user" ? "you" : "reply"} · {when(hit.message.timestamp)}</span></div>
             <div class="muted text">{snippet(hit.message.text)}</div>
           </a>
         </li>
@@ -83,16 +94,32 @@
     </ul>
   {:else}
     <ul class="list">
-      {#each conversations as conversation (conversation.id)}
-        <li class="card row">
-          <a class="main" href="/chat/{conversation.id}">
-            <div class="title">{conversation.title || "Untitled chat"}</div>
-            <div class="muted meta">
-              <span class="badge">{conversation.mode}</span>
-              {conversation.providerId}{conversation.model ? ` · ${conversation.model}` : ""} · {when(conversation.updatedAt)}
-            </div>
-          </a>
-          <button class="ghost danger" onclick={() => remove(conversation)} aria-label="Delete conversation">Delete</button>
+      {#each topLevel as conversation (conversation.id)}
+        {@const talks = talksOf(conversation.id)}
+        <li class="card">
+          <div class="row">
+            <a class="main" href="/chat/{conversation.id}">
+              <div class="title">{conversation.title || "Untitled chat"}</div>
+              <div class="muted meta">
+                <span class="badge">{conversation.mode}</span>
+                {conversation.providerId}{conversation.model ? ` · ${conversation.model}` : ""} · {when(conversation.updatedAt)}
+              </div>
+            </a>
+            <button class="ghost danger" onclick={() => remove(conversation)} aria-label="Delete conversation">Delete</button>
+          </div>
+          {#if talks.length}
+            <ul class="talks" aria-label="Private talks">
+              {#each talks as talk (talk.id)}
+                <li class="row">
+                  <a class="main sub" href="/chat/{talk.id}">
+                    <span class="title">🔒 {talk.title || "Private talk"}</span>
+                    <span class="muted meta">· {when(talk.updatedAt)}</span>
+                  </a>
+                  <button class="ghost danger" onclick={() => remove(talk)} aria-label="Delete private talk">Delete</button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
         </li>
       {/each}
     </ul>
@@ -127,6 +154,21 @@
     align-items: center;
     gap: 8px;
     padding: 4px 8px 4px 0;
+  }
+
+  .talks {
+    list-style: none;
+    margin: 0 0 6px 24px;
+    padding: 0 0 0 10px;
+    border-left: 2px solid var(--border);
+  }
+
+  .main.sub {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    padding: 4px 10px;
+    font-size: 13px;
   }
 
   .main {

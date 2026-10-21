@@ -4,6 +4,7 @@
   import { chat } from "$lib/chat.svelte";
   import type { Character } from "$lib/types";
   import ContextMeter from "./ContextMeter.svelte";
+  import RoomTabs from "./RoomTabs.svelte";
   import { ui } from "$lib/ui.svelte";
 
   let providers = $state<{ id: string; name: string }[]>([]);
@@ -46,14 +47,9 @@
 {#if session && conversation}
   <header class="head">
     <div class="titlebar">
-      {#if chat.isBreakout}
-        <button class="ghost back" onclick={() => goto(`/chat/${conversation.parentConversationId}`)} title="Back to the group chat">
-          ←<span class="wide"> {session.parentTitle ?? "Group"}</span>
-        </button>
-      {/if}
       <h1>{title}</h1>
       {#if chat.isBreakout}
-        <span class="muted subtitle">in private, away from {session.parentTitle ?? "the group"}</span>
+        <span class="muted subtitle">in private, away from {session.room?.title ?? "the group"}</span>
       {:else if conversation.title && !isAssistant && conversation.title !== title}
         <span class="muted subtitle">{conversation.title}</span>
       {:else if isAssistant && conversation.title !== "Assistant chat"}
@@ -72,6 +68,8 @@
         <button onclick={newChat} disabled={chat.busy} title="Start a new chat" aria-label="New chat">＋<span class="wide"> New chat</span></button>
       {/if}
     </div>
+
+    <RoomTabs />
 
     <div class="pickers" class:open={showPickers}>
       <label class="field">
@@ -130,30 +128,10 @@
         </span>
       </label>
 
-      {#if chat.isGroup && session.characters.length > 0}
-        <label class="field">
-          Talk privately
-          <select
-            value=""
-            disabled={chat.busy}
-            title="Talk to one member alone - the others won't hear it"
-            onchange={(e) => {
-              const id = e.currentTarget.value;
-              e.currentTarget.value = "";
-              if (id) void chat.openBreakout(id);
-            }}
-          >
-            <option value="">With…</option>
-            {#each session.characters as character (character.id)}
-              <option value={character.id}>{character.name}</option>
-            {/each}
-          </select>
-        </label>
-      {/if}
-
       <label class="field history">
         History
-        <select value={conversation.id} onchange={(e) => goto(`/chat/${e.currentTarget.value}`)}>
+        <!-- A private talk is part of its group chat, which is what History picks between. -->
+        <select value={conversation.parentConversationId ?? conversation.id} onchange={(e) => goto(`/chat/${e.currentTarget.value}`)}>
           {#each session.history as entry (entry.id)}
             <option value={entry.id}>{entry.label}</option>
           {/each}
@@ -210,9 +188,6 @@
     align-self: center;
   }
 
-  .back {
-    white-space: nowrap;
-  }
 
 
   .pickers {

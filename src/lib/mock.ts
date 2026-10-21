@@ -253,12 +253,12 @@ function conversation(overrides: Partial<Conversation>): Conversation {
 }
 
 function history(c: Conversation): HistoryEntry[] {
-  const family = c.parentConversationId;
+  // A private talk lists its group's chats.
+  const parent = c.parentConversationId ? conversations.find((x) => x.id === c.parentConversationId) : undefined;
+  if (parent) return history(parent);
   return conversations
     .filter((x) =>
-      family
-        ? x.id === family || x.parentConversationId === family
-        : x.parentConversationId
+      x.parentConversationId
           ? false
           : c.characterId
         ? x.characterId === c.characterId && x.mode === c.mode
@@ -293,8 +293,24 @@ function session(id: Uuid): ChatSession {
     providers: providers.map((p) => p.id),
     models: models[c.providerId] ?? [],
     memoryCount: 0,
-    parentTitle: conversations.find((x) => x.id === c.parentConversationId)?.title ?? null,
+    room: room(c),
   };
+}
+
+/** The group conversation `c` is, or belongs to, with its private talks. */
+function room(c: Conversation) {
+  const parent = c.parentConversationId ? conversations.find((x) => x.id === c.parentConversationId) : c;
+  const group = groups.find((g) => g.id === parent?.groupChatId);
+  if (!parent || !group) return null;
+  const members = group.characterIds
+    .map((id) => characters.find((ch) => ch.id === id))
+    .filter((ch) => !!ch)
+    .map((ch) => ({ id: ch.id, name: ch.name, avatarPath: ch.avatarPath }));
+  const talks = conversations
+    .filter((x) => x.parentConversationId === parent.id && x.characterId)
+    .map((x) => ({ conversationId: x.id, characterId: x.characterId!, updatedAt: x.updatedAt }))
+    .sort((a, b) => group.characterIds.indexOf(a.characterId) - group.characterIds.indexOf(b.characterId));
+  return { groupConversationId: parent.id, title: group.name, members, talks };
 }
 
 /** The private talk with a member of a group conversation, made on first use. */

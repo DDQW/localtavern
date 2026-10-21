@@ -334,8 +334,18 @@ export interface ChatSession {
   providers: string[];
   models: string[];
   memoryCount: number;
-  /** For a private talk: the title of the group conversation it belongs to. */
-  parentTitle: string | null;
+  /** For a group chat and each of its private talks: the place they make up together. */
+  room: Room | null;
+}
+
+/** A group conversation and its private talks, shown as tabs. */
+export interface Room {
+  groupConversationId: Uuid;
+  /** The group's name. */
+  title: string;
+  members: { id: Uuid; name: string; avatarPath: string | null }[];
+  /** The private talks, in member order. */
+  talks: { conversationId: Uuid; characterId: Uuid; updatedAt: string }[];
 }
 
 export interface ProviderInfo {
