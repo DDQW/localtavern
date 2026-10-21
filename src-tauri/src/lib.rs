@@ -38,9 +38,10 @@ use crate::providers::openai::ChatGptSubscriptionProvider;
 use crate::providers::xai::XaiSubscriptionProvider;
 use crate::providers::ollama::OllamaProvider;
 use crate::providers::vastai::VastAiProvider;
-use crate::providers::{http, LlmProviderRegistry};
+use crate::providers::ondevice::{OnDeviceProvider, Runtime};
+use crate::providers::{http, LlmProvider, LlmProviderRegistry};
 use crate::secrets::KeyringSecretStore;
-use crate::settings::{DbGeminiOptions, DbOllamaOptions, DbVastAiOptions};
+use crate::settings::{DbGeminiOptions, DbOllamaOptions, DbOnDeviceOptions, DbVastAiOptions};
 
 /// Where the database and images live: `LOCALTAVERN_DATA_DIR` if set (handy for trying the app on a
 /// scratch copy), otherwise the OS per-user app-data folder for this app's identifier.
@@ -64,7 +65,16 @@ fn build_state(data_dir: PathBuf) -> Result<AppState, Box<dyn std::error::Error>
     let chatgpt = session(providers::openai::oauth_config(), providers::openai::SECRET_KEY);
 
     let vast = Arc::new(VastAiProvider::new(client.clone(), secrets.clone(), Arc::new(DbVastAiOptions(db.clone()))));
-    let registry = Arc::new(LlmProviderRegistry::new(vec![
+    // Only offered where the bundled llama-server exists (the Android app).
+    let ondevice = Runtime::find().map(|runtime| {
+        Arc::new(OnDeviceProvider::new(
+            client.clone(),
+            data_dir.join("models"),
+            Some(runtime),
+            Arc::new(DbOnDeviceOptions(db.clone())),
+        ))
+    });
+    let mut providers: Vec<Arc<dyn LlmProvider>> = vec![
         Arc::new(GeminiProvider::new(client.clone(), secrets.clone(), Arc::new(DbGeminiOptions(db.clone())))),
         Arc::new(DeepSeekProvider::new(client.clone(), secrets.clone())),
         Arc::new(MistralProvider::new(client.clone(), secrets.clone())),
@@ -72,7 +82,11 @@ fn build_state(data_dir: PathBuf) -> Result<AppState, Box<dyn std::error::Error>
         Arc::new(ChatGptSubscriptionProvider::new(client.clone(), chatgpt.clone())),
         Arc::new(OllamaProvider::new(client.clone(), Arc::new(DbOllamaOptions(db.clone())))),
         vast.clone(),
-    ]));
+    ];
+    if let Some(ondevice) = &ondevice {
+        providers.push(ondevice.clone());
+    }
+    let registry = Arc::new(LlmProviderRegistry::new(providers));
     let sessions = HashMap::from([
         (providers::xai::PROVIDER_ID.to_string(), xai),
         (providers::openai::PROVIDER_ID.to_string(), chatgpt),
@@ -81,7 +95,7 @@ fn build_state(data_dir: PathBuf) -> Result<AppState, Box<dyn std::error::Error>
     let images_dir = data_dir.join("images");
     let engine = ChatEngine::new(db.clone(), registry.clone(), images_dir.clone());
     engine.set_holiday_source(Arc::new(holidays::NagerHolidays::new(client.clone())));
-    Ok(AppState { db, engine, providers: registry, vast, secrets, sessions, sign_ins: Default::default(), images_dir, data_dir })
+    Ok(AppState { db, engine, providers: registry, vast, secrets, sessions, sign_ins: Default::default(), images_dir, data_dir, ondevice, ondevice_download: Default::default() })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -153,6 +167,11 @@ pub fn run() {
             commands::save_ollama_options,
             commands::get_vastai_options,
             commands::save_vastai_options,
+            commands::ondevice_status,
+            commands::save_ondevice_options,
+            commands::delete_ondevice_model,
+            commands::download_ondevice_model,
+            commands::cancel_ondevice_download,
             commands::get_default_personas,
             commands::save_default_personas,
             commands::store_image,
@@ -200,8 +219,14 @@ pub fn run() {
         .run(|app, event| {
             // Don't leave a rented GPU running (and billing) because the app was closed mid-grace-period.
             if let tauri::RunEvent::Exit = event {
-                let vast = app.state::<AppState>().vast.clone();
-                tauri::async_runtime::block_on(vast.shutdown());
+                let state = app.state::<AppState>();
+                let (vast, ondevice) = (state.vast.clone(), state.ondevice.clone());
+                tauri::async_runtime::block_on(async {
+                    vast.shutdown().await;
+                    if let Some(ondevice) = ondevice {
+                        ondevice.shutdown().await;
+                    }
+                });
             }
         });
 }

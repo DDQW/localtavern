@@ -11,6 +11,7 @@ pub mod keys;
 pub mod mistral;
 pub mod oauth;
 pub mod ollama;
+pub mod ondevice;
 pub mod openai;
 pub mod openai_compat;
 pub mod vastai;

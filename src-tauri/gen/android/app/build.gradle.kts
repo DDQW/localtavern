@@ -57,6 +57,11 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    // Extract the native libraries to disk: the bundled llama-server (libllama-server.so) is run as
+    // a program, and Android only executes files from the extracted native library folder.
+    packaging {
+        jniLibs.useLegacyPackaging = true
+    }
 }
 
 kotlin {

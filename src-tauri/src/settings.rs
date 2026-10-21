@@ -14,12 +14,14 @@ use crate::providers::gemini::{
     GeminiOptionsSource, GeminiRequestOptions, GeminiSafetyCategory, GeminiSafetyThreshold,
 };
 use crate::providers::ollama::{OllamaOptionsSource, OllamaRequestOptions};
+use crate::providers::ondevice::{OnDeviceOptions, OnDeviceOptionsSource};
 use crate::providers::vastai::{VastAiOptions, VastAiOptionsSource};
 use crate::repo::{app_settings, personas};
 
 const GEMINI_KEY: &str = "gemini.requestOptions";
 const OLLAMA_KEY: &str = "ollama.requestOptions";
 const VASTAI_KEY: &str = "vastai.options";
+const ONDEVICE_KEY: &str = "ondevice.options";
 const LAST_PROVIDER_KEY: &str = "app.provider.lastSelected";
 const DEFAULT_ROLEPLAY_PERSONA_KEY: &str = "app.persona.defaultRoleplay";
 const DEFAULT_ASSISTANT_PERSONA_KEY: &str = "app.persona.defaultAssistant";
@@ -143,11 +145,23 @@ pub fn save_vastai_options(conn: &Connection, options: &VastAiOptions) -> Result
     app_settings::set(conn, VASTAI_KEY, &serde_json::to_string(options)?)
 }
 
+// ---- on-device models ----
+
+pub fn load_ondevice_options(conn: &Connection) -> Result<OnDeviceOptions> {
+    let stored = app_settings::get(conn, ONDEVICE_KEY)?.filter(|j| !j.is_empty());
+    Ok(stored.and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default())
+}
+
+pub fn save_ondevice_options(conn: &Connection, options: &OnDeviceOptions) -> Result<()> {
+    app_settings::set(conn, ONDEVICE_KEY, &serde_json::to_string(options)?)
+}
+
 /// Live option sources for the providers: read from the database on every request, so a change in
 /// Settings applies immediately without restarting anything.
 pub struct DbGeminiOptions(pub Db);
 pub struct DbOllamaOptions(pub Db);
 pub struct DbVastAiOptions(pub Db);
+pub struct DbOnDeviceOptions(pub Db);
 
 impl GeminiOptionsSource for DbGeminiOptions {
     fn current(&self) -> GeminiRequestOptions {
@@ -164,6 +178,12 @@ impl OllamaOptionsSource for DbOllamaOptions {
 impl VastAiOptionsSource for DbVastAiOptions {
     fn current(&self) -> VastAiOptions {
         self.0.with(load_vastai_options).unwrap_or_default()
+    }
+}
+
+impl OnDeviceOptionsSource for DbOnDeviceOptions {
+    fn current(&self) -> OnDeviceOptions {
+        self.0.with(load_ondevice_options).unwrap_or_default()
     }
 }
 

@@ -24,6 +24,8 @@ import type {
   UserMemory,
   OllamaOptions,
   VastAiOptions,
+  OnDeviceOptions,
+  OnDeviceStatus,
   Persona,
   ProviderInfo,
   StoryCharacter,
@@ -161,13 +163,28 @@ const providers: ProviderInfo[] = [
   { id: "chatgpt-subscription", name: "ChatGPT", auth: "subscription", hasKey: true, browserSignIn: false },
   { id: "ollama", name: "Ollama", auth: "local", hasKey: true, browserSignIn: false },
   { id: "vastai", name: "Vast.ai", auth: "apiKey", hasKey: false, browserSignIn: false },
+  { id: "ondevice", name: "On-device", auth: "local", hasKey: true, browserSignIn: false },
 ];
 
 const models: Record<string, string[]> = {
   gemini: ["gemini-2.5-flash", "gemini-2.5-pro"],
   deepseek: ["deepseek-chat", "deepseek-reasoner"],
   ollama: ["llama3:8b", "mistral:latest"],
+  ondevice: ["rpDungeon_Gemma-4-E4B-Luchador-Q4_K_M", "MN-12B-Mag-Mell-R1-IQ4_XS"],
 };
+
+const GB = 1_000_000_000;
+let ondeviceOptions: OnDeviceOptions = {
+  contextSize: 8192,
+  threads: 4,
+  idleStopSecs: 600,
+  projectors: { "rpDungeon_Gemma-4-E4B-Luchador-Q4_K_M": "mmproj-gemma-4-E4B-it-Q8_0.gguf" },
+};
+const ondeviceFiles = [
+  { name: "MN-12B-Mag-Mell-R1-IQ4_XS", fileName: "MN-12B-Mag-Mell-R1-IQ4_XS.gguf", sizeBytes: 6.74 * GB, projector: false },
+  { name: "mmproj-gemma-4-E4B-it-Q8_0", fileName: "mmproj-gemma-4-E4B-it-Q8_0.gguf", sizeBytes: 0.56 * GB, projector: true },
+  { name: "rpDungeon_Gemma-4-E4B-Luchador-Q4_K_M", fileName: "rpDungeon_Gemma-4-E4B-Luchador-Q4_K_M.gguf", sizeBytes: 5.41 * GB, projector: false },
+];
 
 const conversations: Conversation[] = [];
 const messages = new Map<Uuid, ChatMessage[]>();
@@ -764,6 +781,26 @@ export const mockApi: Api = {
     return { instanceId: 0, port: 11434, baseUrl: "", contextSize: 8192, idleStopSecs: 10, readyTimeoutSecs: 600 };
   },
   async saveVastAiOptions() {},
+  async ondeviceStatus(): Promise<OnDeviceStatus> {
+    return { modelsDir: "/data/user/0/me.woelki.localtavern/models", files: ondeviceFiles, loaded: null, options: structuredClone(ondeviceOptions) };
+  },
+  async saveOndeviceOptions(options) {
+    ondeviceOptions = structuredClone(options);
+  },
+  async deleteOndeviceModel(fileName) {
+    const i = ondeviceFiles.findIndex((f) => f.fileName === fileName);
+    if (i >= 0) ondeviceFiles.splice(i, 1);
+  },
+  async downloadOndeviceModel(url, onProgress) {
+    const fileName = decodeURIComponent(new URL(url).pathname.split("/").pop() ?? "model.gguf");
+    for (let received = 0; received <= 4 * GB; received += GB) {
+      onProgress({ fileName, received, total: 4 * GB });
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    ondeviceFiles.push({ name: fileName.replace(/\.gguf$/, ""), fileName, sizeBytes: 4 * GB, projector: fileName.includes("mmproj") });
+    return fileName;
+  },
+  async cancelOndeviceDownload() {},
 
   async storeImage(path) {
     return path;

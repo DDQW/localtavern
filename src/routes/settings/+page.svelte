@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, errorText } from "$lib/api";
   import ImageGenSection from "$lib/components/ImageGenSection.svelte";
+  import OnDeviceSection from "$lib/components/OnDeviceSection.svelte";
   import type {
     DefaultPersonas,
     GeminiOptions,
@@ -410,6 +411,9 @@
             <button onclick={saveOllama}>Save Ollama options</button>
             {#if status.ollama}<span class="muted small" role="status">{status.ollama}</span>{/if}
           </div>
+        {/if}
+        {#if provider.id === "ondevice"}
+          <OnDeviceSection onchange={() => refresh(provider)} />
         {/if}
         {#if provider.id === "vastai" && vastai}
           <h3>Vast.ai instance</h3>

@@ -452,6 +452,37 @@ export interface VastAiOptions {
   readyTimeoutSecs: number;
 }
 
+/** Models run on the phone itself by the bundled llama.cpp server. */
+export interface OnDeviceOptions {
+  contextSize: number;
+  threads: number;
+  /** Seconds the model stays loaded after the last reply; 0 = until the app closes. */
+  idleStopSecs: number;
+  /** Vision projector file name per model name: the model sees pictures through it. */
+  projectors: Record<string, string>;
+}
+
+export interface ModelFile {
+  name: string;
+  fileName: string;
+  sizeBytes: number;
+  /** A vision projector (mmproj) rather than a model. */
+  projector: boolean;
+}
+
+export interface OnDeviceStatus {
+  modelsDir: string;
+  files: ModelFile[];
+  loaded: string | null;
+  options: OnDeviceOptions;
+}
+
+export interface DownloadProgress {
+  fileName: string;
+  received: number;
+  total: number | null;
+}
+
 export type ErrorKind = "auth" | "rateLimit" | "invalidRequest" | "network" | "contentBlocked" | "unknown";
 
 /** What the engine reports while a reply is produced (see src-tauri/src/chat/events.rs). */

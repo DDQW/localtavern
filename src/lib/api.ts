@@ -24,6 +24,9 @@ import type {
   Lorebook,
   OllamaOptions,
   VastAiOptions,
+  OnDeviceOptions,
+  OnDeviceStatus,
+  DownloadProgress,
   Persona,
   PromptPresetFull,
   ProviderInfo,
@@ -117,6 +120,13 @@ export interface Api {
   saveOllamaOptions(options: OllamaOptions): Promise<void>;
   getVastAiOptions(): Promise<VastAiOptions>;
   saveVastAiOptions(options: VastAiOptions): Promise<void>;
+  ondeviceStatus(): Promise<OnDeviceStatus>;
+  /** Also unloads the running model, so the new settings apply on the next reply. */
+  saveOndeviceOptions(options: OnDeviceOptions): Promise<void>;
+  deleteOndeviceModel(fileName: string): Promise<void>;
+  /** Resolves with the saved file's name once the download is complete. */
+  downloadOndeviceModel(url: string, onProgress: (progress: DownloadProgress) => void): Promise<string>;
+  cancelOndeviceDownload(): Promise<void>;
 
   storeImage(path: string): Promise<string>;
   deleteImage(path: string): Promise<boolean>;
@@ -256,6 +266,15 @@ const tauriApi: Api = {
   saveOllamaOptions: (options) => invoke("save_ollama_options", { options }),
   getVastAiOptions: () => invoke("get_vastai_options"),
   saveVastAiOptions: (options) => invoke("save_vastai_options", { options }),
+  ondeviceStatus: () => invoke("ondevice_status"),
+  saveOndeviceOptions: (options) => invoke("save_ondevice_options", { options }),
+  deleteOndeviceModel: (fileName) => invoke("delete_ondevice_model", { fileName }),
+  downloadOndeviceModel: (url, onProgress) => {
+    const channel = new Channel<DownloadProgress>();
+    channel.onmessage = onProgress;
+    return invoke("download_ondevice_model", { url, onProgress: channel });
+  },
+  cancelOndeviceDownload: () => invoke("cancel_ondevice_download"),
 
   storeImage: (path) => invoke("store_image", { path }),
   deleteImage: (path) => invoke("delete_image", { path }),

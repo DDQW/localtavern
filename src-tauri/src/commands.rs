@@ -26,6 +26,7 @@ use crate::powershell::settings::{self as tool_settings, PowerShellToolOptions};
 use crate::providers::gemini::GeminiRequestOptions;
 use crate::providers::oauth::{OAuthSession, SessionStatus};
 use crate::providers::ollama::OllamaRequestOptions;
+use crate::providers::ondevice::{self, ModelFile, OnDeviceOptions, OnDeviceProvider};
 use crate::providers::vastai::VastAiOptions;
 use crate::providers::{ApiKeyProvider, LlmProviderRegistry, SecretStore};
 use crate::repo::{
@@ -48,6 +49,10 @@ pub struct AppState {
     pub sign_ins: Mutex<HashMap<String, CancellationToken>>,
     pub images_dir: PathBuf,
     pub data_dir: PathBuf,
+    /// Also in `providers` when this build can run models itself (the Android app).
+    pub ondevice: Option<Arc<OnDeviceProvider>>,
+    /// The model download in progress, so Stop can end it.
+    pub ondevice_download: Mutex<Option<CancellationToken>>,
 }
 
 impl AppState {
@@ -93,12 +98,12 @@ fn provider_info(state: &AppState, id: &str) -> ProviderInfo {
         name: crate::chat::reply::provider_display_name(id).to_string(),
         auth: match (id, session) {
             (_, Some(_)) => "subscription",
-            ("ollama", _) => "local",
+            ("ollama" | "ondevice", _) => "local",
             _ => "apiKey",
         },
         has_key: match session {
             Some(session) => session.status().signed_in,
-            None => id == "ollama" || state.secrets.try_get_api_key(id).is_some(),
+            None => matches!(id, "ollama" | "ondevice") || state.secrets.try_get_api_key(id).is_some(),
         },
         browser_sign_in: id == crate::providers::mistral::PROVIDER_ID,
     }
@@ -593,6 +598,94 @@ pub fn get_vastai_options(state: State<'_, AppState>) -> Result<VastAiOptions> {
 #[tauri::command]
 pub fn save_vastai_options(state: State<'_, AppState>, options: VastAiOptions) -> Result<()> {
     state.db.with(|c| settings::save_vastai_options(c, &options))
+}
+
+// ---- on-device models ----
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnDeviceStatus {
+    pub models_dir: String,
+    pub files: Vec<ModelFile>,
+    /// The model loaded right now, if the server is running.
+    pub loaded: Option<String>,
+    pub options: OnDeviceOptions,
+}
+
+fn ondevice(state: &AppState) -> Result<&Arc<OnDeviceProvider>> {
+    state.ondevice.as_ref().ok_or_else(|| Error::Other("On-device models aren't available in this build.".into()))
+}
+
+#[tauri::command]
+pub async fn ondevice_status(state: State<'_, AppState>) -> Result<OnDeviceStatus> {
+    let provider = ondevice(&state)?;
+    Ok(OnDeviceStatus {
+        models_dir: provider.models_dir().to_string_lossy().into_owned(),
+        files: ondevice::model_files(provider.models_dir()),
+        loaded: provider.loaded_model().await,
+        options: state.db.with(settings::load_ondevice_options)?,
+    })
+}
+
+/// Saving restarts the model with the new settings on the next reply.
+#[tauri::command]
+pub async fn save_ondevice_options(state: State<'_, AppState>, options: OnDeviceOptions) -> Result<()> {
+    let provider = ondevice(&state)?.clone();
+    state.db.with(|c| settings::save_ondevice_options(c, &options))?;
+    provider.shutdown().await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_ondevice_model(state: State<'_, AppState>, file_name: String) -> Result<()> {
+    let provider = ondevice(&state)?.clone();
+    let Some(file) = ondevice::model_files(provider.models_dir()).into_iter().find(|f| f.file_name == file_name) else {
+        return Ok(());
+    };
+    provider.shutdown().await;
+    std::fs::remove_file(provider.models_dir().join(&file.file_name))
+        .map_err(|e| Error::Other(format!("Couldn't delete {}: {e}", file.file_name)))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadProgress {
+    pub file_name: String,
+    pub received: u64,
+    pub total: Option<u64>,
+}
+
+/// Downloads a GGUF from a link into the models folder; returns its file name.
+#[tauri::command]
+pub async fn download_ondevice_model(
+    state: State<'_, AppState>,
+    url: String,
+    on_progress: Channel<DownloadProgress>,
+) -> Result<String> {
+    let provider = ondevice(&state)?.clone();
+    let file_name = ondevice::download::file_name(&url).map_err(|e| Error::Other(e.message))?;
+    let cancel = CancellationToken::new();
+    {
+        let mut running = state.ondevice_download.lock().unwrap();
+        if running.is_some() {
+            return Err(Error::Other("A download is already running.".into()));
+        }
+        *running = Some(cancel.clone());
+    }
+    let client = crate::providers::http::build_client();
+    let result = ondevice::download::download(&client, &url, provider.models_dir(), &cancel, |received, total| {
+        let _ = on_progress.send(DownloadProgress { file_name: file_name.clone(), received, total });
+    })
+    .await;
+    state.ondevice_download.lock().unwrap().take();
+    result.map(|_| file_name).map_err(|e| Error::Other(e.message))
+}
+
+#[tauri::command]
+pub fn cancel_ondevice_download(state: State<'_, AppState>) {
+    if let Some(token) = state.ondevice_download.lock().unwrap().take() {
+        token.cancel();
+    }
 }
 
 #[tauri::command]
