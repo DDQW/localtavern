@@ -25,7 +25,7 @@
         characters = await api.listCharacters();
         const loaded =
           wanted === "new"
-            ? { id: newId(), name: "", characterIds: [], activationMode: "manual" as const, allowSelfResponses: false, jointReplies: false }
+            ? { id: newId(), name: "", characterIds: [], activationMode: "manual" as const, allowSelfResponses: false, jointReplies: false, privateTalks: true }
             : (await api.listGroupChats()).find((g) => g.id === wanted);
         if (loaded) form = loaded;
         else error = "That group no longer exists.";
@@ -99,6 +99,15 @@
       <p class="muted small">
         After each reply the model decides whether another member would chime in too, and if so they answer right after. Each member answers a
         message at most once this way.
+      </p>
+
+      <label class="check">
+        <input type="checkbox" bind:checked={form.privateTalks} />
+        Let characters take you aside for a private talk
+      </label>
+      <p class="muted small">
+        A member can pull you into a one-on-one chat of their own; you can always start one from the group chat's header. A private talk
+        sees the group chat, but the group and the other members never see the talk.
       </p>
 
       <h2>Members</h2>

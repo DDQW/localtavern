@@ -1,5 +1,5 @@
 //! The tags a roleplay reply ends with - `[time-skip: ...]`, `[emotion: ...]`, `[meters: ...]`,
-//! `[photo: ...]`, `[next: ...]` -
+//! `[photo: ...]`, `[next: ...]`, `[private]` -
 //! peeled off together, in whatever order the model wrote them, so one missing or misplaced tag
 //! can't leave another in the visible text or hide it from its parser.
 
@@ -9,13 +9,13 @@ use chrono::Duration;
 use regex::Regex;
 
 use super::meter_tag::{self, MeterReading};
-use super::{emotion_tag, next_speaker_tag, photo_tag, time_skip_tag};
+use super::{breakout, emotion_tag, next_speaker_tag, photo_tag, time_skip_tag};
 
 /// One or more tags at the very end of a reply, each optionally wrapped in `*`, `_` or backticks.
 /// A `[...]` tag may hold parentheses (photo descriptions do, SD weights like `(red hair:1.2)` too);
 /// a `(...)` one may not. Either may close with the other bracket.
 static TAIL: LazyLock<Regex> = LazyLock::new(|| {
-    const KEYS: &str = r"\s*(?:time[-_ ]?(?:skip|jump|passed|elapsed)|emotion|meters?|photo|picture|image|selfie|next(?:[-_ ]?(?:speaker|up))?)\s*[:=]";
+    const KEYS: &str = r"\s*(?:(?:time[-_ ]?(?:skip|jump|passed|elapsed)|emotion|meters?|photo|picture|image|selfie|next(?:[-_ ]?(?:speaker|up))?)\s*[:=]|private\b)";
     Regex::new(&format!(r"(?i)(?:[\s*_`]*(?:\[{KEYS}[^\[\]]*|\({KEYS}[^\])]*)[\])])+[\s*_`]*$")).unwrap()
 });
 
@@ -29,6 +29,8 @@ pub struct ReplyTags {
     pub photo: Option<String>,
     /// The group member this reply hands the user's message on to, as the model wrote the name.
     pub next: Option<String>,
+    /// The speaker takes the user aside into a private talk (group chats).
+    pub private: bool,
 }
 
 /// Splits the trailing tags off `text`, returning the text without them and what they said.
@@ -43,6 +45,7 @@ pub fn peel(text: &str) -> (String, ReplyTags) {
         meters: meter_tag::parse_tail(tail),
         photo: photo_tag::parse_tail(tail),
         next: next_speaker_tag::parse_tail(tail),
+        private: breakout::parse_tail(tail),
     };
     (text[..found.start()].trim_end().to_string(), tags)
 }
@@ -107,6 +110,16 @@ mod tests {
         assert_eq!(tags.next.as_deref(), Some("Bob"));
         assert_eq!(tags.emotion.as_deref(), Some("happy"));
         assert_eq!(peel("Just me. [emotion: sad]").1.next, None);
+    }
+
+    #[test]
+    fn peels_a_private_tag_with_or_without_a_reason() {
+        let (clean, tags) = peel("Mira tugs your sleeve.\n\n[emotion: shy]\n[private]");
+        assert_eq!(clean, "Mira tugs your sleeve.");
+        assert!(tags.private);
+        assert!(peel("Come. [private: about the letter]").1.private);
+        assert!(!peel("Hi. [emotion: happy]").1.private);
+        assert_eq!(peel("It was a private matter.").0, "It was a private matter.");
     }
 
     #[test]

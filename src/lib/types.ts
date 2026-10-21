@@ -288,6 +288,8 @@ export interface Conversation {
   assistantSystemPrompt: string | null;
   enableGoogleSearch: boolean | null;
   worldState: WorldState | null;
+  /** Set for a private talk: the group conversation it belongs to (`characterId` is the member). */
+  parentConversationId: Uuid | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -332,6 +334,8 @@ export interface ChatSession {
   providers: string[];
   models: string[];
   memoryCount: number;
+  /** For a private talk: the title of the group conversation it belongs to. */
+  parentTitle: string | null;
 }
 
 export interface ProviderInfo {
@@ -453,6 +457,8 @@ export type ChatEvent =
   | { type: "titleChanged"; conversationId: Uuid; title: string }
   /** The character sent the user a photo in the story; the app draws it. */
   | { type: "photoSent"; conversationId: Uuid; messageId: Uuid; characterId: Uuid | null; description: string }
+  /** A group member took the user aside: open their private talk and let them speak first. */
+  | { type: "breakoutStarted"; conversationId: Uuid; breakoutId: Uuid; characterId: Uuid }
   | { type: "compacting"; conversationId: Uuid }
   | { type: "compacted"; conversationId: Uuid }
   | { type: "toolApproval"; requestId: Uuid; command: string; elevate: boolean }
@@ -530,6 +536,8 @@ export interface GroupChat {
   allowSelfResponses: boolean;
   /** A reply may hand the user's message on to another member, so several answer it (the model decides). */
   jointReplies: boolean;
+  /** A member may take the user aside into a private talk on their own. */
+  privateTalks: boolean;
 }
 
 // ---- picture generation ----

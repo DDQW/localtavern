@@ -79,7 +79,17 @@
 
       {#each shown as message, i (message.id)}
         <div class:summarized={hidden + i <= lastSummarized}>
-          <Message {message} latest={message.id === lastTurnId} />
+          {#if message.role === "system"}
+            <!-- Something the app noted in the story, e.g. where a private talk happened. -->
+            <p class="marker">
+              <span>{message.text}</span>
+              {#if chat.isGroup && message.speakerCharacterId}
+                <button class="ghost" onclick={() => chat.openBreakout(message.speakerCharacterId!)} disabled={chat.busy}>Open the talk</button>
+              {/if}
+            </p>
+          {:else}
+            <Message {message} latest={message.id === lastTurnId} />
+          {/if}
         </div>
         {#if hidden + i === lastSummarized && chat.context?.summary}
           <details class="summary">
@@ -111,6 +121,24 @@
 <PictureDialog />
 
 <style>
+  .marker {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 4px 10px;
+    margin: 10px 20px;
+    font-size: 13px;
+    font-style: italic;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  .marker button {
+    font-style: normal;
+    font-size: 12px;
+  }
+
   .chat {
     display: flex;
     height: 100%;

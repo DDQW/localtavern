@@ -234,6 +234,10 @@ pub struct Conversation {
     pub enable_google_search: Option<bool>,
     /// Only meaningful in Roleplay mode. `None` means not set up yet.
     pub world_state: Option<WorldState>,
+    /// Set for a private talk (breakout): the group conversation it belongs to. `character_id` is
+    /// then the member the user is talking to.
+    #[serde(default)]
+    pub parent_conversation_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -254,6 +258,7 @@ impl Default for Conversation {
             assistant_system_prompt: None,
             enable_google_search: None,
             world_state: None,
+            parent_conversation_id: None,
             created_at: now,
             updated_at: now,
         }

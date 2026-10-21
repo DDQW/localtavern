@@ -13,6 +13,7 @@ fn map(row: &Row) -> rusqlite::Result<GroupChat> {
         activation_mode: rows::int_enum(row, "ActivationMode", GroupActivationMode::from_i32)?,
         allow_self_responses: row.get("AllowSelfResponses")?,
         joint_replies: row.get("JointReplies")?,
+        private_talks: row.get("PrivateTalks")?,
     })
 }
 
@@ -49,9 +50,11 @@ pub fn upsert(conn: &Connection, g: &GroupChat) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     let id = g.id.to_string();
     tx.execute(
-        "INSERT INTO GroupChats (Id, Name, ActivationMode, AllowSelfResponses, JointReplies) VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(Id) DO UPDATE SET Name = ?2, ActivationMode = ?3, AllowSelfResponses = ?4, JointReplies = ?5;",
-        params![id, g.name, g.activation_mode.to_i32(), g.allow_self_responses, g.joint_replies],
+        "INSERT INTO GroupChats (Id, Name, ActivationMode, AllowSelfResponses, JointReplies, PrivateTalks)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(Id) DO UPDATE SET Name = ?2, ActivationMode = ?3, AllowSelfResponses = ?4, JointReplies = ?5,
+            PrivateTalks = ?6;",
+        params![id, g.name, g.activation_mode.to_i32(), g.allow_self_responses, g.joint_replies, g.private_talks],
     )?;
     tx.execute("DELETE FROM GroupChatMembers WHERE GroupChatId = ?1;", [&id])?;
     for (index, character_id) in g.character_ids.iter().enumerate() {
@@ -92,6 +95,7 @@ mod tests {
             activation_mode: GroupActivationMode::RoundRobin,
             allow_self_responses: true,
             joint_replies: true,
+            private_talks: false,
             ..Default::default()
         };
         upsert(&conn, &g).unwrap();

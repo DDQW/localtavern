@@ -161,6 +161,12 @@ pub fn open_group(state: State<'_, AppState>, group_id: Uuid, force_new: bool) -
     state.engine.open_group(group_id, force_new)
 }
 
+/// The user's private talk with one member of a group conversation (resumed, or started empty).
+#[tauri::command]
+pub fn open_breakout(state: State<'_, AppState>, conversation_id: Uuid, character_id: Uuid) -> Result<ChatSession> {
+    state.engine.open_breakout(conversation_id, character_id)
+}
+
 #[tauri::command]
 pub async fn pick_speaker(
     state: State<'_, AppState>,

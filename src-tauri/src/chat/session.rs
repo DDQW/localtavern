@@ -8,7 +8,7 @@ use uuid::Uuid;
 use super::presets;
 use crate::error::{Error, Result};
 use crate::models::{Character, ChatMessage, Conversation, ConversationMode, GroupChat, MessageRole, Persona, PromptPreset};
-use crate::repo::{characters, conversations, group_chats, lorebooks, personas, user_memories};
+use crate::repo::{characters, conversations, group_chats, lorebooks, personas, summaries, user_memories};
 use crate::settings;
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +44,8 @@ pub struct ChatSession {
     /// The cached model list for the conversation's provider.
     pub models: Vec<String>,
     pub memory_count: usize,
+    /// For a private talk: the title of the group conversation it belongs to.
+    pub parent_title: Option<String>,
 }
 
 /// The loaded state a reply is generated from.
@@ -55,6 +57,30 @@ pub struct ReplyContext {
     pub characters: Vec<Character>,
     pub lorebooks: Vec<crate::models::Lorebook>,
     pub messages: Vec<ChatMessage>,
+    /// Set for a private talk: the group conversation it belongs to.
+    pub breakout: Option<Breakout>,
+    /// For a group conversation: its private talks, which only their own member remembers.
+    pub private_talks: Vec<PrivateTalk>,
+}
+
+/// The group conversation a private talk belongs to, as the talk's prompt sees it.
+pub struct Breakout {
+    pub parent: Conversation,
+    /// The group's name.
+    pub group_name: String,
+    /// Everyone in the group, this talk's character included (to name who said what).
+    pub group_cast: Vec<Character>,
+    pub group_messages: Vec<ChatMessage>,
+    /// The group's summary text, when it has been compacted (`group_messages` are then only the
+    /// ones it doesn't cover).
+    pub group_summary: Option<String>,
+}
+
+/// One member's private talk with the user, inside a group conversation.
+pub struct PrivateTalk {
+    pub character_id: Uuid,
+    pub messages: Vec<ChatMessage>,
+    pub summary: Option<String>,
 }
 
 pub fn default_persona(conn: &Connection) -> Result<Option<Persona>> {
@@ -125,7 +151,51 @@ pub fn load_reply_context(conn: &Connection, conversation_id: Uuid) -> Result<Re
     }
 
     let messages = chat_history(conn, conversation_id)?;
-    Ok(ReplyContext { group, conversation, preset, persona, characters: cast, lorebooks: books, messages })
+    let breakout = match conversation.parent_conversation_id {
+        Some(parent_id) => load_breakout(conn, parent_id)?,
+        None => None,
+    };
+    let private_talks = if group.is_some() { load_private_talks(conn, conversation_id)? } else { Vec::new() };
+    Ok(ReplyContext {
+        group,
+        conversation,
+        preset,
+        persona,
+        characters: cast,
+        lorebooks: books,
+        messages,
+        breakout,
+        private_talks,
+    })
+}
+
+fn load_breakout(conn: &Connection, parent_id: Uuid) -> Result<Option<Breakout>> {
+    let Some(parent) = conversations::get(conn, parent_id)? else {
+        return Ok(None);
+    };
+    let group = match parent.group_chat_id {
+        Some(id) => group_chats::get(conn, id)?,
+        None => None,
+    };
+    let group_cast = load_cast(conn, &parent, group.as_ref())?;
+    let all = chat_history(conn, parent_id)?;
+    let summary = summaries::get(conn, parent_id)?;
+    let group_messages = summary.as_ref().map_or(&all[..], |s| s.uncovered(&all)).to_vec();
+    let group_name = group.map(|g| g.name).unwrap_or_else(|| parent.title.clone());
+    Ok(Some(Breakout { parent, group_name, group_cast, group_messages, group_summary: summary.map(|s| s.text) }))
+}
+
+fn load_private_talks(conn: &Connection, conversation_id: Uuid) -> Result<Vec<PrivateTalk>> {
+    let mut talks = Vec::new();
+    for talk in conversations::get_breakouts(conn, conversation_id)? {
+        let Some(character_id) = talk.character_id else { continue };
+        talks.push(PrivateTalk {
+            character_id,
+            messages: chat_history(conn, talk.id)?,
+            summary: summaries::get(conn, talk.id)?.map(|s| s.text),
+        });
+    }
+    Ok(talks)
 }
 
 /// The conversation's character(s) as stored.
@@ -164,7 +234,10 @@ pub fn build_session(conn: &Connection, provider_ids: &[String], conversation_id
             None => conversations::get_assistants_without_character(conn)?,
         },
         ConversationMode::Roleplay => {
-            if let Some(id) = ctx.conversation.character_id {
+            if let Some(parent) = ctx.conversation.parent_conversation_id {
+                // A private talk lists its group conversation and that conversation's other talks.
+                conversations::get(conn, parent)?.into_iter().chain(conversations::get_breakouts(conn, parent)?).collect()
+            } else if let Some(id) = ctx.conversation.character_id {
                 conversations::get_by_character_and_mode(conn, id, ConversationMode::Roleplay)?
             } else if let Some(id) = ctx.conversation.group_chat_id {
                 conversations::get_by_group_chat(conn, id)?
@@ -182,6 +255,7 @@ pub fn build_session(conn: &Connection, provider_ids: &[String], conversation_id
 
     let models = settings::cached_models(conn, &ctx.conversation.provider_id)?;
     let memory_count = user_memories::get_all(conn)?.len();
+    let parent_title = ctx.breakout.as_ref().map(|b| b.group_name.clone());
 
     Ok(ChatSession {
         conversation: ctx.conversation,
@@ -196,6 +270,7 @@ pub fn build_session(conn: &Connection, provider_ids: &[String], conversation_id
         providers: provider_ids.to_vec(),
         models,
         memory_count,
+        parent_title,
     })
 }
 

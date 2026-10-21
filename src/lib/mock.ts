@@ -147,6 +147,7 @@ const groups: GroupChat[] = [
     activationMode: "triggerWord",
     allowSelfResponses: false,
     jointReplies: true,
+    privateTalks: true,
   },
 ];
 
@@ -204,6 +205,7 @@ function conversation(overrides: Partial<Conversation>): Conversation {
     assistantSystemPrompt: null,
     enableGoogleSearch: null,
     worldState: null,
+    parentConversationId: null,
     createdAt: now(),
     updatedAt: now(),
     ...overrides,
@@ -249,9 +251,14 @@ function conversation(overrides: Partial<Conversation>): Conversation {
 }
 
 function history(c: Conversation): HistoryEntry[] {
+  const family = c.parentConversationId;
   return conversations
     .filter((x) =>
-      c.characterId
+      family
+        ? x.id === family || x.parentConversationId === family
+        : x.parentConversationId
+          ? false
+          : c.characterId
         ? x.characterId === c.characterId && x.mode === c.mode
         : c.groupChatId
           ? x.groupChatId === c.groupChatId
@@ -284,7 +291,24 @@ function session(id: Uuid): ChatSession {
     providers: providers.map((p) => p.id),
     models: models[c.providerId] ?? [],
     memoryCount: 0,
+    parentTitle: conversations.find((x) => x.id === c.parentConversationId)?.title ?? null,
   };
+}
+
+/** The private talk with a member of a group conversation, made on first use. */
+function breakoutFor(parentId: Uuid, characterId: Uuid): Conversation {
+  const existing = conversations.find((x) => x.parentConversationId === parentId && x.characterId === characterId);
+  if (existing) return existing;
+  const parent = conversations.find((x) => x.id === parentId)!;
+  const name = characters.find((ch) => ch.id === characterId)?.name ?? "Someone";
+  return conversation({
+    title: `${name} in private`,
+    mode: "roleplay",
+    characterId,
+    personaId: parent.personaId,
+    worldState: parent.worldState,
+    parentConversationId: parentId,
+  });
 }
 
 const running = new Map<Uuid, boolean>();
@@ -403,6 +427,9 @@ export const mockApi: Api = {
     const group = groups.find((g) => g.id === groupId)!;
     return session(conversation({ title: group.name, mode: "roleplay", groupChatId: groupId, personaId: personaFor("roleplay") }).id);
   },
+  async openBreakout(conversationId, characterId) {
+    return session(breakoutFor(conversationId, characterId).id);
+  },
   async openLastRoleplay() {
     const last = [...conversations].reverse().find((c) => c.mode === "roleplay");
     if (!last) return null;
@@ -447,6 +474,22 @@ export const mockApi: Api = {
       onEvent({ type: "compacted", conversationId });
     }
     const c = conversations.find((x) => x.id === conversationId)!;
+    // A stand-in for a member's [private] tag: asking to talk "alone" in a group gets you taken aside.
+    if (c.groupChatId && /\b(alone|private)\b/i.test(text)) {
+      const characterId = groups.find((g) => g.id === c.groupChatId)!.characterIds[0];
+      const name = characters.find((ch) => ch.id === characterId)!.name;
+      const aside = message(conversationId, "character", "", { speakerCharacterId: characterId });
+      list.push(aside);
+      onEvent({ type: "messageAdded", message: structuredClone(aside) });
+      await stream(conversationId, aside, onEvent, "*She catches your eye and tilts her head toward the corridor.*", false);
+      const user = personas.find((p) => p.id === c.personaId)?.name || "User";
+      const marker = message(conversationId, "system", `${user} and ${name} stepped away from the group to talk in private.`, { speakerCharacterId: characterId });
+      list.push(marker);
+      onEvent({ type: "messageAdded", message: structuredClone(marker) });
+      onEvent({ type: "breakoutStarted", conversationId, breakoutId: breakoutFor(conversationId, characterId).id, characterId });
+      onEvent({ type: "finished" });
+      return;
+    }
     const reply = message(conversationId, "character", "", { speakerCharacterId: c.characterId });
     list.push(reply);
     onEvent({ type: "messageAdded", message: structuredClone(reply) });

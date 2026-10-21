@@ -28,6 +28,9 @@ pub enum ChatEvent {
     TitleChanged { conversation_id: Uuid, title: String },
     /// The character sent the user a photo in the story (`[photo: ...]`); the app draws it.
     PhotoSent { conversation_id: Uuid, message_id: Uuid, character_id: Option<Uuid>, description: String },
+    /// A group member took the user aside (`[private]`): `breakout_id` is their private talk, which
+    /// the UI opens (and has `character_id` speak first in).
+    BreakoutStarted { conversation_id: Uuid, breakout_id: Uuid, character_id: Uuid },
     /// The request was getting too big for the model, so older messages are being summarized first.
     Compacting { conversation_id: Uuid },
     /// A compaction finished (or failed - an `Error` says so); the context meter is out of date.

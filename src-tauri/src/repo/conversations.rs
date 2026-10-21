@@ -21,6 +21,7 @@ fn map_conversation(row: &Row) -> rusqlite::Result<Conversation> {
         assistant_system_prompt: row.get("AssistantSystemPrompt")?,
         enable_google_search: row.get("EnableGoogleSearch")?,
         world_state: rows::opt_blob(row, "WorldStateJson")?,
+        parent_conversation_id: rows::opt_uuid(row, "ParentConversationId")?,
         created_at: rows::datetime(row, "CreatedAt")?,
         updated_at: rows::datetime(row, "UpdatedAt")?,
     })
@@ -83,19 +84,21 @@ pub fn get_most_recent_roleplay(conn: &Connection) -> Result<Option<Conversation
     most_recent_where(conn, "Mode = ?1", &ConversationMode::Roleplay.to_i32())
 }
 
+/// A character's own chats leave out private talks inside a group (they belong to the group's chat).
 pub fn get_most_recent_by_character(conn: &Connection, character_id: Uuid) -> Result<Option<Conversation>> {
-    most_recent_where(conn, "CharacterId = ?1", &character_id.to_string())
+    most_recent_where(conn, "CharacterId = ?1 AND ParentConversationId IS NULL", &character_id.to_string())
 }
 
 /// Conversations with this character in one mode, newest first. Roleplay and Assistant can share a
-/// character id without sharing a thread: each listing stays inside its own mode.
+/// character id without sharing a thread: each listing stays inside its own mode. Private talks
+/// inside a group are left out.
 pub fn get_by_character_and_mode(
     conn: &Connection,
     character_id: Uuid,
     mode: ConversationMode,
 ) -> Result<Vec<Conversation>> {
     let mut stmt =
-        conn.prepare("SELECT * FROM Conversations WHERE CharacterId = ?1 AND Mode = ?2 ORDER BY UpdatedAt DESC;")?;
+        conn.prepare("SELECT * FROM Conversations WHERE CharacterId = ?1 AND Mode = ?2 AND ParentConversationId IS NULL ORDER BY UpdatedAt DESC;")?;
     let list = stmt
         .query_map(params![character_id.to_string(), mode.to_i32()], map_conversation)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -126,7 +129,30 @@ pub fn get_most_recent_by_group_chat(conn: &Connection, group_chat_id: Uuid) -> 
 }
 
 pub fn get_by_character(conn: &Connection, character_id: Uuid) -> Result<Vec<Conversation>> {
-    all_where(conn, "CharacterId = ?1", &character_id.to_string())
+    all_where(conn, "CharacterId = ?1 AND ParentConversationId IS NULL", &character_id.to_string())
+}
+
+/// The private talks (breakouts) inside a group conversation, newest first.
+pub fn get_breakouts(conn: &Connection, parent_id: Uuid) -> Result<Vec<Conversation>> {
+    all_where(conn, "ParentConversationId = ?1", &parent_id.to_string())
+}
+
+/// The private talk with `character_id` inside a group conversation, if there is one.
+pub fn get_breakout(conn: &Connection, parent_id: Uuid, character_id: Uuid) -> Result<Option<Conversation>> {
+    Ok(get_breakouts(conn, parent_id)?.into_iter().find(|c| c.character_id == Some(character_id)))
+}
+
+/// The conversation and every one tied to it: a group conversation and its private talks share
+/// one story (and one clock), whichever of them `conversation_id` is.
+pub fn family_ids(conn: &Connection, conversation_id: Uuid) -> Result<Vec<Uuid>> {
+    let id = conversation_id.to_string();
+    let root: String = conn
+        .query_row("SELECT COALESCE(ParentConversationId, Id) FROM Conversations WHERE Id = ?1;", [&id], |r| r.get(0))
+        .optional()?
+        .unwrap_or(id);
+    let mut stmt = conn.prepare("SELECT Id FROM Conversations WHERE Id = ?1 OR ParentConversationId = ?1;")?;
+    let ids = stmt.query_map([&root], |r| rows::uuid(r, "Id"))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
 }
 
 pub fn get_by_group_chat(conn: &Connection, group_chat_id: Uuid) -> Result<Vec<Conversation>> {
@@ -148,12 +174,12 @@ pub fn upsert(conn: &Connection, c: &Conversation) -> Result<()> {
     conn.execute(
         "INSERT INTO Conversations
             (Id, Title, Mode, CharacterId, GroupChatId, PersonaId, PromptPresetId, ProviderId, Model,
-             AssistantSystemPrompt, EnableGoogleSearch, WorldStateJson, CreatedAt, UpdatedAt)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             AssistantSystemPrompt, EnableGoogleSearch, WorldStateJson, CreatedAt, UpdatedAt, ParentConversationId)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(Id) DO UPDATE SET
             Title = ?2, Mode = ?3, CharacterId = ?4, GroupChatId = ?5, PersonaId = ?6, PromptPresetId = ?7,
             ProviderId = ?8, Model = ?9, AssistantSystemPrompt = ?10, EnableGoogleSearch = ?11,
-            WorldStateJson = ?12, UpdatedAt = ?14;",
+            WorldStateJson = ?12, UpdatedAt = ?14, ParentConversationId = ?15;",
         params![
             c.id.to_string(),
             c.title,
@@ -169,19 +195,35 @@ pub fn upsert(conn: &Connection, c: &Conversation) -> Result<()> {
             world_state,
             time::format(&c.created_at),
             time::format(&c.updated_at),
+            c.parent_conversation_id.map(|i| i.to_string()),
         ],
     )?;
     Ok(())
 }
 
 /// Persists only the world-state column, so a sidebar edit or clock auto-advance doesn't re-upsert the row.
+/// A group conversation and its private talks share the state: it is written to all of them.
 pub fn update_world_state(conn: &Connection, conversation_id: Uuid, state: Option<&WorldState>) -> Result<()> {
     let blob = state.map(json::to_blob).transpose()?;
-    conn.execute(
-        "UPDATE Conversations SET WorldStateJson = ?1 WHERE Id = ?2;",
-        params![blob, conversation_id.to_string()],
-    )?;
+    for id in family_ids(conn, conversation_id)? {
+        conn.execute("UPDATE Conversations SET WorldStateJson = ?1 WHERE Id = ?2;", params![blob, id.to_string()])?;
+    }
     Ok(())
+}
+
+/// Whether a message anywhere in the conversation's family, newer than `after`, moved the story
+/// clock - then an older reply's clock can no longer be put back.
+pub fn clock_moved_after(conn: &Connection, conversation_id: Uuid, after: &ChatMessage) -> Result<bool> {
+    for id in family_ids(conn, conversation_id)? {
+        let later = get_messages(conn, id)?
+            .into_iter()
+            .filter(|m| m.id != after.id && m.clock.is_some())
+            .any(|m| m.timestamp > after.timestamp);
+        if later {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn delete(conn: &Connection, id: Uuid) -> Result<()> {

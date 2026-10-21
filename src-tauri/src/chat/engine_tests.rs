@@ -1306,6 +1306,170 @@ async fn a_manual_pick_can_be_handed_on_but_not_back() {
     assert!(!f.provider.requests()[2].system_instruction.clone().unwrap().contains("[next: <name>]"));
 }
 
+// ---- private talks (breakouts) ----
+
+async fn pick(f: &Fixture, conversation: Uuid, character: Uuid) -> Vec<ChatEvent> {
+    let sink = Arc::new(VecSink::default());
+    f.engine.pick_speaker(conversation, character, sink.clone()).await.unwrap();
+    sink.events()
+}
+
+#[tokio::test]
+async fn a_private_talk_hears_the_group_but_the_group_and_other_talks_never_hear_it() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Hi, you two."), finish("STOP")]),        // group: Alice
+        Script::Items(vec![chunk("I burned it."), finish("STOP")]),        // Alice in private
+        Script::Items(vec![chunk("Just tired."), finish("STOP")]),         // Bob in private
+        Script::Items(vec![chunk("Bob, in the group."), finish("STOP")]),  // group: Bob
+        Script::Items(vec![chunk("Alice, in the group."), finish("STOP")]), // group: Alice
+    ]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+
+    send(&f, conv, "Hello both").await.0.unwrap();
+
+    let talk = f.engine.open_breakout(conv, alice.id).unwrap();
+    assert_eq!(talk.conversation.parent_conversation_id, Some(conv));
+    assert_eq!(talk.conversation.character_id, Some(alice.id));
+    assert_eq!(talk.parent_title.as_deref(), Some("The Crew"));
+    assert!(talk.messages.is_empty());
+    assert_eq!(f.engine.open_breakout(conv, alice.id).unwrap().conversation.id, talk.conversation.id, "resumed, not duplicated");
+    assert!(f.engine.open_breakout(conv, Uuid::new_v4()).is_err());
+    assert!(f.engine.new_chat_like(talk.conversation.id).is_err());
+
+    send(&f, talk.conversation.id, "Psst - the letter?").await.0.unwrap();
+    let private = &f.provider.requests()[1];
+    let texts: Vec<&str> = private.history.iter().map(|m| m.text.as_str()).collect();
+    let hello = texts.iter().position(|t| *t == "[System note: In the group chat, User: Hello both]").expect("the group's messages");
+    let reply = texts.iter().position(|t| *t == "[System note: In the group chat, Alice: Hi, you two.]").unwrap();
+    let asked = texts.iter().position(|t| *t == "Psst - the letter?").unwrap();
+    assert!(hello < reply && reply < asked, "{texts:?}");
+    let system = private.system_instruction.clone().unwrap();
+    assert!(system.contains("This is a private conversation between User and Alice, away from the group chat \"The Crew\" with Bob."), "{system}");
+    assert!(!system.contains("[private]"), "a private talk can't start another: {system}");
+
+    // The group notes where the talk happened - once.
+    let group_messages = messages(&f, conv);
+    let marker = group_messages.last().unwrap();
+    assert_eq!(marker.role, MessageRole::System);
+    assert_eq!(marker.text, "User and Alice stepped away from the group to talk in private.");
+    assert_eq!(marker.speaker_character_id, Some(alice.id));
+
+    let bobs = f.engine.open_breakout(conv, bob.id).unwrap();
+    assert_ne!(bobs.conversation.id, talk.conversation.id);
+    send(&f, bobs.conversation.id, "And you?").await.0.unwrap();
+    let bob_private = request_text(&f.provider.requests()[2]);
+    assert!(!bob_private.contains("burned") && !bob_private.contains("letter"), "{bob_private}");
+    assert!(bob_private.contains("[System note: In the group chat: User and Alice stepped away"), "the group saw them leave: {bob_private}");
+
+    // Back in the group: Bob remembers only his own talk, Alice only hers.
+    send(&f, conv, "So, everyone").await.0.unwrap();
+    let bob_group = request_text(&f.provider.requests()[3]);
+    assert!(!bob_group.contains("burned") && !bob_group.contains("letter"), "{bob_group}");
+    assert!(bob_group.contains("Bob and User have talked in private") && bob_group.contains("Bob: Just tired."), "{bob_group}");
+    let group_history = &f.provider.requests()[3].history;
+    assert!(group_history.iter().any(|m| m.role == LlmRole::User && m.text == "[System note: User and Alice stepped away from the group to talk in private.]"));
+
+    send(&f, conv, "Alice?").await.0.unwrap();
+    let alice_group = request_text(&f.provider.requests()[4]);
+    assert!(alice_group.contains("Alice and User have talked in private") && alice_group.contains("Alice: I burned it."), "{alice_group}");
+    assert!(!alice_group.contains("Just tired."), "{alice_group}");
+    assert_eq!(speakers(&f, conv), [Some(alice.id), Some(bob.id), Some(alice.id)]);
+}
+
+#[tokio::test]
+async fn a_character_can_take_the_user_aside_and_speaks_first_there() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Alice grabs your arm.\n[private]\n[next: Bob]"), finish("STOP")]),
+        Script::Items(vec![chunk("So. About last night."), finish("STOP")]),
+    ]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob]);
+    joint(&f, &group);
+    let conv = ready_group(&f, &group);
+
+    let (result, events) = send(&f, conv, "Evening!").await;
+    result.unwrap();
+
+    assert_eq!(f.provider.requests().len(), 1, "taking the user aside ends the round");
+    assert!(f.provider.requests()[0].system_instruction.clone().unwrap().contains("square brackets included: [private]."));
+    let breakout_id = events
+        .iter()
+        .find_map(|e| match e {
+            ChatEvent::BreakoutStarted { conversation_id, breakout_id, character_id } => {
+                assert_eq!((*conversation_id, *character_id), (conv, alice.id));
+                Some(*breakout_id)
+            }
+            _ => None,
+        })
+        .expect("the UI is told to open the talk");
+    let group_messages = messages(&f, conv);
+    assert_eq!(group_messages[1].text, "Alice grabs your arm.");
+    assert_eq!(group_messages.last().unwrap().role, MessageRole::System, "the group notes the two left");
+    assert!(events.iter().any(|e| matches!(e, ChatEvent::MessageAdded { message } if message.role == MessageRole::System)));
+
+    pick(&f, breakout_id, alice.id).await;
+    let talk = messages(&f, breakout_id);
+    assert_eq!(talk.len(), 1);
+    assert_eq!(talk[0].text, "So. About last night.");
+    assert_eq!(messages(&f, conv).len(), group_messages.len(), "no second note for the same talk");
+}
+
+#[tokio::test]
+async fn a_group_can_keep_characters_from_taking_the_user_aside() {
+    let f = fixture(vec![Script::Items(vec![chunk("Alice waves.\n[private]"), finish("STOP")])]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob]);
+    f.db.with(|c| group_chats::upsert(c, &GroupChat { private_talks: false, ..group.clone() })).unwrap();
+    let conv = ready_group(&f, &group);
+
+    let (_, events) = send(&f, conv, "Hi").await;
+
+    assert!(!events.iter().any(|e| matches!(e, ChatEvent::BreakoutStarted { .. })));
+    assert_eq!(messages(&f, conv)[1].text, "Alice waves.", "the tag is still hidden");
+    assert!(!f.provider.requests()[0].system_instruction.clone().unwrap().contains("[private]"));
+}
+
+#[tokio::test]
+async fn a_private_talk_moves_the_group_clock_and_deleting_its_reply_puts_it_back() {
+    let f = fixture(vec![Script::Items(vec![chunk("They talk for a while. [time-skip: 30 minutes]"), finish("STOP")])]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::Manual, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+    let start = NaiveDate::from_ymd_opt(2025, 6, 14).unwrap().and_hms_opt(9, 0, 0).unwrap();
+    f.engine.set_world_state(conv, WorldState { fictional_date_time: start, ..WorldState::create_default() }).unwrap();
+
+    let talk = f.engine.open_breakout(conv, alice.id).unwrap().conversation.id;
+    assert_eq!(world(&f, talk).unwrap().fictional_date_time, start, "the talk starts at the group's time");
+    send(&f, talk, "A word?").await.0.unwrap();
+
+    let later = start + chrono::Duration::minutes(30);
+    assert_eq!(world(&f, talk).unwrap().fictional_date_time, later);
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, later, "one story, one clock");
+
+    let reply = messages(&f, talk).pop().unwrap();
+    f.engine.delete_message(reply.id).unwrap();
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start);
+}
+
+#[test]
+fn private_talks_stay_out_of_the_characters_own_chats_and_go_with_their_group() {
+    let f = fixture(vec![]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::Manual, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+    let talk = f.engine.open_breakout(conv, alice.id).unwrap();
+    assert!(talk.history.iter().any(|h| h.id == conv) && talk.history.iter().any(|h| h.id == talk.conversation.id));
+
+    let own = f.engine.open_character(alice.id, false).unwrap();
+    assert_ne!(own.conversation.id, talk.conversation.id, "opening Alice starts her own chat, not the private talk");
+    assert!(own.history.iter().all(|h| h.id != talk.conversation.id));
+
+    f.engine.delete_conversation(conv).unwrap();
+    assert!(f.db.with(|c| conversations::get(c, talk.conversation.id)).unwrap().is_none());
+}
+
 #[tokio::test]
 async fn a_failed_voice_ends_the_round_for_everyone_after_it() {
     let f = fixture(vec![Script::FailToStart(ProviderError::new("busy", ProviderErrorKind::RateLimit))]);

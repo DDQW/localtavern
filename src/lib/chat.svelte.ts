@@ -1,6 +1,7 @@
 // The chat page's state: one open conversation, its messages, and the operations on them. A single
 // shared instance, so the state survives navigating between pages.
 
+import { goto } from "$app/navigation";
 import { api, errorText } from "./api";
 import type {
   ChatEvent,
@@ -72,6 +73,8 @@ class ChatStore {
   private rendering = new Map<Uuid, ImagePromptDraft>();
   /** Conversations with a streaming call still running (open or not). */
   private inFlight = new Set<Uuid>();
+  /** A member took the user aside during the running reply: their private talk opens once it ends. */
+  private takenAside: { breakoutId: Uuid; characterId: Uuid } | null = null;
   /** What a still-generating conversation looked like when it was left, kept up to date from its
    * events until it is opened again or finishes. */
   private parked = new Map<Uuid, { messages: UiMessage[]; approval: ToolApproval | null; error: string }>();
@@ -86,6 +89,11 @@ class ChatStore {
 
   get isGroup(): boolean {
     return !!this.session?.conversation.groupChatId;
+  }
+
+  /** A private talk with one member, inside a group conversation. */
+  get isBreakout(): boolean {
+    return !!this.session?.conversation.parentConversationId;
   }
 
   /** The newest message the model sees. Pictures sit in the chat but aren't part of the
@@ -126,6 +134,7 @@ class ChatStore {
     this.parked.delete(session.conversation.id);
 
     this.session = session;
+    this.takenAside = null;
     this.messages = resumed ? resumed.messages : session.messages.map((m) => toUi(m));
     this.error = resumed?.error ?? "";
     this.input = "";
@@ -172,6 +181,17 @@ class ChatStore {
 
   openLastRoleplay() {
     return this.open(api.openLastRoleplay());
+  }
+
+  /** Goes into a private talk with a member of the open group conversation (or of the group a
+   * private talk belongs to). */
+  async openBreakout(characterId: Uuid) {
+    const conversation = this.session?.conversation;
+    const groupConversation = conversation?.parentConversationId ?? (conversation?.groupChatId ? conversation.id : null);
+    if (!groupConversation) return false;
+    if (!(await this.open(api.openBreakout(groupConversation, characterId)))) return false;
+    await goto(`/chat/${this.conversationId}`);
+    return true;
   }
 
   resume(conversationId: Uuid) {
@@ -436,20 +456,34 @@ class ChatStore {
       case "photoSent":
         void this.drawSentPhoto(conversationId, event.characterId, event.description);
         break;
+      case "breakoutStarted":
+        this.takenAside = { breakoutId: event.breakoutId, characterId: event.characterId };
+        break;
       case "error":
         this.error = event.message;
         break;
       case "toolApproval":
         this.approval = { requestId: event.requestId, command: event.command, elevate: event.elevate };
         break;
-      case "finished":
+      case "finished": {
         this.approval = null;
         for (const m of this.messages) m.streaming = false;
         this.busy = false;
         this.compacting = false;
         void this.refreshContext();
+        const aside = this.takenAside;
+        this.takenAside = null;
+        if (aside) void this.followAside(aside.breakoutId, aside.characterId);
         break;
+      }
     }
+  }
+
+  /** A member took the user aside: opens their private talk, where they speak first. */
+  private async followAside(breakoutId: Uuid, characterId: Uuid) {
+    if (!(await this.resume(breakoutId))) return;
+    await goto(`/chat/${breakoutId}`);
+    if (this.conversationId === breakoutId) await this.pickSpeaker(characterId);
   }
 
   // ---- sending and generating ----

@@ -156,6 +156,7 @@ pub fn run() {
             commands::save_default_personas,
             commands::store_image,
             commands::open_group,
+            commands::open_breakout,
             commands::pick_speaker,
             commands::continue_message,
             commands::impersonate,

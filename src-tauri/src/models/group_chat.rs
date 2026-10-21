@@ -21,6 +21,8 @@ pub struct GroupChat {
     /// Each reply may hand the user's message on to a member who hasn't answered it yet (the model
     /// decides, with a `[next: ...]` tag), so several can answer one message.
     pub joint_replies: bool,
+    /// A member may take the user aside into a private talk on their own (`[private]` tag).
+    pub private_talks: bool,
 }
 
 impl Default for GroupChat {
@@ -32,6 +34,7 @@ impl Default for GroupChat {
             activation_mode: GroupActivationMode::Manual,
             allow_self_responses: false,
             joint_replies: false,
+            private_talks: true,
         }
     }
 }

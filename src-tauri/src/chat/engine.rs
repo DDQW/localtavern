@@ -40,7 +40,8 @@ use crate::powershell::settings as tool_settings;
 use crate::prompting::powershell_tool::{self, PowerShellToolCallRequest, ToolResult};
 use crate::prompting::reply_tags::{self, ReplyTags};
 use crate::prompting::{
-    self, emotion_tag, next_speaker_tag, photo_tag, roles, time_skip_tag, world_state, KeywordWorldInfoScanner, PromptAssemblyContext,
+    self, breakout, emotion_tag, next_speaker_tag, photo_tag, roles, time_skip_tag, world_state, KeywordWorldInfoScanner,
+    PromptAssemblyContext,
 };
 use crate::providers::{LlmGeneratedImage, LlmProviderRegistry, ProviderError};
 use crate::repo::{characters, conversations, group_chats, story_characters, summaries, user_memories};
@@ -91,10 +92,12 @@ struct Replied {
     completed: bool,
     /// In a group with joint replies: the member this reply handed the user's message on to.
     next: Option<Uuid>,
+    /// In a group: the speaker took the user aside into a private talk.
+    private: bool,
 }
 
 impl Replied {
-    const STOPPED: Self = Self { completed: false, next: None };
+    const STOPPED: Self = Self { completed: false, next: None, private: false };
 }
 
 /// What one model turn came to.
@@ -171,6 +174,8 @@ struct AssembleOptions<'a> {
     /// Group members who may still answer the user's latest message: the reply may name one in a
     /// `[next: ...]` tag (joint replies).
     next_speakers: &'a [&'a str],
+    /// A group reply may take the user aside into a private talk (`[private]` tag).
+    offer_private: bool,
 }
 
 /// The nudge Continue appends as a trailing user turn (a system note), so the model extends rather
@@ -445,7 +450,9 @@ impl ChatEngine {
         match conversation.mode {
             ConversationMode::Assistant => self.open_assistant(true),
             ConversationMode::Roleplay => {
-                if let Some(character_id) = conversation.character_id {
+                if conversation.parent_conversation_id.is_some() {
+                    Err(Error::Other("A private talk belongs to its group chat - start a new chat from the group.".into()))
+                } else if let Some(character_id) = conversation.character_id {
                     self.open_character(character_id, true)
                 } else if let Some(group_id) = conversation.group_chat_id {
                     self.open_group(group_id, true)
@@ -742,11 +749,7 @@ present, keep it as its own final paragraph, still naming whose details they are
             let mut restored = None;
             if let Some(message) = conversations::get_message(c, message_id)? {
                 if let Some(clock) = &message.clock {
-                    let later_clock = conversations::get_messages(c, message.conversation_id)?
-                        .iter()
-                        .skip_while(|m| m.id != message_id)
-                        .skip(1)
-                        .any(|m| m.clock.is_some());
+                    let later_clock = conversations::clock_moved_after(c, message.conversation_id, &message)?;
                     let state = conversations::get(c, message.conversation_id)?.and_then(|conv| conv.world_state);
                     if let (false, Some(mut state)) = (later_clock, state) {
                         clock.restore(&mut state);
@@ -802,13 +805,14 @@ present, keep it as its own final paragraph, still naming whose details they are
     }
 
     /// Group chats: has this character reply next (used when the group is in manual mode, or to add
-    /// another voice to a conversation).
+    /// another voice to a conversation). In a private talk: has its character speak (first, when they
+    /// took the user aside).
     pub async fn pick_speaker(&self, conversation_id: Uuid, character_id: Uuid, sink: Arc<dyn EventSink>) -> Result<()> {
         let engine = self.clone();
         let inner_sink = sink.clone();
         self.run_guarded(conversation_id, sink, move |token| async move {
             let ctx = engine.db().with(|c| load_reply_context(c, conversation_id))?;
-            if ctx.group.is_none() {
+            if ctx.group.is_none() && ctx.breakout.is_none() {
                 return Err(Error::Other("This isn't a group chat.".into()));
             }
             if !ctx.characters.iter().any(|c| c.id == character_id) {
@@ -817,10 +821,92 @@ present, keep it as its own final paragraph, still naming whose details they are
             if ctx.conversation.model.trim().is_empty() {
                 return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
             }
-            let group = ctx.group.as_ref().expect("checked above");
-            engine.group_round(conversation_id, group, &ctx.messages, vec![character_id], &inner_sink, &token).await
+            match &ctx.group {
+                Some(group) => engine.group_round(conversation_id, group, &ctx.messages, vec![character_id], &inner_sink, &token).await,
+                None => {
+                    engine.mark_breakout(&ctx)?;
+                    engine.generate_new(conversation_id, Some(character_id), &[], &inner_sink, &token).await.map(|_| ())
+                }
+            }
         })
         .await
+    }
+
+    // ------------------------------------------------------------------ private talks
+
+    /// The private talk between the user and `character_id` inside a group conversation: resumes
+    /// it, or starts one (empty, sharing the group's persona, preset, model and story clock).
+    pub fn open_breakout(&self, group_conversation_id: Uuid, character_id: Uuid) -> Result<ChatSession> {
+        let id = self.db().with(|c| self.breakout_for(c, group_conversation_id, character_id))?;
+        self.session(id)
+    }
+
+    fn breakout_for(&self, conn: &Connection, group_conversation_id: Uuid, character_id: Uuid) -> Result<Uuid> {
+        let parent =
+            conversations::get(conn, group_conversation_id)?.ok_or_else(|| Error::Other("Conversation not found.".into()))?;
+        let group = match parent.group_chat_id {
+            Some(id) => group_chats::get(conn, id)?,
+            None => None,
+        }
+        .ok_or_else(|| Error::Other("Private talks only happen inside a group chat.".into()))?;
+        if !group.character_ids.contains(&character_id) {
+            return Err(Error::Other("That character isn't in this group.".into()));
+        }
+        if let Some(existing) = conversations::get_breakout(conn, parent.id, character_id)? {
+            return Ok(existing.id);
+        }
+        let character = characters::get(conn, character_id)?.ok_or_else(|| Error::Other("Character not found.".into()))?;
+        let conversation = Conversation {
+            title: format!("{} in private", character.name),
+            mode: ConversationMode::Roleplay,
+            character_id: Some(character_id),
+            persona_id: parent.persona_id,
+            prompt_preset_id: parent.prompt_preset_id,
+            provider_id: parent.provider_id.clone(),
+            model: parent.model.clone(),
+            world_state: parent.world_state.clone(),
+            parent_conversation_id: Some(parent.id),
+            ..Default::default()
+        };
+        conversations::upsert(conn, &conversation)?;
+        Ok(conversation.id)
+    }
+
+    /// Notes in the group conversation that the user and a private talk's character stepped away,
+    /// unless that is already the group's latest message. Returns the note when one was added.
+    fn mark_breakout(&self, ctx: &ReplyContext) -> Result<Option<ChatMessage>> {
+        let (Some(breakout), Some(character)) = (&ctx.breakout, ctx.characters.first()) else {
+            return Ok(None);
+        };
+        self.add_breakout_marker(breakout.parent.id, character, ctx.persona.as_ref())
+    }
+
+    fn add_breakout_marker(&self, group_conversation_id: Uuid, character: &Character, persona: Option<&Persona>) -> Result<Option<ChatMessage>> {
+        self.db().with(|c| {
+            let last = session::chat_history(c, group_conversation_id)?.pop();
+            if last.is_some_and(|m| m.role == MessageRole::System && m.speaker_character_id == Some(character.id)) {
+                return Ok(None);
+            }
+            let mut marker =
+                ChatMessage::new(group_conversation_id, MessageRole::System, breakout::marker_text(roles::user_name(persona), &character.name));
+            marker.speaker_character_id = Some(character.id);
+            conversations::add_message(c, &marker)?;
+            Ok(Some(marker))
+        })
+    }
+
+    /// A group reply took the user aside: notes it in the group and tells the UI which private
+    /// talk to open.
+    fn start_breakout(&self, group_conversation_id: Uuid, character_id: Uuid, sink: &Arc<dyn EventSink>) -> Result<()> {
+        let breakout_id = self.db().with(|c| self.breakout_for(c, group_conversation_id, character_id))?;
+        let ctx = self.db().with(|c| load_reply_context(c, group_conversation_id))?;
+        if let Some(character) = ctx.characters.iter().find(|c| c.id == character_id) {
+            if let Some(marker) = self.add_breakout_marker(group_conversation_id, character, ctx.persona.as_ref())? {
+                sink.emit(ChatEvent::MessageAdded { message: marker });
+            }
+        }
+        sink.emit(ChatEvent::BreakoutStarted { conversation_id: group_conversation_id, breakout_id, character_id });
+        Ok(())
     }
 
     /// Swiping right: moves to the next existing alternate, or generates a new one when already at
@@ -1150,6 +1236,7 @@ present, keep it as its own final paragraph, still naming whose details they are
             if text.trim().is_empty() && attachments.is_empty() {
                 return Err(Error::Other("Nothing to send.".into()));
             }
+            self.mark_breakout(&ctx)?;
             let mut user = ChatMessage::new(conversation_id, MessageRole::User, text.trim());
             user.attachments = attachments
                 .iter()
@@ -1211,6 +1298,10 @@ present, keep it as its own final paragraph, still naming whose details they are
                 break;
             }
             answered.push(speaker);
+            if replied.private {
+                // The user is taken aside: the rest of the group waits.
+                return self.start_breakout(conversation_id, speaker, sink);
+            }
             if let Some(next) = replied.next {
                 queue.push_front(next);
             }
@@ -1275,9 +1366,28 @@ present, keep it as its own final paragraph, still naming whose details they are
             let memories = if conversation.mode == ConversationMode::Assistant { user_memories::get_all(c)? } else { vec![] };
             Ok((memories, summaries::get(c, conversation.id)?))
         })?;
+        // Regenerating an older reply sends only what came before it - the group's messages too.
+        let cutoff = ctx.messages.iter().find(|m| !history.iter().any(|h| h.id == m.id)).map(|m| m.timestamp);
         // A compacted chat sends its summary in place of the messages it covers.
         let history = match &summary {
             Some(s) => s.uncovered(history),
+            None => history,
+        };
+        // A private talk also hears the group conversation it belongs to, in the order things were said.
+        let merged;
+        let history = match &ctx.breakout {
+            Some(b) => {
+                let user = roles::user_name(ctx.persona.as_ref());
+                let name = |m: &ChatMessage| match m.role {
+                    MessageRole::User => user.to_string(),
+                    _ => m
+                        .speaker_character_id
+                        .and_then(|id| b.group_cast.iter().find(|c| c.id == id))
+                        .map_or_else(|| "Someone".to_string(), |c| c.name.clone()),
+                };
+                merged = breakout::merge_history(history, &b.group_messages, name, cutoff);
+                &merged[..]
+            }
             None => history,
         };
 
@@ -1313,6 +1423,21 @@ present, keep it as its own final paragraph, still naming whose details they are
             if let Some(rules) = roles::reply_rules(user, &ctx.characters, options.speaker) {
                 append_instruction(&mut request, &rules);
             }
+            if let (Some(b), Some(me)) = (&ctx.breakout, ctx.characters.first()) {
+                let others: Vec<&str> = b.group_cast.iter().filter(|c| c.id != me.id).map(|c| c.name.as_str()).collect();
+                append_instruction(&mut request, &breakout::rules(&me.name, user, &b.group_name, &others));
+                if let Some(summary) = &b.group_summary {
+                    append_instruction(&mut request, &breakout::group_summary_instruction(summary));
+                }
+            }
+            // A member remembers their own private talk in the group; nobody else hears of it.
+            if let Some(me) = options.speaker.filter(|_| ctx.group.is_some()) {
+                if let Some(talk) = ctx.private_talks.iter().find(|t| t.character_id == me.id) {
+                    if let Some(memory) = breakout::private_memory(&me.name, user, talk.summary.as_deref(), &talk.messages) {
+                        append_instruction(&mut request, &memory);
+                    }
+                }
+            }
         }
         if let Some(character) = options.speaker.filter(|c| options.reply_tags && !c.expressions.is_empty()) {
             let keys: Vec<String> = character.expressions.iter().map(|e| e.emotion.clone()).collect();
@@ -1327,6 +1452,10 @@ present, keep it as its own final paragraph, still naming whose details they are
         if let Some(character) = options.speaker.filter(|_| options.reply_tags && !options.next_speakers.is_empty()) {
             let user = roles::user_name(ctx.persona.as_ref());
             append_instruction(&mut request, &next_speaker_tag::build_instruction(&character.name, options.next_speakers, user));
+        }
+        if let Some(character) = options.speaker.filter(|_| options.reply_tags && options.offer_private) {
+            let user = roles::user_name(ctx.persona.as_ref());
+            append_instruction(&mut request, &breakout::private_tag_instruction(&character.name, user));
         }
         if let Some(character) = options.speaker {
             if options.reply_tags
@@ -1523,7 +1652,7 @@ present, keep it as its own final paragraph, still naming whose details they are
                 Turn::ToolCall(call) => {
                     if round_trips >= MAX_TOOL_ITERATIONS {
                         self.append_tool_message(conversation_id, "Tool call limit reached for this turn.", sink)?;
-                        return Ok(Replied { completed: true, next: None });
+                        return Ok(Replied { completed: true, next: None, private: false });
                     }
                     if !self.run_tool_call(conversation_id, call, sink, token).await? {
                         return Ok(Replied::STOPPED);
@@ -1548,6 +1677,7 @@ present, keep it as its own final paragraph, still naming whose details they are
         let others: Vec<(Uuid, &str)> =
             ctx.characters.iter().filter(|c| next_speakers.contains(&c.id)).map(|c| (c.id, c.name.as_str())).collect();
         let other_names: Vec<&str> = others.iter().map(|(_, name)| *name).collect();
+        let offer_private = speaker.is_some() && ctx.group.as_ref().is_some_and(|g| g.private_talks);
 
         let mut message = ChatMessage::new(conversation_id, MessageRole::Character, "");
         message.speaker_character_id = speaker_id;
@@ -1556,7 +1686,14 @@ present, keep it as its own final paragraph, still naming whose details they are
         let request = self.assemble(
             &ctx,
             &ctx.messages,
-            AssembleOptions { speaker: speaker.as_ref(), reply_tags: true, tools, next_speakers: &other_names, ..Default::default() },
+            AssembleOptions {
+                speaker: speaker.as_ref(),
+                reply_tags: true,
+                tools,
+                next_speakers: &other_names,
+                offer_private,
+                ..Default::default()
+            },
         )?;
         message.raw_prompt_text = Some(format_prompt(&request));
         self.update_conversation(conversation_id, |c| c.updated_at = Utc::now())?;
@@ -1567,11 +1704,13 @@ present, keep it as its own final paragraph, still naming whose details they are
         let succeeded = matches!(end, StreamEnd::Completed);
         let mut photo = None;
         let mut next = None;
+        let mut private = false;
         if succeeded {
             message.usage = usage;
             let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, true, sink)?;
             photo = self.photo_to_draw(tags.photo.clone())?;
             next = tags.next.as_deref().and_then(|name| next_speaker_tag::resolve(name, &others));
+            private = offer_private && tags.private;
             message.text = clean;
             message.detected_emotion = match_emotion(speaker.as_ref(), tags.emotion);
             message.clock = clock;
@@ -1618,7 +1757,7 @@ present, keep it as its own final paragraph, still naming whose details they are
                     let user_text = ctx.messages.last().map(|m| m.text.clone()).unwrap_or_default();
                     self.spawn_title(&ctx.conversation, user_text, message.text.clone(), sink.clone());
                 }
-                Ok(Turn::Done(Replied { completed: true, next }))
+                Ok(Turn::Done(Replied { completed: true, next, private }))
             }
         }
     }
@@ -1751,7 +1890,8 @@ present, keep it as its own final paragraph, still naming whose details they are
         // The new reply replaces the old one, so the story clock starts again from before it - but
         // only for the latest reply that moved it. An older one (or one from before the clock was
         // recorded) leaves the clock alone: that time has already passed.
-        let moves_clock = target.clock.is_some() && ctx.messages[position + 1..].iter().all(|m| m.clock.is_none());
+        let moves_clock =
+            target.clock.is_some() && !self.db().with(|c| conversations::clock_moved_after(c, conversation_id, &target))?;
         if let (true, Some(clock), Some(state)) = (moves_clock, &target.clock, ctx.conversation.world_state.as_mut()) {
             clock.restore(state);
         }

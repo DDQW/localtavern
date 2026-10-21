@@ -21,7 +21,7 @@
   const session = $derived(chat.session);
   const conversation = $derived(session?.conversation);
   const isAssistant = $derived(conversation?.mode === "assistant");
-  const singleCharacter = $derived(chat.isRoleplay && !chat.isGroup);
+  const singleCharacter = $derived(chat.isRoleplay && !chat.isGroup && !chat.isBreakout);
   const title = $derived(
     chat.isRoleplay ? session?.characters.map((c) => c.name).join(", ") || conversation?.title || "" : "Assistant",
   );
@@ -46,8 +46,15 @@
 {#if session && conversation}
   <header class="head">
     <div class="titlebar">
+      {#if chat.isBreakout}
+        <button class="ghost back" onclick={() => goto(`/chat/${conversation.parentConversationId}`)} title="Back to the group chat">
+          ←<span class="wide"> {session.parentTitle ?? "Group"}</span>
+        </button>
+      {/if}
       <h1>{title}</h1>
-      {#if conversation.title && !isAssistant && conversation.title !== title}
+      {#if chat.isBreakout}
+        <span class="muted subtitle">in private, away from {session.parentTitle ?? "the group"}</span>
+      {:else if conversation.title && !isAssistant && conversation.title !== title}
         <span class="muted subtitle">{conversation.title}</span>
       {:else if isAssistant && conversation.title !== "Assistant chat"}
         <span class="muted subtitle">{conversation.title}</span>
@@ -61,7 +68,9 @@
       {#if chat.isRoleplay}
         <button class="narrow" onclick={() => (ui.storyOpen = true)} title="Story panel">Story</button>
       {/if}
-      <button onclick={newChat} disabled={chat.busy} title="Start a new chat" aria-label="New chat">＋<span class="wide"> New chat</span></button>
+      {#if !chat.isBreakout}
+        <button onclick={newChat} disabled={chat.busy} title="Start a new chat" aria-label="New chat">＋<span class="wide"> New chat</span></button>
+      {/if}
     </div>
 
     <div class="pickers" class:open={showPickers}>
@@ -121,6 +130,27 @@
         </span>
       </label>
 
+      {#if chat.isGroup && session.characters.length > 0}
+        <label class="field">
+          Talk privately
+          <select
+            value=""
+            disabled={chat.busy}
+            title="Talk to one member alone - the others won't hear it"
+            onchange={(e) => {
+              const id = e.currentTarget.value;
+              e.currentTarget.value = "";
+              if (id) void chat.openBreakout(id);
+            }}
+          >
+            <option value="">With…</option>
+            {#each session.characters as character (character.id)}
+              <option value={character.id}>{character.name}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+
       <label class="field history">
         History
         <select value={conversation.id} onchange={(e) => goto(`/chat/${e.currentTarget.value}`)}>
@@ -179,6 +209,11 @@
   .titlebar button {
     align-self: center;
   }
+
+  .back {
+    white-space: nowrap;
+  }
+
 
   .pickers {
     display: flex;

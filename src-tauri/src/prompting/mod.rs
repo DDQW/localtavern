@@ -3,6 +3,7 @@
 
 pub mod appearance;
 pub mod assembler;
+pub mod breakout;
 pub mod context;
 pub mod defaults;
 pub mod emotion_tag;

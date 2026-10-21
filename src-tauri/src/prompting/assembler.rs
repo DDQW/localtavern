@@ -156,11 +156,16 @@ fn build_history(ctx: &PromptAssemblyContext, macros: &Macros) -> Vec<LlmMessage
             // Providers only understand a two-party user/model turn sequence - a Tool message (the
             // PowerShell result fed back after a <powershell-run> call) has to be sent as if the user
             // reported it, exactly like everything else that isn't the model's own Character turn.
+            // A System message is something the app noted in the story (a private talk in a group),
+            // sent as a system note like the app's other user-role insertions.
             let role = match message.role {
-                MessageRole::User | MessageRole::Tool => LlmRole::User,
+                MessageRole::User | MessageRole::Tool | MessageRole::System => LlmRole::User,
                 _ => LlmRole::Model,
             };
             let mut text = macros.fill(message.effective_text());
+            if message.role == MessageRole::System {
+                text = system_note(&text);
+            }
 
             if prefix_speaker && message.role == MessageRole::Character {
                 if let Some(speaker) = message
