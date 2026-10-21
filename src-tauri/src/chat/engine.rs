@@ -29,7 +29,7 @@ use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::group_chats::strategy_for;
 use crate::holidays::{self, Country, DatedHoliday, HolidaySource, SchoolBreak};
-use crate::llm::{LlmMessage, LlmRequest, LlmRole};
+use crate::llm::{LlmGenerationConfig, LlmMessage, LlmRequest, LlmRole};
 use crate::models::{
     Character, ChatMessage, ClockSnapshot, Conversation, ConversationMode, ConversationSummary, GroupChat, LlmUsage, MessageAttachment, MessageRole, Persona,
     PromptBlockType, PromptPreset, Schedule, StoryCharacter, WorldInfoEntry, WorldState,
@@ -1200,7 +1200,7 @@ present, keep it as its own final paragraph, still naming whose details they are
                 model: conversation.model.clone(),
                 system_instruction: None,
                 history: vec![LlmMessage::new(LlmRole::User, compaction::summary_prompt(text.as_deref(), &transcript, &names))],
-                generation_config: Default::default(),
+                generation_config: LlmGenerationConfig::without_reasoning(),
                 enable_web_search: None,
             };
             let outcome = tokio::select! {
@@ -2243,7 +2243,7 @@ User: {user_text}\nAssistant: {assistant_text}"
                 model,
                 system_instruction: None,
                 history: vec![LlmMessage::new(LlmRole::User, prompt)],
-                generation_config: Default::default(),
+                generation_config: LlmGenerationConfig::without_reasoning(),
                 enable_web_search: None,
             };
             let Ok(provider) = engine.inner.providers.get(&provider_id) else { return };

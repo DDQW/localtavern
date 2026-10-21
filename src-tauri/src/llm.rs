@@ -69,6 +69,15 @@ pub struct LlmGenerationConfig {
     pub reasoning_effort: Option<ReasoningEffort>,
 }
 
+impl LlmGenerationConfig {
+    /// For background chores with a one-line answer (meters, memories, titles, summaries). Left to
+    /// its default, a thinking model reasons first: Gemma 4 on Ollama spent ~1000 tokens (25 s) to
+    /// answer a 14-token meter line, holding up the user's next message on a local server.
+    pub fn without_reasoning() -> Self {
+        Self { reasoning_effort: Some(ReasoningEffort::Off), ..Default::default() }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LlmRequest {
     pub model: String,

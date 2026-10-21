@@ -5,7 +5,7 @@
 
 use crate::db::Db;
 use crate::error::{Error, Result};
-use crate::llm::{LlmMessage, LlmRequest, LlmRole};
+use crate::llm::{LlmGenerationConfig, LlmMessage, LlmRequest, LlmRole};
 use crate::models::{StoryCharacter, UserMemory};
 use crate::providers::LlmProviderRegistry;
 use crate::repo::{story_characters, user_memories};
@@ -133,7 +133,7 @@ impl Extractor<'_> {
             model: self.model.to_string(),
             system_instruction: None,
             history: vec![LlmMessage::new(LlmRole::User, prompt)],
-            generation_config: Default::default(),
+            generation_config: LlmGenerationConfig::without_reasoning(),
             enable_web_search: None,
         };
         let response = provider.get_completion(request).await.map_err(|e| Error::Other(e.message))?;

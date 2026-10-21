@@ -1095,9 +1095,11 @@ async fn the_first_assistant_exchange_gets_an_auto_generated_title() {
 
     let title = f.db.with(|c| conversations::get(c, conv)).unwrap().unwrap().title;
     assert_eq!(title, "Capital of France");
-    let prompt = &f.provider.requests()[1].history[0].text;
+    let request = &f.provider.requests()[1];
+    let prompt = &request.history[0].text;
     assert!(prompt.contains("User: What's the capital of France?"));
     assert!(prompt.contains("Assistant: Paris is the capital."));
+    assert_eq!(request.generation_config.reasoning_effort, Some(crate::models::ReasoningEffort::Off), "a title isn't worth thinking about");
 }
 
 #[tokio::test]
