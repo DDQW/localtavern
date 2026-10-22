@@ -23,7 +23,7 @@ use super::events::{ChatEvent, EventSink};
 use super::extraction::{Exchange, Extractor, StoryExchange};
 use super::images;
 use super::meters;
-use super::reply::{advance_clock, append_instruction, check_blocked, format_prompt, match_emotion, random_unit, user_message};
+use super::reply::{append_instruction, check_blocked, format_prompt, match_emotion, user_message};
 use super::session::{self, build_session, load_reply_context, ChatSession, ReplyContext};
 use crate::db::Db;
 use crate::error::{Error, Result};
@@ -41,7 +41,7 @@ use crate::prompting::powershell_tool::{self, PowerShellToolCallRequest, ToolRes
 use crate::prompting::group_reply::SpeakerCut;
 use crate::prompting::reply_tags::{self, ReplyTags};
 use crate::prompting::{
-    self, breakout, emotion_tag, instructions, next_speaker_tag, photo_tag, roles, time_skip_tag, world_state,
+    self, breakout, emotion_tag, instructions, next_speaker_tag, photo_tag, roles, world_state,
     KeywordWorldInfoScanner,
     PromptAssemblyContext,
 };
@@ -1525,9 +1525,8 @@ present, keep it as its own final paragraph, still naming whose details they are
         if options.tools && conversation.mode == ConversationMode::Assistant {
             append_instruction(&mut request, &powershell_tool::build_instruction(&ins));
         }
-        if options.reply_tags && conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_some() {
-            append_instruction(&mut request, &time_skip_tag::build_instruction(&ins));
-        }
+        // Time is manual in the Story panel: the model still reads the clock from the world-state
+        // block, but is not asked for a [time-skip: ...] tag and replies do not move the clock.
         if let Some(character) = options.speaker.filter(|_| options.reply_tags && !options.next_speakers.is_empty()) {
             let user = roles::user_name(ctx.persona.as_ref());
             append_instruction(&mut request, &next_speaker_tag::build_instruction(&ins, &character.name, options.next_speakers, user));
@@ -1542,10 +1541,7 @@ present, keep it as its own final paragraph, still naming whose details they are
                 && self.db().with(crate::imagegen::settings::load)?.auto_photos
             {
                 let user = roles::user_name(ctx.persona.as_ref());
-                // Intimate photos only for a character the story doesn't make a minor.
-                let today = conversation.world_state.as_ref().map_or_else(|| Utc::now().date_naive(), |w| w.fictional_date_time.date());
-                let minor = character.birth_date.is_some_and(|born| world_state::age_on(born, today).is_none_or(|age| age < 18));
-                append_instruction(&mut request, &photo_tag::build_instruction(&ins, &character.name, user, ins.intimate_photos && !minor));
+                append_instruction(&mut request, &photo_tag::build_instruction(&ins, &character.name, user, ins.intimate_photos));
                 // The user's character may be taking a photo of their own: the reply describes it.
                 let latest = history.iter().rev().find(|m| m.role == MessageRole::User).map(|m| m.text.as_str());
                 if ins.user_photos && latest.is_some_and(|text| ins.mentions_a_photo(text)) {
@@ -1698,28 +1694,21 @@ present, keep it as its own final paragraph, still naming whose details they are
             .collect()
     }
 
-    /// Peels the trailing tags off a finished reply. In a roleplay with a world clock they also move
-    /// it (and the speaker's meters) and the result is persisted. The text comes back without the
-    /// tags, along with what they said and the clock as it was (for the message to keep); `advance`
-    /// false only peels, for a reply that must not move the clock.
+    /// Peels the trailing tags off a finished reply. The story clock is manual (Story panel), so
+    /// replies never move it - `advance` is kept for call-site clarity and ignored. Weather drift
+    /// and time-skip tags are likewise left alone.
     fn apply_reply_tags(
         &self,
         ctx: &ReplyContext,
         raw_text: String,
-        advance: bool,
-        sink: &Arc<dyn EventSink>,
+        _advance: bool,
+        _sink: &Arc<dyn EventSink>,
     ) -> Result<(String, ReplyTags, Option<ClockSnapshot>)> {
         if ctx.conversation.mode != ConversationMode::Roleplay {
             return Ok((raw_text, ReplyTags::default(), None));
         }
         let (clean, tags) = reply_tags::peel(&raw_text);
-        let Some(state) = ctx.conversation.world_state.as_ref().filter(|_| advance) else {
-            return Ok((clean, tags, None));
-        };
-        let (next, report) = advance_clock(state, tags.skip, &mut random_unit);
-        self.db().with(|c| conversations::update_world_state(c, ctx.conversation.id, Some(&next)))?;
-        sink.emit(ChatEvent::WorldStateChanged { conversation_id: ctx.conversation.id, world_state: next });
-        Ok((clean, tags, Some(report)))
+        Ok((clean, tags, None))
     }
 
     /// The photos a reply's tags ask the app to draw, when Settings ask for that: one the user's
@@ -2089,6 +2078,7 @@ present, keep it as its own final paragraph, still naming whose details they are
                 });
             }
             ConversationMode::Roleplay => {
+                // Arousal meters are off by default and only tracked when the Story panel switch is on.
                 self.spawn_meter_tracking(ctx, user_text.clone(), reply_text.clone(), sink.clone());
                 if !self.db().with(settings::track_story_cast).unwrap_or(false) {
                     return;

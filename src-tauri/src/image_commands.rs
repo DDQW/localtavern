@@ -161,16 +161,16 @@ pub async fn image_prompt(
     engine.image_prompt(conversation_id, mode, character_id, &settings).await
 }
 
-/// The draft for a photo a character sent in the story. The card's look, usual outfit and
-/// description are copied into the prompt unchanged; `description` is only the shot the reply
-/// named (pose, place, lighting). Portrait size, as a phone photo.
+/// The draft for a photo a character sent in the story. The card's look and usual outfit are
+/// copied into the prompt unchanged; the written description is not, because it is prose rather
+/// than an image prompt. `description` is only the shot the reply named (pose, place, lighting).
+/// Portrait size, as a phone photo.
 pub fn photo_draft_for(settings: &ImageGenSettings, character: Option<&Character>, description: &str) -> ImagePromptDraft {
     let prompt = match character {
         Some(character) => prompts::story_photo_prompt(
             &settings.prompt_prefix,
             &character.picture_style.base_look,
             &character.picture_style.default_outfit,
-            &with_character_name(character.description.trim(), character.name.trim()),
             description,
         ),
         None => prompts::combine(&settings.prompt_prefix, "", description),
@@ -184,24 +184,6 @@ pub fn photo_draft_for(settings: &ImageGenSettings, character: Option<&Character
         character_id: character.map(|c| c.id),
         photo: Some(description.trim().to_string()),
     }
-}
-
-/// `{{char}}` in card text is this character's name. Nothing else is rewritten.
-fn with_character_name(text: &str, name: &str) -> String {
-    if name.is_empty() {
-        return text.to_string();
-    }
-    let lower = text.to_ascii_lowercase();
-    let needle = "{{char}}";
-    let mut out = String::with_capacity(text.len());
-    let mut last = 0;
-    for (start, _) in lower.match_indices(needle) {
-        out.push_str(&text[last..start]);
-        out.push_str(name);
-        last = start + needle.len();
-    }
-    out.push_str(&text[last..]);
-    out
 }
 
 #[tauri::command]
@@ -439,25 +421,23 @@ mod tests {
     }
 
     #[test]
-    fn photo_drafts_copy_the_card_and_do_not_let_the_shot_replace_it() {
+    fn photo_drafts_copy_the_look_and_leave_the_written_description_out() {
         let settings = ImageGenSettings { prompt_prefix: "best quality".into(), ..Default::default() };
         let mut nova = nova();
-        nova.description = "{{char}} is tall, with one gold eye and a scar through the left brow.".into();
+        nova.description = "{{char}} is tall, with one gold eye and a scar through the left brow. She hates mornings.".into();
         let draft = photo_draft_for(&settings, Some(&nova), "winking, blonde, cafe at night");
         assert_eq!(
             draft.prompt,
-            "best quality, 1girl, silver hair, navy flight jacket, Nova is tall, with one gold eye and a scar through the left brow., winking, blonde, cafe at night, 1girl, silver hair, navy flight jacket"
+            "best quality, 1girl, silver hair, navy flight jacket, winking, blonde, cafe at night, 1girl, silver hair, navy flight jacket"
         );
+        assert!(!draft.prompt.contains("gold eye") && !draft.prompt.contains("mornings"), "prose description stays out: {}", draft.prompt);
         assert_eq!((draft.width, draft.height, draft.character_id), (832, 1216, Some(nova.id)));
         assert_eq!(draft.photo.as_deref(), Some("winking, blonde, cafe at night"), "the shot is kept for the story, apart from the card");
 
         nova.picture_style.base_look.clear();
         nova.picture_style.default_outfit.clear();
-        let from_description = photo_draft_for(&settings, Some(&nova), "winking, cafe at night");
-        assert_eq!(
-            from_description.prompt,
-            "best quality, Nova is tall, with one gold eye and a scar through the left brow., winking, cafe at night, Nova is tall, with one gold eye and a scar through the left brow."
-        );
+        let shot_only = photo_draft_for(&settings, Some(&nova), "winking, cafe at night");
+        assert_eq!(shot_only.prompt, "best quality, winking, cafe at night");
 
         let nobody = photo_draft_for(&settings, None, "a sunset over the harbour");
         assert_eq!((nobody.prompt.as_str(), nobody.character_id), ("best quality, a sunset over the harbour", None));

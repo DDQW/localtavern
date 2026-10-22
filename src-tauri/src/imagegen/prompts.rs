@@ -119,19 +119,17 @@ pub fn combine(prefix: &str, character_prefix: &str, description: &str) -> Strin
     join_prompt(&[prefix, character_prefix, description])
 }
 
-/// A photo a character sent. The card's image tags, usual outfit and description are copied in
-/// unchanged, before the shot the reply described and again after it, so that shot (pose, place,
-/// lighting) cannot replace them. An empty card leaves just the prefix and the shot.
-pub fn story_photo_prompt(prefix: &str, base_look: &str, outfit: &str, description: &str, shot: &str) -> String {
+/// A photo a character sent. The card's image tags and usual outfit are copied in unchanged,
+/// before the shot the reply described and again after it, so that shot (pose, place, lighting)
+/// cannot replace them. The card's written description is prose, not an image prompt, and is left
+/// out. An empty card leaves just the prefix and the shot.
+pub fn story_photo_prompt(prefix: &str, base_look: &str, outfit: &str, shot: &str) -> String {
     let look = base_look.trim();
     let outfit = outfit.trim();
-    let description = description.trim();
-    let mut parts = vec![prefix, look, outfit, description, shot];
+    let mut parts = vec![prefix, look, outfit, shot];
     if !look.is_empty() || !outfit.is_empty() {
         parts.push(look);
         parts.push(outfit);
-    } else if !description.is_empty() {
-        parts.push(description);
     }
     join_prompt(&parts)
 }
@@ -324,15 +322,12 @@ Outfit: \"navy flight jacket, boots\""),
     }
 
     #[test]
-    fn a_story_photo_keeps_the_card_ahead_of_the_shot_and_after_it() {
+    fn a_story_photo_keeps_the_look_ahead_of_the_shot_and_after_it() {
         assert_eq!(
-            story_photo_prompt("best quality", "1girl, silver hair", "navy jacket", "tall, one gold eye", "winking, cafe"),
-            "best quality, 1girl, silver hair, navy jacket, tall, one gold eye, winking, cafe, 1girl, silver hair, navy jacket"
+            story_photo_prompt("best quality", "1girl, silver hair", "navy jacket", "winking, cafe"),
+            "best quality, 1girl, silver hair, navy jacket, winking, cafe, 1girl, silver hair, navy jacket"
         );
-        assert_eq!(
-            story_photo_prompt("best quality", "", "", "tall, one gold eye", "winking"),
-            "best quality, tall, one gold eye, winking, tall, one gold eye"
-        );
-        assert_eq!(story_photo_prompt("best quality", "  ", "", "", "a sunset"), "best quality, a sunset");
+        assert_eq!(story_photo_prompt("best quality", "", "", "winking"), "best quality, winking");
+        assert_eq!(story_photo_prompt("best quality", "  ", "", "a sunset"), "best quality, a sunset");
     }
 }

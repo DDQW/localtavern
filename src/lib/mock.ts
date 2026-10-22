@@ -1133,9 +1133,13 @@ You are the character. (Mock prompt for message ${messageId}.)
   },
   async photoDraft(characterId, description) {
     const character = characters.find((c) => c.id === characterId);
+    const look = character?.pictureStyle.baseLook ?? "";
+    const outfit = character?.pictureStyle.defaultOutfit ?? "";
+    const parts = [imageSettings.promptPrefix, look, outfit, description];
+    if (look.trim() || outfit.trim()) parts.push(look, outfit);
     return {
       mode: "character",
-      prompt: [imageSettings.promptPrefix, character?.pictureStyle.baseLook ?? "", description].filter((p) => p.trim()).join(", "),
+      prompt: parts.filter((p) => p.trim()).join(", "),
       negativePrompt: imageSettings.negativePrompt,
       width: imageSettings.width,
       height: imageSettings.height,

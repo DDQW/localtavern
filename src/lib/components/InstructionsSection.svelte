@@ -57,7 +57,7 @@
     </label>
     <label class="check">
       <input type="checkbox" bind:checked={instructions.intimatePhotos} />
-      Characters can send intimate photos (never a character whose birth date makes them under 18)
+      Characters can send intimate photos (NSFW)
     </label>
     <label class="field">
       Photo words - your message mentioning one of these asks for your photo

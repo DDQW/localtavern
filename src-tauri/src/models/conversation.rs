@@ -79,7 +79,7 @@ pub struct WorldState {
     #[serde(default = "default_max_skip_minutes")]
     pub max_skip_minutes: i32,
     /// Track an arousal / climax meter per character: after each reply the story is read for what
-    /// raised or lowered them (on unless switched off).
+    /// raised or lowered them (off unless switched on in the Story panel).
     #[serde(default = "default_meters_enabled")]
     pub meters_enabled: bool,
     /// Character id -> meter.
@@ -88,7 +88,7 @@ pub struct WorldState {
 }
 
 fn default_meters_enabled() -> bool {
-    true
+    false
 }
 
 fn default_max_skip_minutes() -> i32 {
@@ -210,7 +210,7 @@ impl WorldState {
             custom_holidays: Vec::new(),
             outfits: Default::default(),
             max_skip_minutes: default_max_skip_minutes(),
-            meters_enabled: true,
+            meters_enabled: false,
             meters: Default::default(),
         }
     }

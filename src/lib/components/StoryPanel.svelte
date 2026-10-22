@@ -39,7 +39,7 @@
     { label: "+1 day", minutes: 1440 },
   ];
 
-  // The clock is frozen while a reply is being written: that reply is about to advance it itself.
+  // The clock is frozen while a reply is being written so an edit mid-stream cannot race the reply.
   const locked = $derived(chat.busy);
 
   function setTime(e: Event & { currentTarget: HTMLInputElement }) {
@@ -337,7 +337,7 @@
         </label>
         {#if world.metersEnabled}
           <p class="muted small">
-            After each reply the story is read for anything that raises or lowers them (one extra request), so they follow what was written. An orgasm in the text counts, empties climax and drops arousal. You can also set them by hand.
+            After each reply the story is read for anything that raises or lowers them (one extra request), so they follow what was written. An orgasm in the text counts, empties climax and drops arousal. Off by default; you can also set them by hand.
           </p>
           {#each cast as c (c.id)}
             {@const m = world.meters?.[c.id] ?? { arousal: 0, climax: 0, orgasms: 0 }}

@@ -139,7 +139,7 @@ mod tests {
         assert!(line.contains("while they are apart and texting, and whenever Alex asks for one"), "{line}");
         assert!(line.contains("When they are together, Nova can take a picture"), "{line}");
         assert!(line.contains("square brackets included: [photo: <only the shot:"), "{line}");
-        assert!(line.contains("copies those from Nova's character card exactly"), "{line}");
+        assert!(line.contains("drawn from Nova's base look and usual outfit"), "{line}");
         assert!(line.ends_with("Leave the line out when no photo is sent or taken."), "{line}");
         // Not framed as a rare exception any more: that wording never got a photo sent.
         assert!(!line.contains("Most replies") && !line.contains("Only when"), "{line}");
@@ -149,7 +149,7 @@ mod tests {
     fn an_adult_character_can_send_intimate_photos_when_the_moment_fits() {
         let line = build_instruction(&ins(), "Nova", "Alex", true);
         assert!(line.contains("Leave the line out when no photo is sent or taken. The photos can be as intimate as the moment"), "{line}");
-        assert!(line.ends_with("those details stay the character card's, word for word."), "{line}");
+        assert!(line.ends_with("the picture uses Nova's base look, not a new description."), "{line}");
         assert!(line.contains("Nova can send Alex suggestive or nude photos of Nova"), "{line}");
         assert!(!line.contains("adult"), "the model isn't asked to judge ages: {line}");
     }
@@ -164,7 +164,7 @@ mod tests {
         let line = user_photo_instruction(&ins, "Soso");
         assert!(line.starts_with("If Soso takes a photo or picture in Soso's latest message, also describe that photo"), "{line}");
         assert!(line.contains("square brackets included: [user-photo: <what Soso's photo shows"), "{line}");
-        assert!(line.contains("copies those from their character card"), "{line}");
+        assert!(line.contains("uses that character's base look and usual outfit"), "{line}");
         assert!(line.ends_with("Leave this line out when Soso takes no photo."), "{line}");
     }
 

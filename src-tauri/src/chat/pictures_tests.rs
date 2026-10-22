@@ -393,7 +393,7 @@ async fn the_photo_texts_and_switches_from_settings_are_what_the_model_gets() {
 }
 
 #[tokio::test]
-async fn intimate_photos_are_offered_only_for_characters_who_arent_minors() {
+async fn intimate_photos_follow_the_settings_switch_not_birth_date() {
     use chrono::Datelike;
     let f = fixture(vec![
         Script::Items(vec![chunk("hi"), finish("STOP")]),
@@ -408,10 +408,10 @@ async fn intimate_photos_are_offered_only_for_characters_who_arent_minors() {
     send(&f, conv, "hey").await.0.unwrap();
     assert!(f.provider.requests()[0].system_instruction.clone().unwrap().contains("suggestive or nude photos of Nova"));
 
+    // Birth date no longer gates the intimate-photos instruction.
     nova.birth_date = story_date.with_year(story_date.year() - 16);
     f.db.with(|c| characters::upsert(c, &nova)).unwrap();
     send(&f, conv, "hey").await.0.unwrap();
     let system = f.provider.requests()[1].system_instruction.clone().unwrap();
-    assert!(!system.contains("nude") && !system.contains("intimate"), "never for a minor: {system}");
-    assert!(system.contains("Nova sends User photos whenever a real person would"), "ordinary photos still: {system}");
+    assert!(system.contains("suggestive or nude photos of Nova"), "settings switch alone decides: {system}");
 }

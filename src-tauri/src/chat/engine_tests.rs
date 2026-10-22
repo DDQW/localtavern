@@ -525,7 +525,7 @@ async fn no_emotion_instruction_is_sent_without_an_expression_pack() {
 }
 
 #[tokio::test]
-async fn the_world_clock_advances_by_the_time_skip_tag_and_the_tag_is_hidden() {
+async fn the_world_clock_stays_put_and_time_skip_tags_are_only_peeled() {
     let f = fixture(vec![Script::Items(vec![chunk("They walked for a while. [time-skip: 3 hours]"), finish("STOP")])]);
     let nova = add_character(&f.db, "Nova", None, &[]);
     let conv = ready_character(&f, &nova);
@@ -540,9 +540,9 @@ async fn the_world_clock_advances_by_the_time_skip_tag_and_the_tag_is_hidden() {
 
     assert_eq!(messages(&f, conv)[1].text, "They walked for a while.");
     let stored = f.db.with(|c| conversations::get(c, conv)).unwrap().unwrap().world_state.unwrap();
-    assert_eq!(stored.fictional_date_time, start + chrono::Duration::hours(3));
-    assert!(events.iter().any(|e| matches!(e, ChatEvent::WorldStateChanged { world_state, .. } if world_state.fictional_date_time == stored.fictional_date_time)));
-    assert!(f.provider.requests()[0].system_instruction.clone().unwrap().contains("[time-skip:"));
+    assert_eq!(stored.fictional_date_time, start, "the clock is manual");
+    assert!(!events.iter().any(|e| matches!(e, ChatEvent::WorldStateChanged { .. })), "replies do not move the clock");
+    assert!(!f.provider.requests()[0].system_instruction.clone().unwrap().contains("[time-skip:"));
 }
 
 #[tokio::test]
@@ -629,11 +629,11 @@ async fn the_clock_cannot_be_edited_mid_reply_and_replies_continue_from_the_edit
     let date = NaiveDate::from_ymd_opt(2030, 5, 5).unwrap().and_hms_opt(12, 0, 0).unwrap();
     f.engine.set_world_state(conv, WorldState { fictional_date_time: date, ..WorldState::create_default() }).unwrap();
     send(&f, conv, "two").await.0.unwrap();
-    assert_eq!(world(&f, conv).unwrap().fictional_date_time, date + chrono::Duration::minutes(5));
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, date, "replies leave a manually set clock alone");
 }
 
 #[tokio::test]
-async fn regenerating_the_latest_reply_starts_the_clock_from_before_it() {
+async fn regenerating_a_reply_leaves_the_manual_clock_alone() {
     let f = fixture(vec![
         Script::Items(vec![chunk("One. [time-skip: 2 hours]"), finish("STOP")]),
         Script::Items(vec![chunk("Two. [time-skip: 30 minutes]"), finish("STOP")]),
@@ -644,19 +644,18 @@ async fn regenerating_the_latest_reply_starts_the_clock_from_before_it() {
 
     send(&f, conv, "go").await.0.unwrap();
     let reply = messages(&f, conv)[1].clone();
-    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start + chrono::Duration::hours(2));
-    assert_eq!(reply.clock.as_ref().map(|c| (c.fictional_date_time, c.advanced_minutes)), Some((start, 120)));
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start);
+    assert!(reply.clock.is_none());
 
     f.engine.swipe_next(conv, reply.id, Arc::new(VecSink::default())).await.unwrap();
-    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start + chrono::Duration::minutes(30), "not 2h30");
-    // The regenerated reply was written for the clock as it was before the first one.
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start);
     assert!(request_text(&f.provider.requests()[1]).contains("Wednesday, January 1, 2025 9:00 AM"));
     let again = f.db.with(|c| conversations::get_message(c, reply.id)).unwrap().unwrap();
-    assert_eq!(again.clock.map(|c| (c.fictional_date_time, c.advanced_minutes)), Some((start, 30)));
+    assert!(again.clock.is_none());
 }
 
 #[tokio::test]
-async fn deleting_the_latest_reply_rewinds_the_clock_but_an_older_one_does_not() {
+async fn deleting_a_reply_does_not_rewind_a_manual_clock() {
     let f = fixture(vec![
         Script::Items(vec![chunk("One. [time-skip: 1 hour]"), finish("STOP")]),
         Script::Items(vec![chunk("Two. [time-skip: 2 hours]"), finish("STOP")]),
@@ -666,26 +665,25 @@ async fn deleting_the_latest_reply_rewinds_the_clock_but_an_older_one_does_not()
     let start = world(&f, conv).unwrap().fictional_date_time;
     send(&f, conv, "a").await.0.unwrap();
     send(&f, conv, "b").await.0.unwrap();
-    let replies: Vec<_> = messages(&f, conv).into_iter().filter(|m| m.clock.is_some()).collect();
+    let replies: Vec<_> = messages(&f, conv).into_iter().filter(|m| m.role == MessageRole::Character).collect();
     assert_eq!(replies.len(), 2);
 
-    assert_eq!(f.engine.delete_message(replies[0].id).unwrap(), None, "the later reply still depends on it");
-    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start + chrono::Duration::hours(3));
-    let restored = f.engine.delete_message(replies[1].id).unwrap().unwrap();
-    assert_eq!(restored.fictional_date_time, start + chrono::Duration::hours(1));
-    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start + chrono::Duration::hours(1));
+    assert_eq!(f.engine.delete_message(replies[0].id).unwrap(), None);
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start);
+    assert_eq!(f.engine.delete_message(replies[1].id).unwrap(), None);
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start);
 }
 
 #[tokio::test]
-async fn an_absurd_time_skip_is_held_to_the_limit() {
+async fn a_time_skip_tag_never_moves_the_manual_clock() {
     let f = fixture(vec![Script::Items(vec![chunk("Coffee. [time-skip: 3 days]"), finish("STOP")])]);
     let nova = add_character(&f.db, "Nova", None, &[]);
     let conv = ready_character(&f, &nova);
     let start = world(&f, conv).unwrap().fictional_date_time;
     send(&f, conv, "coffee?").await.0.unwrap();
-    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start + chrono::Duration::hours(6));
-    let clock = messages(&f, conv)[1].clock.clone().unwrap();
-    assert_eq!(clock.clamped_from, Some(3 * 24 * 60));
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start);
+    assert!(messages(&f, conv)[1].clock.is_none());
+    assert_eq!(messages(&f, conv)[1].text, "Coffee.");
 }
 
 #[tokio::test]
@@ -695,7 +693,8 @@ async fn meter_values_reach_the_reply_prompt_and_a_stray_meter_tag_is_removed() 
     let nova = add_character(&f.db, "Nova", None, &[]);
     let conv = ready_character(&f, &nova);
     let mut state = world(&f, conv).unwrap();
-    assert!(state.meters_enabled, "tracking is on unless switched off");
+    assert!(!state.meters_enabled, "tracking is off unless switched on");
+    state.meters_enabled = true;
     state.meters.insert(nova.id, Meter { arousal: 50, climax: 40, orgasms: 0 });
     f.engine.set_world_state(conv, state).unwrap();
 
@@ -1524,7 +1523,7 @@ async fn a_group_can_keep_characters_from_taking_the_user_aside() {
 }
 
 #[tokio::test]
-async fn a_private_talk_moves_the_group_clock_and_deleting_its_reply_puts_it_back() {
+async fn a_private_talk_shares_the_group_clock_and_replies_leave_it_alone() {
     let f = fixture(vec![Script::Items(vec![chunk("They talk for a while. [time-skip: 30 minutes]"), finish("STOP")])]);
     let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
     let group = add_group(&f, GroupActivationMode::Manual, &[&alice, &bob]);
@@ -1536,13 +1535,9 @@ async fn a_private_talk_moves_the_group_clock_and_deleting_its_reply_puts_it_bac
     assert_eq!(world(&f, talk).unwrap().fictional_date_time, start, "the talk starts at the group's time");
     send(&f, talk, "A word?").await.0.unwrap();
 
-    let later = start + chrono::Duration::minutes(30);
-    assert_eq!(world(&f, talk).unwrap().fictional_date_time, later);
-    assert_eq!(world(&f, conv).unwrap().fictional_date_time, later, "one story, one clock");
-
-    let reply = messages(&f, talk).pop().unwrap();
-    f.engine.delete_message(reply.id).unwrap();
-    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start);
+    assert_eq!(world(&f, talk).unwrap().fictional_date_time, start);
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, start, "one story, one clock");
+    assert_eq!(messages(&f, talk).pop().unwrap().text, "They talk for a while.");
 }
 
 #[test]
