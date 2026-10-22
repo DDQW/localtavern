@@ -125,7 +125,7 @@
       <div class="attachments">
         {#each message.attachments as attachment (attachment.imagePath)}
           <button class="thumb" onclick={() => (lightbox.src = fileUrl(attachment.imagePath))} aria-label="View picture">
-            <img src={fileUrl(attachment.imagePath)} alt="" loading="lazy" />
+            <img src={fileUrl(attachment.imagePath)} alt={attachment.description ?? ""} title={attachment.description ?? undefined} loading="lazy" />
           </button>
         {/each}
       </div>

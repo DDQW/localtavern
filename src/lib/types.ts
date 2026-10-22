@@ -15,6 +15,8 @@ export interface MessageAlternate {
 export interface MessageAttachment {
   imagePath: string;
   mimeType: string;
+  /** What a picture the user sent shows; later turns send this instead of the picture. */
+  description?: string | null;
 }
 
 export interface LlmUsage {

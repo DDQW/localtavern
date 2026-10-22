@@ -2833,3 +2833,29 @@ async fn drafts_report_unusable_answers() {
     assert!(f.engine.draft_lore_entries(&empty).await.unwrap_err().to_string().contains("about first"));
     assert_eq!(f.provider.requests().len(), 2, "an empty topic sends nothing");
 }
+
+#[tokio::test]
+async fn a_sent_picture_is_described_once_and_later_turns_get_the_description() {
+    const DESCRIBE: &str = "Describe this picture";
+    let f = routed(vec![(DESCRIBE, Ok("A grey cat on a sofa.".into())), ("", Ok("Noted.".into()))]);
+    let conv = f.assistant();
+    let pictures = tempfile::tempdir().unwrap();
+    let cat = pictures.path().join("cat.png");
+    std::fs::write(&cat, [1u8, 2, 3]).unwrap();
+    let sink = || Arc::new(VecSink::default());
+
+    f.engine.send_message(conv, "what is this?".into(), vec![cat.to_string_lossy().into_owned()], sink()).await.unwrap();
+    let description = || {
+        f.db.with(|c| conversations::get_messages(c, conv)).unwrap()[0].attachments[0].description.clone()
+    };
+    wait_until("the description", || description().is_some()).await;
+    assert_eq!(description().as_deref(), Some("A grey cat on a sofa."));
+    assert!(f.provider.asked(DESCRIBE)[0].contains("It was sent with this message: what is this?"));
+
+    f.engine.send_message(conv, "what colour is it?".into(), vec![], sink()).await.unwrap();
+
+    let later = f.provider.asked("what colour is it?");
+    assert!(later[0].contains("It showed: A grey cat on a sofa."), "{}", later[0]);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(f.provider.asked(DESCRIBE).len(), 1, "a described picture isn't described again");
+}

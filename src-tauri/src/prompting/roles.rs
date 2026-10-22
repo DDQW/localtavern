@@ -36,6 +36,19 @@ pub fn picture_rule(count: usize, roleplay: bool) -> String {
     }
 }
 
+/// Stands in for pictures on an earlier user message once each has a description: the model saw them
+/// on that turn, and resending the images made it decode them again on every later reply.
+pub fn picture_note(descriptions: &[&str]) -> String {
+    let text = match descriptions {
+        [one] => format!("The user sent a picture with this message. It showed: {}", one.trim()),
+        many => {
+            let each: Vec<String> = many.iter().enumerate().map(|(i, d)| format!("Picture {}: {}", i + 1, d.trim())).collect();
+            format!("The user sent {} pictures with this message. {}", many.len(), each.join(" "))
+        }
+    };
+    system_note(&text)
+}
+
 /// The rules sent with every roleplay reply, whatever the preset says (a preset's own system prompt
 /// is the user's to edit, and may be anything). `speaker` is whose reply this is; a one-character
 /// chat falls back to that character. `None` when there is no character to play.
@@ -125,6 +138,15 @@ mod tests {
         assert_eq!(join_names(&["Alice"], "and"), "Alice");
         assert_eq!(join_names(&["Alice", "Bob"], "or"), "Alice or Bob");
         assert_eq!(join_names(&["Alice", "Bob", "Cara"], "and"), "Alice, Bob and Cara");
+    }
+
+    #[test]
+    fn picture_notes_carry_each_description() {
+        assert_eq!(picture_note(&["A cat. "]), "[System note: The user sent a picture with this message. It showed: A cat.]");
+        assert_eq!(
+            picture_note(&["A cat.", "A dog."]),
+            "[System note: The user sent 2 pictures with this message. Picture 1: A cat. Picture 2: A dog.]"
+        );
     }
 
     #[test]

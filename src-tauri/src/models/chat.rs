@@ -32,6 +32,10 @@ pub struct MessageAlternate {
 pub struct MessageAttachment {
     pub image_path: String,
     pub mime_type: String,
+    /// What a picture the user sent shows, written once by the chat's model after the reply to it.
+    /// Later turns send this instead of the picture, so it isn't decoded again on every reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

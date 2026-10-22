@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::db::{json, rows, time};
 use crate::error::Result;
 use crate::models::{
-    ChatMessage, Conversation, ConversationMode, LlmUsage, MessageRole, WorldState,
+    ChatMessage, Conversation, ConversationMode, LlmUsage, MessageAttachment, MessageRole, WorldState,
 };
 
 fn map_conversation(row: &Row) -> rusqlite::Result<Conversation> {
@@ -284,6 +284,16 @@ pub fn update_message(conn: &Connection, m: &ChatMessage) -> Result<()> {
     Ok(())
 }
 
+/// Rewrites only a message's attachments - a background write (a picture's description) can't then
+/// undo an edit or swipe that landed meanwhile.
+pub fn set_attachments(conn: &Connection, id: Uuid, attachments: &[MessageAttachment]) -> Result<()> {
+    conn.execute(
+        "UPDATE ChatMessages SET AttachmentsJson = ?1 WHERE Id = ?2;",
+        params![json::to_blob(&attachments)?, id.to_string()],
+    )?;
+    Ok(())
+}
+
 pub fn delete_message(conn: &Connection, id: Uuid) -> Result<()> {
     conn.execute("DELETE FROM ChatMessages WHERE Id = ?1;", [id.to_string()])?;
     Ok(())
@@ -453,7 +463,7 @@ mod tests {
             MessageAlternate { text: "second".into(), reasoning_text: None, raw_prompt: Some("p".into()) },
         ];
         m.active_alternate_index = 1;
-        m.attachments = vec![MessageAttachment { image_path: "a.png".into(), mime_type: "image/png".into() }];
+        m.attachments = vec![MessageAttachment { image_path: "a.png".into(), mime_type: "image/png".into(), description: Some("A cat.".into()) }];
         m.detected_emotion = Some("happy".into());
         m.usage = Some(LlmUsage { prompt_tokens: Some(1), completion_tokens: Some(2), total_tokens: Some(3) });
         add_message(&conn, &m).unwrap();

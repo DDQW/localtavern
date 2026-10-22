@@ -14,7 +14,7 @@ use crate::models::{
 };
 
 use super::context::PromptAssemblyContext;
-use super::roles::{join_names, system_note, user_name};
+use super::roles::{join_names, picture_note, system_note, user_name};
 use super::world_info::{WorldInfoMatch, WorldInfoScanner};
 
 pub fn assemble(ctx: &PromptAssemblyContext, scanner: &dyn WorldInfoScanner) -> LlmRequest {
@@ -148,11 +148,13 @@ fn inject_world_info_at_depth(history: &mut Vec<LlmMessage>, matches: &[WorldInf
 
 fn build_history(ctx: &PromptAssemblyContext, macros: &Macros) -> Vec<LlmMessage> {
     let prefix_speaker = ctx.characters.len() > 1;
+    let latest_user = ctx.history.iter().rposition(|m| m.role == MessageRole::User);
 
     let messages: Vec<LlmMessage> = ctx
         .history
         .iter()
-        .map(|message| {
+        .enumerate()
+        .map(|(index, message)| {
             // Providers only understand a two-party user/model turn sequence - a Tool message (the
             // PowerShell result fed back after a <powershell-run> call) has to be sent as if the user
             // reported it, exactly like everything else that isn't the model's own Character turn.
@@ -176,9 +178,15 @@ fn build_history(ctx: &PromptAssemblyContext, macros: &Macros) -> Vec<LlmMessage
                 }
             }
 
-            // Only ever sent for the message that originally carried them - a model-returned image
-            // is never re-uploaded back to the model on a later turn.
+            // A picture the user sent goes out for real while its message is the latest one. After
+            // that its description stands in, once it has one, so it isn't decoded on every reply.
+            let descriptions: Option<Vec<&str>> =
+                message.attachments.iter().map(|a| a.description.as_deref().filter(|d| !d.trim().is_empty())).collect();
+            let described = message.role == MessageRole::User && latest_user.is_some_and(|latest| index < latest);
             let attachments = if message.attachments.is_empty() {
+                None
+            } else if let Some(descriptions) = descriptions.filter(|_| described) {
+                text = format!("{}\n\n{}", text.trim_end(), picture_note(&descriptions)).trim_start().to_string();
                 None
             } else {
                 Some(
@@ -972,7 +980,7 @@ mod tests {
         let conv = roleplay();
         let preset = create_roleplay_preset();
         let mut with_image = msg(MessageRole::User, "look");
-        with_image.attachments = vec![MessageAttachment { image_path: "a.png".into(), mime_type: "image/png".into() }];
+        with_image.attachments = vec![MessageAttachment { image_path: "a.png".into(), mime_type: "image/png".into(), description: None }];
         let history = [with_image, msg(MessageRole::Character, "nice")];
 
         let request = assemble(&PromptAssemblyContext::new(&conv, &preset, &history), &NullScanner);
@@ -980,6 +988,41 @@ mod tests {
         let sent = request.history[0].attachments.as_ref().unwrap();
         assert_eq!(sent, &[LlmAttachment { image_path: "a.png".into(), mime_type: "image/png".into() }]);
         assert!(request.history[1].attachments.is_none());
+    }
+
+    #[test]
+    fn an_earlier_picture_is_sent_as_its_description_once_it_has_one() {
+        let conv = roleplay();
+        let preset = create_roleplay_preset();
+        let picture = |path: &str, description: Option<&str>| MessageAttachment {
+            image_path: path.into(),
+            mime_type: "image/png".into(),
+            description: description.map(Into::into),
+        };
+        let mut described = msg(MessageRole::User, "look");
+        described.attachments = vec![picture("a.png", Some("A grey cat."))];
+        let mut undescribed = msg(MessageRole::User, "");
+        undescribed.attachments = vec![picture("b.png", None)];
+        let mut latest = msg(MessageRole::User, "and this");
+        latest.attachments = vec![picture("c.png", Some("A dog."))];
+        let history = [
+            described,
+            msg(MessageRole::Character, "cute"),
+            undescribed,
+            msg(MessageRole::Character, "hm"),
+            latest,
+        ];
+
+        let request = assemble(&PromptAssemblyContext::new(&conv, &preset, &history), &NullScanner);
+
+        assert!(request.history[0].attachments.is_none());
+        assert_eq!(
+            request.history[0].text,
+            "look\n\n[System note: The user sent a picture with this message. It showed: A grey cat.]"
+        );
+        assert!(request.history[2].attachments.is_some(), "no description yet, so the picture itself goes");
+        assert!(request.history[4].attachments.is_some(), "the latest message's picture is always the real one");
+        assert_eq!(request.history[4].text, "and this");
     }
 
     #[test]

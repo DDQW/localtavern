@@ -163,6 +163,7 @@ impl ChatEngine {
         message.attachments = vec![MessageAttachment {
             image_path: path.to_string_lossy().into_owned(),
             mime_type: image.mime_type.clone(),
+            description: None,
         }];
         self.db().with(|c| {
             conversations::add_message(c, &message)?;

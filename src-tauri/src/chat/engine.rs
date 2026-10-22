@@ -48,6 +48,8 @@ use crate::providers::{LlmGeneratedImage, LlmProviderRegistry, ProviderError};
 use crate::repo::{characters, conversations, group_chats, story_characters, summaries, user_memories};
 use crate::settings;
 
+#[path = "picture_notes.rs"]
+mod picture_notes;
 #[path = "pictures.rs"]
 mod pictures;
 pub use pictures::ImagePromptDraft;
@@ -73,6 +75,9 @@ struct Inner {
     holiday_fetches: Mutex<std::collections::HashSet<String>>,
     /// The running side-character scan per conversation; a new reply cancels it so the two never queue behind each other.
     cast_tasks: Mutex<HashMap<Uuid, tokio::task::AbortHandle>>,
+    /// User messages whose pictures are being described right now, so a group round's several
+    /// replies don't each start the same description.
+    describing: Mutex<std::collections::HashSet<Uuid>>,
 }
 
 /// The user's answer to a tool-call approval request.
@@ -313,6 +318,7 @@ impl ChatEngine {
                 holidays: Mutex::new(None),
                 holiday_fetches: Mutex::new(Default::default()),
                 cast_tasks: Mutex::new(HashMap::new()),
+                describing: Mutex::new(Default::default()),
             }) }
     }
 
@@ -1284,7 +1290,11 @@ present, keep it as its own final paragraph, still naming whose details they are
             let mut user = ChatMessage::new(conversation_id, MessageRole::User, text.trim());
             user.attachments = attachments
                 .iter()
-                .map(|p| MessageAttachment { image_path: p.clone(), mime_type: images::mime_from_extension(p).to_string() })
+                .map(|p| MessageAttachment {
+                    image_path: p.clone(),
+                    mime_type: images::mime_from_extension(p).to_string(),
+                    description: None,
+                })
                 .collect();
             self.db().with(|c| conversations::add_message(c, &user))?;
             sink.emit(ChatEvent::MessageAdded { message: user });
@@ -1658,6 +1668,7 @@ present, keep it as its own final paragraph, still naming whose details they are
                 images::store_bytes(&self.inner.images_dir, &image.data, &image.mime_type).ok().map(|path| MessageAttachment {
                     image_path: path.to_string_lossy().into_owned(),
                     mime_type: image.mime_type.clone(),
+                    description: None,
                 })
             })
             .collect()
@@ -2031,10 +2042,11 @@ present, keep it as its own final paragraph, still naming whose details they are
         Ok(())
     }
 
-    /// Fire-and-forget follow-up request once a reply has completed. Assistant chats learn durable
-    /// facts about the user; roleplays note the side characters the story has introduced.
-    /// Failures are dropped - the reply itself already succeeded.
+    /// Fire-and-forget follow-up request once a reply has completed. Pictures the user sent get their
+    /// one-time description; assistant chats learn durable facts about the user; roleplays note the
+    /// side characters the story has introduced. Failures are dropped - the reply itself already succeeded.
     fn spawn_enrichment(&self, ctx: &ReplyContext, user_text: String, reply_text: String, message_id: Uuid, sink: Arc<dyn EventSink>) {
+        self.spawn_picture_descriptions(ctx.conversation.id, &ctx.conversation.provider_id, &ctx.conversation.model);
         if !self.inner.extraction.load(Ordering::Relaxed) {
             return;
         }
