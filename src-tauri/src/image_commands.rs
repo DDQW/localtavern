@@ -2,9 +2,10 @@
 //! alongside the chat (you can keep talking while it renders), so it has its own job tracking.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Mutex;
 
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -12,6 +13,7 @@ use crate::chat::ImagePromptDraft;
 use crate::commands::AppState;
 use crate::error::{Error, Result};
 use crate::chat::images;
+use crate::imagegen::launcher::ComfyLauncher;
 use crate::imagegen::prompts::{self, CharacterShot, ImageMode};
 use crate::imagegen::{self, BackendOptions, ImageGenSettings, ImageRequest};
 use crate::models::{Character, ChatMessage};
@@ -20,11 +22,12 @@ use crate::models::{Character, ChatMessage};
 pub struct ImageJobs {
     client: reqwest::Client,
     active: Mutex<HashMap<Uuid, CancellationToken>>,
+    comfy: ComfyLauncher,
 }
 
 impl Default for ImageJobs {
     fn default() -> Self {
-        Self { client: imagegen::client(), active: Mutex::new(HashMap::new()) }
+        Self::new(&std::env::temp_dir())
     }
 }
 
@@ -41,6 +44,20 @@ impl Drop for JobGuard<'_> {
 }
 
 impl ImageJobs {
+    /// `data_dir` gets ComfyUI's console output when LocalTavern starts it.
+    pub fn new(data_dir: &Path) -> Self {
+        Self {
+            client: imagegen::client(),
+            active: Mutex::new(HashMap::new()),
+            comfy: ComfyLauncher::new(data_dir.join("comfyui.log")),
+        }
+    }
+
+    /// Stops the ComfyUI we started, so it doesn't keep holding the graphics card after the app closes.
+    pub fn shutdown(&self) {
+        self.comfy.stop();
+    }
+
     fn claim(&self, conversation_id: Uuid) -> Result<(CancellationToken, JobGuard<'_>)> {
         let mut active = self.active.lock().unwrap();
         if active.contains_key(&conversation_id) {
@@ -95,16 +112,40 @@ pub fn get_image_settings(state: State<'_, AppState>) -> Result<ImageGenSettings
     state.db.with(imagegen::settings::load)
 }
 
+/// Saving a launcher starts ComfyUI right away rather than at the next app start.
 #[tauri::command]
-pub fn save_image_settings(state: State<'_, AppState>, settings: ImageGenSettings) -> Result<ImageGenSettings> {
-    state.db.with(|c| imagegen::settings::save(c, settings))
+pub async fn save_image_settings(
+    state: State<'_, AppState>,
+    jobs: State<'_, ImageJobs>,
+    settings: ImageGenSettings,
+) -> Result<ImageGenSettings> {
+    let saved = state.db.with(|c| imagegen::settings::save(c, settings))?;
+    jobs.comfy.start(&jobs.client, &saved).await?;
+    Ok(saved)
 }
 
 /// Checkpoints, samplers and schedulers from the server in `settings` (not necessarily saved yet,
 /// so Settings can test an address before keeping it).
 #[tauri::command]
 pub async fn image_backend_options(jobs: State<'_, ImageJobs>, settings: ImageGenSettings) -> Result<BackendOptions> {
-    imagegen::options(&jobs.client, &settings.sanitized()).await
+    let settings = settings.sanitized();
+    jobs.comfy.ensure_ready(&jobs.client, &settings, &CancellationToken::new()).await?;
+    imagegen::options(&jobs.client, &settings).await
+}
+
+/// Starts ComfyUI with the app when Settings name a launcher (see `imagegen::launcher`).
+pub fn start_comfy_on_launch(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let (state, jobs) = (app.state::<AppState>(), app.state::<ImageJobs>());
+        let started = match state.db.with(imagegen::settings::load) {
+            Ok(settings) => jobs.comfy.start(&jobs.client, &settings).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = started {
+            eprintln!("Couldn't start ComfyUI: {e}");
+        }
+    });
 }
 
 /// The model-written prompt for a picture, for review. `None` when stopped (Stop generation).
@@ -163,6 +204,7 @@ pub async fn generate_image(
     let settings = state.db.with(imagegen::settings::load)?;
     let request = render_request(&settings, &draft);
     let (token, _guard) = jobs.claim(conversation_id)?;
+    jobs.comfy.ensure_ready(&jobs.client, &settings, &token).await?;
     make_room(&state, &jobs, &settings).await;
     let rendered = imagegen::generate(&jobs.client, &settings, &request, &token).await;
     give_back(&jobs, &settings).await;
@@ -271,6 +313,7 @@ pub async fn draw_character_picture(
     let settings = state.db.with(imagegen::settings::load)?;
     let request = character_request(&settings, &character, &shot, outfit_id)?;
     let (token, _guard) = jobs.claim(character.id)?;
+    jobs.comfy.ensure_ready(&jobs.client, &settings, &token).await?;
     make_room(&state, &jobs, &settings).await;
     let rendered = imagegen::generate(&jobs.client, &settings, &request, &token).await;
     give_back(&jobs, &settings).await;

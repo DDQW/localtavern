@@ -615,6 +615,8 @@ export interface ImageGenSettings {
   comfy: ImageBackendConfig;
   /** ComfyUI workflow in API format with %prompt%-style placeholders; empty = built-in. */
   comfyWorkflow: string;
+  /** What starts ComfyUI (its run_*.bat), run hidden when LocalTavern starts; empty = started by hand. */
+  comfyLauncher: string;
   width: number;
   height: number;
   steps: number;

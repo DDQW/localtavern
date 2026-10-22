@@ -48,6 +48,9 @@ pub struct ImageGenSettings {
     /// A ComfyUI workflow in API format with `%prompt%`-style placeholders; empty uses the built-in
     /// text-to-image workflow.
     pub comfy_workflow: String,
+    /// What starts ComfyUI (its `run_*.bat`, say); run hidden when LocalTavern starts. Empty: the
+    /// user starts ComfyUI themselves.
+    pub comfy_launcher: String,
     pub width: u32,
     pub height: u32,
     pub steps: u32,
@@ -78,6 +81,7 @@ impl Default for ImageGenSettings {
                 ..Default::default()
             },
             comfy_workflow: String::new(),
+            comfy_launcher: String::new(),
             // SDXL's portrait bucket; the "face" and scene modes reshape it (see `prompts::size_for`).
             width: 832,
             height: 1216,
@@ -122,6 +126,8 @@ impl ImageGenSettings {
                 config.url = fallback.url.clone();
             }
         }
+        // Explorer's "Copy as path" wraps the path in quotes.
+        self.comfy_launcher = self.comfy_launcher.trim().trim_matches('"').trim().to_string();
         self
     }
 }
@@ -172,7 +178,9 @@ mod tests {
         let mut s = ImageGenSettings { width: 1000, height: 10, steps: 0, cfg_scale: f32::NAN, seed: -7, ..Default::default() };
         s.a1111.url = " http://box:7860/ ".into();
         s.comfy.url = "  ".into();
+        s.comfy_launcher = " \"D:\\AI\\ComfyUI\\run_amd_gpu.bat\" ".into();
         let s = s.sanitized();
+        assert_eq!(s.comfy_launcher, "D:\\AI\\ComfyUI\\run_amd_gpu.bat");
         assert_eq!((s.width, s.height, s.steps, s.cfg_scale, s.seed), (1000, 1216, 1, 7.0, -1));
         assert_eq!(s.a1111.url, "http://box:7860");
         assert_eq!(s.comfy.url, "http://127.0.0.1:8188");

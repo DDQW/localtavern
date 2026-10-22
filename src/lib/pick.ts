@@ -30,6 +30,17 @@ export async function pickCard(): Promise<string | null> {
   return typeof selection === "string" ? selection : null;
 }
 
+export async function pickLauncher(): Promise<string | null> {
+  if (!inTauri) return "C:\\mock\\ComfyUI\\run_nvidia_gpu.bat";
+  const selection = await open({
+    multiple: false,
+    filters: [
+      { name: "Launcher", extensions: ["bat", "cmd", "exe"] },
+    ],
+  });
+  return typeof selection === "string" ? selection : null;
+}
+
 export async function pickSaveJson(defaultName: string): Promise<string | null> {
   if (!inTauri) return `C:\mock\${defaultName}.json`;
   return save({ defaultPath: `${defaultName}.json`, filters: [{ name: "Character card (JSON)", extensions: ["json"] }] });

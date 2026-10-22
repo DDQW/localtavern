@@ -4,6 +4,7 @@
 
 pub mod a1111;
 pub mod comfy;
+pub mod launcher;
 pub mod ollama;
 pub mod prompts;
 pub mod settings;

@@ -106,8 +106,9 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             let data_dir = resolve_data_dir(app)?;
+            app.manage(image_commands::ImageJobs::new(&data_dir));
             app.manage(build_state(data_dir)?);
-            app.manage(image_commands::ImageJobs::default());
+            image_commands::start_comfy_on_launch(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -221,6 +222,7 @@ pub fn run() {
         .run(|app, event| {
             // Don't leave a rented GPU running (and billing) because the app was closed mid-grace-period.
             if let tauri::RunEvent::Exit = event {
+                app.state::<image_commands::ImageJobs>().shutdown();
                 let state = app.state::<AppState>();
                 let (vast, ondevice) = (state.vast.clone(), state.ondevice.clone());
                 tauri::async_runtime::block_on(async {

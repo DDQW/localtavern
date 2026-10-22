@@ -1180,6 +1180,7 @@ let imageSettings: ImageGenSettings = {
   a1111: { url: "http://127.0.0.1:7860", model: "", sampler: "Euler a", scheduler: "" },
   comfy: { url: "http://127.0.0.1:8188", model: "", sampler: "euler", scheduler: "normal" },
   comfyWorkflow: "",
+  comfyLauncher: "",
   width: 832,
   height: 1216,
   steps: 25,

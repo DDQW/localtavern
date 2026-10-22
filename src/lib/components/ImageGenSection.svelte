@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { api, errorText } from "$lib/api";
+  import { pickLauncher } from "$lib/pick";
   import type { ImageBackendConfig, ImageBackendOptions, ImageGenSettings } from "$lib/types";
 
   let settings = $state<ImageGenSettings | null>(null);
@@ -32,7 +33,7 @@
   async function connect() {
     if (!settings) return;
     testing = true;
-    status = "Connecting…";
+    status = settings.backend === "comfyUi" && settings.comfyLauncher.trim() ? "Connecting (starting ComfyUI if needed)…" : "Connecting…";
     options = null;
     try {
       options = await api.imageBackendOptions($state.snapshot(settings));
@@ -53,6 +54,11 @@
     } catch (e) {
       status = errorText(e);
     }
+  }
+
+  async function browseLauncher() {
+    const picked = await pickLauncher();
+    if (picked && settings) settings.comfyLauncher = picked;
   }
 
   /** The saved value stays selectable even before (or without) a connection. */
@@ -96,6 +102,18 @@
       <p class="muted small">Start the WebUI with <code>--api</code> (add it to <code>COMMANDLINE_ARGS</code> in <code>webui-user.bat</code>).</p>
     {:else}
       <p class="muted small">Works with a stock ComfyUI. Uses a plain checkpoint text-to-image workflow unless you paste your own below.</p>
+      <label class="field">
+        Start ComfyUI with LocalTavern
+        <span class="pathrow">
+          <input bind:value={settings.comfyLauncher} placeholder="e.g. D:\ComfyUI_windows_portable\run_nvidia_gpu.bat" spellcheck="false" />
+          <button type="button" onclick={browseLauncher}>Browse…</button>
+        </span>
+      </label>
+      <p class="muted small">
+        The file you start ComfyUI with. LocalTavern runs it in the background when it starts (unless ComfyUI is already
+        running) and closes it again when you quit. Its output goes to <code>comfyui.log</code> in LocalTavern's data folder.
+        Leave it empty if you start ComfyUI yourself.
+      </p>
     {/if}
 
     <div class="keyrow">
@@ -239,6 +257,16 @@
   .field textarea {
     color: var(--text);
     font-size: 14px;
+  }
+
+  .pathrow {
+    display: flex;
+    gap: 8px;
+  }
+
+  .pathrow input {
+    flex: 1;
+    min-width: 0;
   }
 
   .keyrow {
