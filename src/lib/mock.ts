@@ -1136,8 +1136,16 @@ You are the character. (Mock prompt for message ${messageId}.)
     const tagged = (character?.pictureStyle.baseLook ?? "").trim();
     const look = tagged || (character?.description ?? "").trim();
     const outfit = character?.pictureStyle.defaultOutfit ?? "";
-    const parts = [imageSettings.promptPrefix, look, outfit, description];
-    if (tagged || outfit.trim()) parts.push(tagged, outfit);
+    const shot = tagged
+      ? description
+          .split(",")
+          .map((p) => p.trim())
+          .filter((p) => p && !/(hair|eyes|skin|blonde|blond|asian|african|caucasian)/i.test(p))
+          .join(", ")
+      : description;
+    const parts = tagged
+      ? [imageSettings.promptPrefix, shot, look, outfit]
+      : [imageSettings.promptPrefix, look, outfit, description];
     return {
       mode: "character",
       prompt: parts.filter((p) => p.trim()).join(", "),

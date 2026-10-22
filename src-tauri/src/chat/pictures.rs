@@ -151,12 +151,24 @@ impl ChatEngine {
             (ImageMode::Scene | ImageMode::LastMessage, None) if ctx.characters.len() == 1 => ctx.characters.first(),
             _ => None,
         };
-        let character_prefix = looked.map(|c| prompts::character_visual_identity(c).0).unwrap_or_default();
+        let (character_prefix, locked) =
+            looked.map(|c| prompts::character_visual_identity(c)).unwrap_or_default();
+        // When base-look tags lock identity, drop hair/skin/race overrides the model put in the shot
+        // and put the look last so the image server weights it.
+        let prompt = if locked && !character_prefix.is_empty() {
+            prompts::combine(
+                &settings.prompt_prefix,
+                &prompts::scrub_appearance_overrides(&description),
+                &character_prefix,
+            )
+        } else {
+            prompts::combine(&settings.prompt_prefix, &character_prefix, &description)
+        };
 
         let (width, height) = prompts::size_for(mode, settings.width, settings.height);
         Ok(Some(ImagePromptDraft {
             mode,
-            prompt: prompts::combine(&settings.prompt_prefix, &character_prefix, &description),
+            prompt,
             negative_prompt: settings.negative_prompt.clone(),
             width,
             height,

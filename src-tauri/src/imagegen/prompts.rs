@@ -172,19 +172,53 @@ fn with_character_name(text: &str, name: &str) -> String {
     out
 }
 
-/// A photo a character sent. Visual identity and usual outfit go before the shot; tagged base looks
-/// (and their outfit) are repeated after it so the shot cannot replace them. Prose fallbacks are
-/// used once only - repeating a whole character description made pictures ignore it and draw a
-/// generic default instead.
+/// Removes hair / eyes / skin / race / age tags from a shot so they cannot override a locked base
+/// look. Pose, place, lighting and clothing stay.
+pub fn scrub_appearance_overrides(shot: &str) -> String {
+    shot.split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty() && !looks_like_appearance_override(part))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn looks_like_appearance_override(part: &str) -> bool {
+    let lower = part.to_ascii_lowercase();
+    // Phrases first (substring), then single words on token boundaries so "fairly rainy" survives.
+    const PHRASES: &[&str] = &[
+        "middle eastern", "black woman", "black man", "white woman", "white man", "dark-skinned",
+        "dark skinned", "light-skinned", "light skinned", "years old", "year old", "year-old",
+        "middle-aged", "middle aged",
+    ];
+    if PHRASES.iter().any(|p| lower.contains(p)) {
+        return true;
+    }
+    const WORDS: &[&str] = &[
+        "blonde", "blond", "brunette", "redhead", "ginger", "hair", "eyes", "skin", "skinned",
+        "freckles", "tan", "olive", "pale", "fair", "ebony", "caucasian", "european", "african",
+        "asian", "latina", "latino", "hispanic", "korean", "japanese", "chinese", "indian", "arab",
+        "teen", "teenage", "elderly",
+    ];
+    lower
+        .split(|c: char| !c.is_alphanumeric() && c != '-')
+        .filter(|w| !w.is_empty())
+        .any(|w| WORDS.contains(&w))
+}
+
+/// A photo a character sent. When the card has real base-look tags, the shot is scrubbed of
+/// appearance overrides and the look/outfit are placed at the end (where image models weight them
+/// more). Doubling the look around a conflicting shot was getting ignored. Prose fallbacks stay
+/// once, before the shot.
 pub fn story_photo_prompt(prefix: &str, look: &str, outfit: &str, shot: &str, lock_look: bool) -> String {
     let look = look.trim();
     let outfit = outfit.trim();
-    let mut parts = vec![prefix, look, outfit, shot];
-    if lock_look && (!look.is_empty() || !outfit.is_empty()) {
-        parts.push(look);
-        parts.push(outfit);
+    if lock_look {
+        let shot = scrub_appearance_overrides(shot);
+        // Identity last: prefix + cleaned shot + look + outfit.
+        join_prompt(&[prefix, &shot, look, outfit])
+    } else {
+        join_prompt(&[prefix, look, outfit, shot.trim()])
     }
-    join_prompt(&parts)
 }
 
 fn join_prompt(parts: &[&str]) -> String {
@@ -375,17 +409,23 @@ Outfit: \"navy flight jacket, boots\""),
     }
 
     #[test]
-    fn a_story_photo_keeps_tagged_looks_ahead_of_the_shot_and_after_it() {
+    fn a_story_photo_puts_locked_look_last_and_scrubs_overrides_from_the_shot() {
         assert_eq!(
-            story_photo_prompt("best quality", "1girl, silver hair", "navy jacket", "winking, cafe", true),
-            "best quality, 1girl, silver hair, navy jacket, winking, cafe, 1girl, silver hair, navy jacket"
+            story_photo_prompt("best quality", "1girl, dark skin, black hair", "navy jacket", "winking, blonde, blue eyes, cafe", true),
+            "best quality, winking, cafe, 1girl, dark skin, black hair, navy jacket"
         );
         assert_eq!(
             story_photo_prompt("best quality", "an African woman with dark skin and black hair", "", "winking, cafe", false),
             "best quality, an African woman with dark skin and black hair, winking, cafe"
         );
         assert_eq!(story_photo_prompt("best quality", "", "", "winking", false), "best quality, winking");
-        assert_eq!(story_photo_prompt("best quality", "  ", "", "a sunset", true), "best quality, a sunset");
+        assert_eq!(story_photo_prompt("best quality", "1girl", "", "a sunset", true), "best quality, a sunset, 1girl");
+    }
+
+    #[test]
+    fn scrub_appearance_overrides_keeps_pose_and_place() {
+        assert_eq!(scrub_appearance_overrides("winking, blonde, cafe at night, blue eyes"), "winking, cafe at night");
+        assert_eq!(scrub_appearance_overrides("sitting on a bench, rainy street"), "sitting on a bench, rainy street");
     }
 
     #[test]

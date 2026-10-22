@@ -431,8 +431,9 @@ mod tests {
         let draft = photo_draft_for(&settings, Some(&nova), "winking, blonde, cafe at night");
         assert_eq!(
             draft.prompt,
-            "best quality, 1girl, silver hair, navy flight jacket, winking, blonde, cafe at night, 1girl, silver hair, navy flight jacket"
+            "best quality, winking, cafe at night, 1girl, silver hair, navy flight jacket"
         );
+        assert!(!draft.prompt.contains("blonde"), "shot appearance is scrubbed when base look is locked: {}", draft.prompt);
         assert!(!draft.prompt.contains("African") && !draft.prompt.contains("mornings"), "base look wins over prose: {}", draft.prompt);
         assert_eq!((draft.width, draft.height, draft.character_id), (832, 1216, Some(nova.id)));
         assert_eq!(draft.photo.as_deref(), Some("winking, blonde, cafe at night"), "the shot is kept for the story, apart from the card");
