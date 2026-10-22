@@ -149,7 +149,12 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let c = Character {
             name: "Nova".into(),
-            picture_style: PictureStyle { base_look: "1girl".into(), default_outfit: "jacket".into(), seed: 42 },
+            picture_style: PictureStyle {
+                base_look: "1girl".into(),
+                default_outfit: "jacket".into(),
+                seed: 42,
+                ..Default::default()
+            },
             outfits: vec![Outfit {
                 id: Uuid::new_v4(),
                 name: "Gown".into(),

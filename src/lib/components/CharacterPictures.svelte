@@ -213,7 +213,8 @@
 <h2>Pictures</h2>
 <p class="muted small">
   Drawn with your Stable Diffusion server (Settings → Pictures). Every picture starts with the same base look and seed, so
-  the set looks like one person. Moods become the portraits that swap in during chat; each outfit has its own.
+  the set looks like one person. Moods become the portraits that swap in during chat; each outfit has its own. Positive and
+  negative prompts here are added on top of the global ones from Settings.
 </p>
 
 <label class="field">
@@ -223,6 +224,14 @@
 <label class="field">
   Default outfit
   <input bind:value={character.pictureStyle.defaultOutfit} placeholder="navy flight jacket, white shirt, boots" />
+</label>
+<label class="field">
+  Positive prompt <span class="muted">(extra tags for this character)</span>
+  <textarea rows="2" bind:value={character.pictureStyle.promptPrefix} placeholder="score_9, score_8_up, delicate lighting"></textarea>
+</label>
+<label class="field">
+  Negative prompt <span class="muted">(extra for this character)</span>
+  <textarea rows="2" bind:value={character.pictureStyle.negativePrompt} placeholder="blonde, pale skin, blue eyes"></textarea>
 </label>
 <div class="btnrow">
   <button type="button" onclick={writeLook} disabled={writingLook || !!drawing}>

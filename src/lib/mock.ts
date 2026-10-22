@@ -84,7 +84,7 @@ const characters: Character[] = ["Nova", "Mira", "Dorian"].map((name, i) => ({
   appearance: null,
   birthDate: null,
   schedule: null,
-  pictureStyle: { baseLook: "", defaultOutfit: "", seed: -1 },
+  pictureStyle: { baseLook: "", defaultOutfit: "", promptPrefix: "", negativePrompt: "", seed: -1 },
   outfits: [],
   actionPictures: [],
   createdAt: now(),

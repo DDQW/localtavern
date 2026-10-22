@@ -230,6 +230,11 @@ fn join_prompt(parts: &[&str]) -> String {
         .join(", ")
 }
 
+/// Joins global and per-character prompt pieces, skipping blanks.
+pub fn merge_prompt_parts(parts: &[&str]) -> String {
+    join_prompt(parts)
+}
+
 /// What one picture in a character's set shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
@@ -426,6 +431,13 @@ Outfit: \"navy flight jacket, boots\""),
     fn scrub_appearance_overrides_keeps_pose_and_place() {
         assert_eq!(scrub_appearance_overrides("winking, blonde, cafe at night, blue eyes"), "winking, cafe at night");
         assert_eq!(scrub_appearance_overrides("sitting on a bench, rainy street"), "sitting on a bench, rainy street");
+    }
+
+    #[test]
+    fn merge_prompt_parts_skips_blanks() {
+        assert_eq!(merge_prompt_parts(&["best quality", "", "score_9"]), "best quality, score_9");
+        assert_eq!(merge_prompt_parts(&["blurry", "blonde"]), "blurry, blonde");
+        assert_eq!(merge_prompt_parts(&["", " "]), "");
     }
 
     #[test]

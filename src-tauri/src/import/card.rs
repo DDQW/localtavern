@@ -400,7 +400,12 @@ mod tests {
         use crate::models::{ExpressionImage, PictureStyle};
         let original = Character {
             name: "Nova".into(),
-            picture_style: PictureStyle { base_look: "1girl, silver hair".into(), default_outfit: "jacket".into(), seed: 7 },
+            picture_style: PictureStyle {
+                base_look: "1girl, silver hair".into(),
+                default_outfit: "jacket".into(),
+                seed: 7,
+                ..Default::default()
+            },
             outfits: vec![Outfit {
                 id: uuid::Uuid::new_v4(),
                 name: "Gown".into(),

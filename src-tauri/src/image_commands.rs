@@ -165,23 +165,22 @@ pub async fn image_prompt(
 /// or written description) and usual outfit go into the prompt; `description` is only the shot the
 /// reply named (pose, place, lighting). Portrait size, as a phone photo.
 pub fn photo_draft_for(settings: &ImageGenSettings, character: Option<&Character>, description: &str) -> ImagePromptDraft {
-    let prompt = match character {
+    let (prompt, negative_prompt) = match character {
         Some(character) => {
+            let style = &character.picture_style;
             let (look, lock) = prompts::character_visual_identity(character);
-            prompts::story_photo_prompt(
-                &settings.prompt_prefix,
-                &look,
-                &character.picture_style.default_outfit,
-                description,
-                lock,
+            let prefix = prompts::merge_prompt_parts(&[&settings.prompt_prefix, &style.prompt_prefix]);
+            (
+                prompts::story_photo_prompt(&prefix, &look, &style.default_outfit, description, lock),
+                prompts::merge_prompt_parts(&[&settings.negative_prompt, &style.negative_prompt]),
             )
         }
-        None => prompts::combine(&settings.prompt_prefix, "", description),
+        None => (prompts::combine(&settings.prompt_prefix, "", description), settings.negative_prompt.clone()),
     };
     ImagePromptDraft {
         mode: ImageMode::Character,
         prompt,
-        negative_prompt: settings.negative_prompt.clone(),
+        negative_prompt,
         width: settings.width,
         height: settings.height,
         character_id: character.map(|c| c.id),
@@ -300,9 +299,10 @@ pub fn character_request(
     };
     let (width, height) = prompts::character_picture_size(shot, settings.width, settings.height);
     let backend = settings.active();
+    let prefix = prompts::merge_prompt_parts(&[&settings.prompt_prefix, &style.prompt_prefix]);
     Ok(ImageRequest {
-        prompt: prompts::character_picture_prompt(&settings.prompt_prefix, &style.base_look, &clothing, shot),
-        negative_prompt: settings.negative_prompt.trim().to_string(),
+        prompt: prompts::character_picture_prompt(&prefix, &style.base_look, &clothing, shot),
+        negative_prompt: prompts::merge_prompt_parts(&[&settings.negative_prompt, &style.negative_prompt]),
         width,
         height,
         steps: settings.steps,
@@ -455,5 +455,26 @@ mod tests {
 
         let nobody = photo_draft_for(&settings, None, "a sunset over the harbour");
         assert_eq!((nobody.prompt.as_str(), nobody.character_id), ("best quality, a sunset over the harbour", None));
+    }
+
+    #[test]
+    fn photo_drafts_and_character_pictures_merge_the_card_prompts() {
+        let settings = ImageGenSettings {
+            prompt_prefix: "best quality".into(),
+            negative_prompt: "blurry".into(),
+            ..Default::default()
+        };
+        let mut nova = nova();
+        nova.picture_style.prompt_prefix = "score_9".into();
+        nova.picture_style.negative_prompt = "blonde, pale skin".into();
+
+        let draft = photo_draft_for(&settings, Some(&nova), "winking, cafe");
+        assert!(draft.prompt.starts_with("best quality, score_9,"), "{}", draft.prompt);
+        assert_eq!(draft.negative_prompt, "blurry, blonde, pale skin");
+
+        let happy = CharacterShot::Mood { emotion: "happy".into() };
+        let request = character_request(&settings, &nova, &happy, None).unwrap();
+        assert!(request.prompt.starts_with("best quality, score_9, 1girl, silver hair"), "{}", request.prompt);
+        assert_eq!(request.negative_prompt, "blurry, blonde, pale skin");
     }
 }

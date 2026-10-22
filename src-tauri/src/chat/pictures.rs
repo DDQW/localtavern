@@ -153,23 +153,22 @@ impl ChatEngine {
         };
         let (character_prefix, locked) =
             looked.map(|c| prompts::character_visual_identity(c)).unwrap_or_default();
+        let char_positive = looked.map(|c| c.picture_style.prompt_prefix.as_str()).unwrap_or("");
+        let char_negative = looked.map(|c| c.picture_style.negative_prompt.as_str()).unwrap_or("");
+        let prefix = prompts::merge_prompt_parts(&[&settings.prompt_prefix, char_positive]);
         // When base-look tags lock identity, drop hair/skin/race overrides the model put in the shot
         // and put the look last so the image server weights it.
         let prompt = if locked && !character_prefix.is_empty() {
-            prompts::combine(
-                &settings.prompt_prefix,
-                &prompts::scrub_appearance_overrides(&description),
-                &character_prefix,
-            )
+            prompts::combine(&prefix, &prompts::scrub_appearance_overrides(&description), &character_prefix)
         } else {
-            prompts::combine(&settings.prompt_prefix, &character_prefix, &description)
+            prompts::combine(&prefix, &character_prefix, &description)
         };
 
         let (width, height) = prompts::size_for(mode, settings.width, settings.height);
         Ok(Some(ImagePromptDraft {
             mode,
             prompt,
-            negative_prompt: settings.negative_prompt.clone(),
+            negative_prompt: prompts::merge_prompt_parts(&[&settings.negative_prompt, char_negative]),
             width,
             height,
             character_id: drawn.map(|c| c.id),

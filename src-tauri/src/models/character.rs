@@ -22,13 +22,25 @@ pub struct PictureStyle {
     pub base_look: String,
     /// What they wear when no other outfit is chosen.
     pub default_outfit: String,
+    /// Extra positive tags for this character (after the global picture prefix).
+    #[serde(default)]
+    pub prompt_prefix: String,
+    /// Extra negative tags for this character (after the global negative prompt).
+    #[serde(default)]
+    pub negative_prompt: String,
     /// Shared by all of the character's pictures; -1 until the first one is drawn.
     pub seed: i64,
 }
 
 impl Default for PictureStyle {
     fn default() -> Self {
-        Self { base_look: String::new(), default_outfit: String::new(), seed: -1 }
+        Self {
+            base_look: String::new(),
+            default_outfit: String::new(),
+            prompt_prefix: String::new(),
+            negative_prompt: String::new(),
+            seed: -1,
+        }
     }
 }
 

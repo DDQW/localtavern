@@ -116,6 +116,10 @@ export interface PictureStyle {
   baseLook: string;
   /** What they wear when no other outfit is chosen. */
   defaultOutfit: string;
+  /** Extra positive tags for this character (after the global picture prefix). */
+  promptPrefix: string;
+  /** Extra negative tags for this character (after the global negative prompt). */
+  negativePrompt: string;
   /** -1 until the first picture is drawn. */
   seed: number;
 }
