@@ -161,18 +161,21 @@ pub async fn image_prompt(
     engine.image_prompt(conversation_id, mode, character_id, &settings).await
 }
 
-/// The draft for a photo a character sent in the story. The card's look and usual outfit are
-/// copied into the prompt unchanged; the written description is not, because it is prose rather
-/// than an image prompt. `description` is only the shot the reply named (pose, place, lighting).
-/// Portrait size, as a phone photo.
+/// The draft for a photo a character sent in the story. Visual identity (base look, or appearance,
+/// or written description) and usual outfit go into the prompt; `description` is only the shot the
+/// reply named (pose, place, lighting). Portrait size, as a phone photo.
 pub fn photo_draft_for(settings: &ImageGenSettings, character: Option<&Character>, description: &str) -> ImagePromptDraft {
     let prompt = match character {
-        Some(character) => prompts::story_photo_prompt(
-            &settings.prompt_prefix,
-            &character.picture_style.base_look,
-            &character.picture_style.default_outfit,
-            description,
-        ),
+        Some(character) => {
+            let (look, lock) = prompts::character_visual_identity(character);
+            prompts::story_photo_prompt(
+                &settings.prompt_prefix,
+                &look,
+                &character.picture_style.default_outfit,
+                description,
+                lock,
+            )
+        }
         None => prompts::combine(&settings.prompt_prefix, "", description),
     };
     ImagePromptDraft {
@@ -421,23 +424,33 @@ mod tests {
     }
 
     #[test]
-    fn photo_drafts_copy_the_look_and_leave_the_written_description_out() {
+    fn photo_drafts_use_base_look_or_fall_back_to_the_written_description() {
         let settings = ImageGenSettings { prompt_prefix: "best quality".into(), ..Default::default() };
         let mut nova = nova();
-        nova.description = "{{char}} is tall, with one gold eye and a scar through the left brow. She hates mornings.".into();
+        nova.description = "{{char}} is an African woman with dark skin. She hates mornings.".into();
         let draft = photo_draft_for(&settings, Some(&nova), "winking, blonde, cafe at night");
         assert_eq!(
             draft.prompt,
             "best quality, 1girl, silver hair, navy flight jacket, winking, blonde, cafe at night, 1girl, silver hair, navy flight jacket"
         );
-        assert!(!draft.prompt.contains("gold eye") && !draft.prompt.contains("mornings"), "prose description stays out: {}", draft.prompt);
+        assert!(!draft.prompt.contains("African") && !draft.prompt.contains("mornings"), "base look wins over prose: {}", draft.prompt);
         assert_eq!((draft.width, draft.height, draft.character_id), (832, 1216, Some(nova.id)));
         assert_eq!(draft.photo.as_deref(), Some("winking, blonde, cafe at night"), "the shot is kept for the story, apart from the card");
 
         nova.picture_style.base_look.clear();
         nova.picture_style.default_outfit.clear();
-        let shot_only = photo_draft_for(&settings, Some(&nova), "winking, cafe at night");
-        assert_eq!(shot_only.prompt, "best quality, winking, cafe at night");
+        let from_description = photo_draft_for(&settings, Some(&nova), "winking, cafe at night");
+        assert_eq!(
+            from_description.prompt,
+            "best quality, Nova is an African woman with dark skin. She hates mornings., winking, cafe at night"
+        );
+        assert!(from_description.prompt.contains("African woman with dark skin"), "{}", from_description.prompt);
+        assert_eq!(
+            from_description.prompt.matches("African woman").count(),
+            1,
+            "prose is not doubled: {}",
+            from_description.prompt
+        );
 
         let nobody = photo_draft_for(&settings, None, "a sunset over the harbour");
         assert_eq!((nobody.prompt.as_str(), nobody.character_id), ("best quality, a sunset over the harbour", None));

@@ -144,14 +144,14 @@ impl ChatEngine {
             return Err(Error::Other("The model returned an empty description - try again.".into()));
         }
 
-        // A character's base look (set in the character editor) keeps their pictures looking like
-        // them; it also goes into scenes of a one-on-one chat, where they're surely in frame.
+        // Permanent visual identity keeps pictures looking like them (base look, else appearance,
+        // else written description). Also used for scenes of a one-on-one chat.
         let looked = match (mode, drawn) {
             (_, Some(character)) => Some(character),
             (ImageMode::Scene | ImageMode::LastMessage, None) if ctx.characters.len() == 1 => ctx.characters.first(),
             _ => None,
         };
-        let character_prefix = looked.map(|c| c.picture_style.base_look.clone()).unwrap_or_default();
+        let character_prefix = looked.map(|c| prompts::character_visual_identity(c).0).unwrap_or_default();
 
         let (width, height) = prompts::size_for(mode, settings.width, settings.height);
         Ok(Some(ImagePromptDraft {

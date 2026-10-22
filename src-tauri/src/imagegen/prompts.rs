@@ -5,6 +5,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::PromptStyle;
+use crate::models::Character;
+use crate::prompting::appearance::{self, AppearanceSubject};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,15 +121,66 @@ pub fn combine(prefix: &str, character_prefix: &str, description: &str) -> Strin
     join_prompt(&[prefix, character_prefix, description])
 }
 
-/// A photo a character sent. The card's image tags and usual outfit are copied in unchanged,
-/// before the shot the reply described and again after it, so that shot (pose, place, lighting)
-/// cannot replace them. The card's written description is prose, not an image prompt, and is left
-/// out. An empty card leaves just the prefix and the shot.
-pub fn story_photo_prompt(prefix: &str, base_look: &str, outfit: &str, shot: &str) -> String {
+/// Permanent visual identity for a picture: the character's base-look tags when set, otherwise the
+/// appearance builder text, otherwise the written description. `lock` is true only for real image
+/// tags (base look), which are safe to repeat after the shot so it cannot replace them.
+pub fn visual_identity(base_look: &str, appearance: &str, description: &str) -> (String, bool) {
     let look = base_look.trim();
+    if !look.is_empty() {
+        return (look.to_string(), true);
+    }
+    let appearance = appearance.trim();
+    if !appearance.is_empty() {
+        return (appearance.to_string(), false);
+    }
+    let description = description.trim();
+    if !description.is_empty() {
+        return (description.to_string(), false);
+    }
+    (String::new(), false)
+}
+
+/// Resolves a character's permanent look for any picture prompt.
+pub fn character_visual_identity(character: &Character) -> (String, bool) {
+    let appearance = character
+        .appearance
+        .as_ref()
+        .map(|a| with_character_name(&appearance::render(a, AppearanceSubject::Character), character.name.trim()))
+        .unwrap_or_default();
+    visual_identity(
+        &character.picture_style.base_look,
+        &appearance,
+        &with_character_name(character.description.trim(), character.name.trim()),
+    )
+}
+
+/// `{{char}}` in card text becomes this character's name.
+fn with_character_name(text: &str, name: &str) -> String {
+    if name.is_empty() {
+        return text.to_string();
+    }
+    let lower = text.to_ascii_lowercase();
+    let needle = "{{char}}";
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for (start, _) in lower.match_indices(needle) {
+        out.push_str(&text[last..start]);
+        out.push_str(name);
+        last = start + needle.len();
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+/// A photo a character sent. Visual identity and usual outfit go before the shot; tagged base looks
+/// (and their outfit) are repeated after it so the shot cannot replace them. Prose fallbacks are
+/// used once only - repeating a whole character description made pictures ignore it and draw a
+/// generic default instead.
+pub fn story_photo_prompt(prefix: &str, look: &str, outfit: &str, shot: &str, lock_look: bool) -> String {
+    let look = look.trim();
     let outfit = outfit.trim();
     let mut parts = vec![prefix, look, outfit, shot];
-    if !look.is_empty() || !outfit.is_empty() {
+    if lock_look && (!look.is_empty() || !outfit.is_empty()) {
         parts.push(look);
         parts.push(outfit);
     }
@@ -322,12 +375,24 @@ Outfit: \"navy flight jacket, boots\""),
     }
 
     #[test]
-    fn a_story_photo_keeps_the_look_ahead_of_the_shot_and_after_it() {
+    fn a_story_photo_keeps_tagged_looks_ahead_of_the_shot_and_after_it() {
         assert_eq!(
-            story_photo_prompt("best quality", "1girl, silver hair", "navy jacket", "winking, cafe"),
+            story_photo_prompt("best quality", "1girl, silver hair", "navy jacket", "winking, cafe", true),
             "best quality, 1girl, silver hair, navy jacket, winking, cafe, 1girl, silver hair, navy jacket"
         );
-        assert_eq!(story_photo_prompt("best quality", "", "", "winking"), "best quality, winking");
-        assert_eq!(story_photo_prompt("best quality", "  ", "", "a sunset"), "best quality, a sunset");
+        assert_eq!(
+            story_photo_prompt("best quality", "an African woman with dark skin and black hair", "", "winking, cafe", false),
+            "best quality, an African woman with dark skin and black hair, winking, cafe"
+        );
+        assert_eq!(story_photo_prompt("best quality", "", "", "winking", false), "best quality, winking");
+        assert_eq!(story_photo_prompt("best quality", "  ", "", "a sunset", true), "best quality, a sunset");
+    }
+
+    #[test]
+    fn visual_identity_prefers_base_look_then_appearance_then_description() {
+        assert_eq!(visual_identity("1girl, dark skin", "fair skin woman", "Asian man"), ("1girl, dark skin".into(), true));
+        assert_eq!(visual_identity("", "a Black woman, dark skin", "ignored"), ("a Black woman, dark skin".into(), false));
+        assert_eq!(visual_identity("", "", "Korean woman, black hair"), ("Korean woman, black hair".into(), false));
+        assert_eq!(visual_identity(" ", "", ""), (String::new(), false));
     }
 }

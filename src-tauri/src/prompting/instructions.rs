@@ -180,16 +180,16 @@ Format: [time-skip: <number> <minutes|hours|days>] with a single number, e.g. [t
         key: PHOTO,
         group: PHOTOS,
         title: "Characters send photos",
-        help: "Every roleplay reply, while \"Draw the photos characters send\" is on in the picture settings. The picture is drawn from the character's base look and usual outfit only; the card's written description is not copied in. This line is only the shot. Must keep the [photo: ...] line format for the app to find the photo.",
+        help: "Every roleplay reply, while \"Draw the photos characters send\" is on in the picture settings. The picture uses the character's base look when set, otherwise their appearance/description, plus usual outfit; this line is only the shot. Must keep the [photo: ...] line format for the app to find the photo.",
         placeholders: &["{char}", "{user}"],
         default: "{char} sends {user} photos whenever a real person would: a selfie to show how {char} looks or what {char} is wearing, a \
 snapshot of where {char} is, what {char} is doing or something {char} wants {user} to see - above all while they are apart and texting, \
 and whenever {user} asks for one. When they are together, {char} can take a picture of the moment or of the two of them. When {char} \
 sends or takes a photo in this reply, show it happening in the story and end the reply with one last line in exactly this form, square \
 brackets included: [photo: <only the shot: {char}'s pose, expression and what {char} is doing, the place and the lighting>]. Do not \
-describe {char}'s body, face, hair, skin, eyes, age, species, measurements or clothing in that line, and do not change them: the picture \
-is drawn from {char}'s base look and usual outfit, not from this line. Write the description only inside the brackets, not in the story \
-text. Leave the line out when no photo is sent or taken.",
+describe or change {char}'s body, face, hair, skin, eyes, age, species, race or clothing in that line: the picture keeps {char}'s look \
+from the character card. Write the description only inside the brackets, not in the story text. Leave the line out when no photo is \
+sent or taken.",
     },
     Instruction {
         key: PHOTO_INTIMATE,
@@ -199,7 +199,7 @@ text. Leave the line out when no photo is sent or taken.",
         placeholders: &["{char}", "{user}"],
         default: "The photos can be as intimate as the moment between them: when the mood is flirty or sexual and {char} wants to, {char} \
 can send {user} suggestive or nude photos of {char}. The line may say the photo is suggestive or nude, but it still must not describe \
-or change {char}'s body: the picture uses {char}'s base look, not a new description.",
+or change {char}'s body: the picture keeps {char}'s look from the character card.",
     },
     Instruction {
         key: USER_PHOTO,
@@ -210,7 +210,7 @@ or change {char}'s body: the picture uses {char}'s base look, not a new descript
         default: "If {user} takes a photo or picture in {user}'s latest message, also describe that photo, as one more last line in exactly \
 this form, square brackets included: [user-photo: <what {user}'s photo shows, as the camera sees it: who is in it (anyone by name), \
 their pose, expression, the place and the lighting>]. If a character is in it, do not describe or change their body, face, hair, skin \
-or clothing; the picture uses that character's base look and usual outfit. Leave this line out when {user} takes no photo.",
+or clothing; the picture keeps that character's look from their card. Leave this line out when {user} takes no photo.",
     },
     // ---- pictures the user sends
     Instruction {
