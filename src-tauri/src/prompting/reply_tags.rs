@@ -15,8 +15,12 @@ use super::{breakout, emotion_tag, next_speaker_tag, photo_tag, time_skip_tag};
 /// A `[...]` tag may hold parentheses (photo descriptions do, SD weights like `(red hair:1.2)` too);
 /// a `(...)` one may not. Either may close with the other bracket.
 static TAIL: LazyLock<Regex> = LazyLock::new(|| {
-    const KEYS: &str = r"\s*(?:(?:time[-_ ]?(?:skip|jump|passed|elapsed)|emotion|meters?|photo|picture|image|selfie|user[-_ ]?(?:photo|picture|pic)|next(?:[-_ ]?(?:speaker|up))?)\s*[:=]|private\b)";
-    Regex::new(&format!(r"(?i)(?:[\s*_`]*(?:\[{KEYS}[^\[\]]*|\({KEYS}[^\])]*)[\])])+[\s*_`]*$")).unwrap()
+    let keys = format!(
+        r"\s*(?:(?:time[-_ ]?(?:skip|jump|passed|elapsed)|emotion|meters?|next(?:[-_ ]?(?:speaker|up))?)\s*[:=]|{}|{}|private\b)",
+        photo_tag::KEY,
+        photo_tag::USER_KEY
+    );
+    Regex::new(&format!(r"(?i)(?:[\s*_`]*(?:\[{keys}[^\[\]]*|\({keys}[^\])]*)[\])])+[\s*_`]*$")).unwrap()
 });
 
 #[derive(Debug, Default, PartialEq)]
@@ -35,22 +39,36 @@ pub struct ReplyTags {
     pub private: bool,
 }
 
-/// Splits the trailing tags off `text`, returning the text without them and what they said.
+/// Splits the trailing tags off `text`, returning the text without them and what they said. A photo
+/// tag is also taken from the middle of the text, where a model may write it as the photo is sent.
 pub fn peel(text: &str) -> (String, ReplyTags) {
-    let Some(found) = TAIL.find(text) else {
-        return (text.to_string(), ReplyTags::default());
+    let (mut clean, mut tags) = match TAIL.find(text) {
+        None => (text.to_string(), ReplyTags::default()),
+        Some(found) => {
+            let tail = found.as_str();
+            let tags = ReplyTags {
+                skip: time_skip_tag::parse_tail(tail),
+                emotion: emotion_tag::parse_tail(tail),
+                meters: meter_tag::parse_tail(tail),
+                photo: photo_tag::parse_tail(tail),
+                user_photo: photo_tag::parse_user_tail(tail),
+                next: next_speaker_tag::parse_tail(tail),
+                private: breakout::parse_tail(tail),
+            };
+            (text[..found.start()].trim_end().to_string(), tags)
+        }
     };
-    let tail = found.as_str();
-    let tags = ReplyTags {
-        skip: time_skip_tag::parse_tail(tail),
-        emotion: emotion_tag::parse_tail(tail),
-        meters: meter_tag::parse_tail(tail),
-        photo: photo_tag::parse_tail(tail),
-        user_photo: photo_tag::parse_user_tail(tail),
-        next: next_speaker_tag::parse_tail(tail),
-        private: breakout::parse_tail(tail),
-    };
-    (text[..found.start()].trim_end().to_string(), tags)
+    if tags.photo.is_none() {
+        if let Some((rest, description)) = photo_tag::take_inline(&clean) {
+            (clean, tags.photo) = (rest, Some(description));
+        }
+    }
+    if tags.user_photo.is_none() {
+        if let Some((rest, description)) = photo_tag::take_user_inline(&clean) {
+            (clean, tags.user_photo) = (rest, Some(description));
+        }
+    }
+    (clean, tags)
 }
 
 #[cfg(test)]
@@ -104,6 +122,39 @@ mod tests {
         // A mismatched closing bracket is still tolerated, and can't swallow the story before a later tag.
         assert_eq!(peel("Fine. [emotion: happy)").0, "Fine.");
         assert_eq!(peel("Fine. [photo: x) She left. [emotion: sad]").0, "Fine. [photo: x) She left.");
+    }
+
+    #[test]
+    fn takes_a_photo_tag_from_the_middle_of_the_story() {
+        let (clean, tags) = peel(
+            "She holds the phone up and snaps one.\n\n**[photo: selfie of Nova, silver hair, winking]**\n\n*texts* There you go ;)\n\n[emotion: happy]",
+        );
+        assert_eq!(clean, "She holds the phone up and snaps one.\n\n*texts* There you go ;)");
+        assert_eq!(tags.photo.as_deref(), Some("selfie of Nova, silver hair, winking"));
+        assert_eq!(tags.emotion.as_deref(), Some("happy"));
+
+        let (clean, tags) = peel("She sends it [Photo attached: Nova on the pier at dusk] and waits.");
+        assert_eq!(clean, "She sends it and waits.");
+        assert_eq!(tags.photo.as_deref(), Some("Nova on the pier at dusk"));
+
+        let (clean, tags) = peel("You snap it. [user-photo: Nova laughing] She grins.");
+        assert_eq!(clean, "You snap it. She grins.");
+        assert_eq!(tags.user_photo.as_deref(), Some("Nova laughing"));
+        assert_eq!(peel("She looks at the photo: a beach.").0, "She looks at the photo: a beach.");
+    }
+
+    #[test]
+    fn reads_the_looser_photo_spellings_at_the_end() {
+        for (text, photo) in [
+            ("Here! [Sends a photo: Nova in a red dress]", "Nova in a red dress"),
+            ("Here! [Photo of Nova smiling at the beach]", "Nova smiling at the beach"),
+            ("Here! *[Selfie - Nova, messy hair, morning light]*", "Nova, messy hair, morning light"),
+            ("Here! [Image: the view from her balcony]", "the view from her balcony"),
+        ] {
+            let (clean, tags) = peel(text);
+            assert_eq!(clean, "Here!", "{text}");
+            assert_eq!(tags.photo.as_deref(), Some(photo), "{text}");
+        }
     }
 
     #[test]

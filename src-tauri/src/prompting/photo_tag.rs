@@ -58,17 +58,13 @@ their pose, expression and what they are wearing (if anything), the place and th
 
 /// `[user-photo: ...]` (or `user picture`), up to its `]`.
 static USER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)\[\s*user[-_ ]?(?:photo|picture|pic)\s*[:=]([^\[\]]*)\]|[\[(]\s*user[-_ ]?(?:photo|picture|pic)\s*[:=]([^\[\])]*)[\])]",
-    )
-    .unwrap()
+    Regex::new(&format!(r"(?i)\[\s*{USER_KEY}([^\[\]]*)\]|[\[(]\s*{USER_KEY}([^\[\])]*)[\])]")).unwrap()
 });
 
 /// The description in a `[user-photo: ...]` tag anywhere in `tail`.
 pub fn parse_user_tail(tail: &str) -> Option<String> {
     let captures = USER.captures(tail)?;
-    let description = captures.get(1).or_else(|| captures.get(2))?.as_str();
-    Some(description.trim().trim_matches(['"', '*', '_']).trim().to_string()).filter(|d| !d.is_empty())
+    clean_description(captures.get(1).or_else(|| captures.get(2))?.as_str())
 }
 
 /// The first of `names` (id, name) a photo description mentions as a whole word - whose look goes
@@ -90,19 +86,63 @@ pub fn first_named<T: Copy>(description: &str, names: &[(T, &str)]) -> Option<T>
         .map(|(_, id)| id)
 }
 
+/// What opens the character's photo tag: `photo:`, `picture =`, `selfie:`, and the looser spellings
+/// models drift into - `Photo attached:`, `Sends a photo:`, `Photo - ...`, `Photo of Nova smiling`.
+pub const KEY: &str = r"(?:(?:attached|sent|sends?|sending)\s+(?:a\s+)?)?(?:photo(?:graph)?|picture|pic|image|selfie|snapshot)(?:\s+(?:attached|sent))?\s*(?:[:=\-–—]|of\b)";
+
+/// What opens the `[user-photo: ...]` tag.
+pub const USER_KEY: &str = r"user[-_ ]?(?:photo|picture|pic)\s*[:=]";
+
 /// `[photo: ...]` up to its `]`, so parentheses in the description survive; otherwise a `(...)` tag or
 /// a `[...)` one with mismatched brackets.
-static ANY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)\[\s*(?:photo|picture|image|selfie)\s*[:=]([^\[\]]*)\]|[\[(]\s*(?:photo|picture|image|selfie)\s*[:=]([^\[\])]*)[\])]",
-    )
-    .unwrap()
-});
+static ANY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"(?i)\[\s*{KEY}([^\[\]]*)\]|[\[(]\s*{KEY}([^\[\])]*)[\])]")).unwrap());
 
 /// The description in a photo tag anywhere in `tail` (the trailing tags peeled off a reply).
 pub fn parse_tail(tail: &str) -> Option<String> {
     let captures = ANY.captures(tail)?;
-    let description = captures.get(1).or_else(|| captures.get(2))?.as_str();
+    clean_description(captures.get(1).or_else(|| captures.get(2))?.as_str())
+}
+
+/// A whole bracketed photo tag in the middle of a reply, with any `*`/`_` around it.
+static INLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)[*_]*\[\s*{KEY}([^\[\]]*)\][*_]*")).unwrap());
+static USER_INLINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"(?i)[*_]*\[\s*{USER_KEY}([^\[\]]*)\][*_]*")).unwrap());
+
+/// Takes a photo tag out of the middle of `text` - a model sometimes writes the line where the photo
+/// is sent and carries on with the story, so it isn't among the trailing tags. Returns the text
+/// without it and the description.
+pub fn take_inline(text: &str) -> Option<(String, String)> {
+    take(&INLINE, text)
+}
+
+/// [`take_inline`] for the `[user-photo: ...]` tag.
+pub fn take_user_inline(text: &str) -> Option<(String, String)> {
+    take(&USER_INLINE, text)
+}
+
+fn take(tag: &Regex, text: &str) -> Option<(String, String)> {
+    let captures = tag.captures(text)?;
+    let description = clean_description(captures.get(1)?.as_str())?;
+    let whole = captures.get(0)?;
+    let (before, after) = (&text[..whole.start()], &text[whole.end()..]);
+    let on_own_line = before.trim_end_matches([' ', '\t']).ends_with('\n') || after.trim_start_matches([' ', '\t']).starts_with('\n');
+    let (before, after) = (before.trim_end(), after.trim_start());
+    let rest = match (before.is_empty(), after.is_empty()) {
+        (true, _) => after.to_string(),
+        (_, true) => before.to_string(),
+        _ if on_own_line => format!("{before}\n\n{after}"),
+        _ => format!("{before} {after}"),
+    };
+    Some((rest, description))
+}
+
+/// What the model is told in place of a story photo's picture (sent as a system note).
+pub fn context_note(description: &str) -> String {
+    format!("A photo was shared in the story here. It showed: {}", description.trim())
+}
+
+fn clean_description(description: &str) -> Option<String> {
     Some(description.trim().trim_matches(['"', '*', '_']).trim().to_string()).filter(|d| !d.is_empty())
 }
 

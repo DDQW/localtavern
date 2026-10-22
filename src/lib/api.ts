@@ -188,8 +188,11 @@ export interface Api {
   imagePrompt(conversationId: Uuid, mode: ImageMode, characterId: Uuid | null): Promise<ImagePromptDraft | null>;
   /** The ready-to-draw draft for a photo a character sent in the story. */
   photoDraft(characterId: Uuid | null, description: string): Promise<ImagePromptDraft>;
-  /** Renders a draft and adds it to the chat; null when stopped (stopImage). */
-  generateImage(conversationId: Uuid, draft: ImagePromptDraft): Promise<ChatMessage | null>;
+  /** Renders a draft and adds it to the chat - or into picture message `intoMessage` (a story photo
+   * whose render failed); null when stopped (stopImage). */
+  generateImage(conversationId: Uuid, draft: ImagePromptDraft, intoMessage?: Uuid): Promise<ChatMessage | null>;
+  /** Keeps a story photo that couldn't be drawn in the chat, to be drawn again from there. */
+  addFailedPhoto(conversationId: Uuid, draft: ImagePromptDraft): Promise<ChatMessage>;
   stopImage(conversationId: Uuid): Promise<void>;
   /** Deletes a picture message and its stored file. */
   deletePicture(messageId: Uuid): Promise<void>;
@@ -330,7 +333,9 @@ const tauriApi: Api = {
   stopCharacterPicture: (characterId) => invoke("stop_character_picture", { characterId }),
   imagePrompt: (conversationId, mode, characterId) => invoke("image_prompt", { conversationId, mode, characterId }),
   photoDraft: (characterId, description) => invoke("photo_draft", { characterId, description }),
-  generateImage: (conversationId, draft) => invoke("generate_image", { conversationId, draft }),
+  generateImage: (conversationId, draft, intoMessage) =>
+    invoke("generate_image", { conversationId, draft, intoMessage: intoMessage ?? null }),
+  addFailedPhoto: (conversationId, draft) => invoke("add_failed_photo", { conversationId, draft }),
   stopImage: (conversationId) => invoke("stop_image", { conversationId }),
   deletePicture: (messageId) => invoke("delete_picture", { messageId }),
 };

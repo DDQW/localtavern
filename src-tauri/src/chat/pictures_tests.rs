@@ -19,6 +19,7 @@ fn draft(prompt: &str, character_id: Option<Uuid>) -> ImagePromptDraft {
         width: 1216,
         height: 832,
         character_id,
+        photo: None,
     }
 }
 
@@ -159,6 +160,44 @@ async fn pictures_show_in_the_chat_but_never_reach_the_model() {
     assert!(messages(&f, conv).iter().all(|m| m.id != picture.id));
     let reply = messages(&f, conv).into_iter().find(|m| m.role == MessageRole::Character).unwrap();
     assert!(f.engine.delete_picture(reply.id).is_err(), "only pictures can be deleted this way");
+}
+
+#[tokio::test]
+async fn a_story_photo_that_failed_stays_in_the_chat_reaches_the_model_and_can_be_drawn_in_place() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Here you go."), finish("STOP")]),
+        Script::Items(vec![chunk("Cute, right?"), finish("STOP")]),
+        Script::Items(vec![chunk(" Told you."), finish("STOP")]),
+    ]);
+    let conv = ready_roleplay(&f);
+    no_clock(&f, conv);
+    send(&f, conv, "send me a pic").await.0.unwrap();
+    let nova = f.engine.resume(conv).unwrap().characters[0].id;
+
+    assert!(f.engine.add_failed_photo(conv, &draft("a picture", None)).is_err(), "only story photos are kept unrendered");
+    let photo = ImagePromptDraft { photo: Some("selfie of Nova at the beach".into()), ..draft("best quality, selfie", Some(nova)) };
+    let failed = f.engine.add_failed_photo(conv, &photo).unwrap();
+    assert_eq!(failed.role, MessageRole::Image);
+    assert!(failed.attachments.is_empty());
+    assert_eq!(f.engine.resume(conv).unwrap().messages.last().unwrap().id, failed.id, "shown in the chat");
+
+    send(&f, conv, "wow").await.0.unwrap();
+    let history = &f.provider.requests()[1].history;
+    let note = history.iter().find(|m| m.text.contains("selfie of Nova")).expect("the photo is in the context");
+    assert_eq!(note.role, LlmRole::User);
+    assert_eq!(note.text, "[System note: A photo was shared in the story here. It showed: selfie of Nova at the beach]");
+    assert!(history.iter().all(|m| !m.text.contains("best quality")), "the render prompt isn't");
+
+    let drawn = f.engine.fill_picture(failed.id, &png()).unwrap();
+    assert_eq!(drawn.id, failed.id);
+    assert_eq!(std::fs::read(&drawn.attachments[0].image_path).unwrap(), PNG);
+    let order: Vec<Uuid> = messages(&f, conv).iter().map(|m| m.id).collect();
+    assert_eq!(order.iter().position(|id| *id == failed.id), Some(2), "it stays where the photo was sent");
+
+    // The note doesn't end the exchange: Continue still extends the last reply.
+    f.engine.continue_message(conv, Arc::new(VecSink::default())).await.unwrap();
+    let last_reply = messages(&f, conv).into_iter().filter(|m| m.role == MessageRole::Character).last().unwrap();
+    assert_eq!(last_reply.text, "Cute, right? Told you.");
 }
 
 #[tokio::test]

@@ -111,6 +111,14 @@
           <img src={fileUrl(attachment.imagePath)} alt={message.text} />
         </button>
       {/each}
+      {#if message.attachments.length === 0}
+        <div class="failed-photo" role="status">
+          <span>📷 This photo couldn't be drawn.</span>
+          <button onclick={() => chat.drawAgain(message)} disabled={!!chat.picture}>
+            {chat.picture ? "Waiting for the picture under way…" : "Try again"}
+          </button>
+        </div>
+      {/if}
       {#if pictureStatus}<p class="muted status" role="status">{pictureStatus}</p>{/if}
       <details class="fold">
         <summary>Prompt</summary>
@@ -295,6 +303,16 @@
     margin-top: 4px;
   }
 
+  .failed-photo {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    padding: 10px 12px;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    color: var(--muted);
+  }
   .attachments {
     display: flex;
     flex-wrap: wrap;

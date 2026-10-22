@@ -645,6 +645,8 @@ export interface ImagePromptDraft {
   width: number;
   height: number;
   characterId: Uuid | null;
+  /** For a photo sent or taken in the story: what the reply said it showed. */
+  photo?: string | null;
 }
 
 /** One picture of a character's set. */

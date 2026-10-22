@@ -568,7 +568,8 @@ export const mockApi: Api = {
         conversationId,
         messageId: reply.id,
         characterId: c.characterId,
-        description: "selfie of a young woman, silver hair, winking, neon cafe at night",
+        // "fail" in the message makes the render fail (see generateImage), to try a failed photo.
+        description: `selfie of a young woman, silver hair, winking, neon cafe at night${/\bfail\b/i.test(text) ? ", fail" : ""}`,
       });
     }
     onEvent({ type: "finished" });
@@ -1126,9 +1127,10 @@ You are the character. (Mock prompt for message ${messageId}.)
       width: imageSettings.width,
       height: imageSettings.height,
       characterId: character?.id ?? null,
+      photo: description.trim(),
     };
   },
-  async generateImage(conversationId, draft) {
+  async generateImage(conversationId, draft, intoMessage) {
     imageRunning.set(conversationId, true);
     for (let i = 0; i < 15; i++) {
       await sleep(100);
@@ -1138,10 +1140,26 @@ You are the character. (Mock prompt for message ${messageId}.)
       }
     }
     imageRunning.delete(conversationId);
+    const attachments = [{ imagePath: mockPicture(draft), mimeType: "image/svg+xml" }];
+    const failed = intoMessage && messages.get(conversationId)?.find((m) => m.id === intoMessage);
+    if (failed) {
+      failed.attachments = attachments;
+      return structuredClone(failed);
+    }
+    if (draft.prompt.endsWith(", fail")) throw new Error("ComfyUI isn't reachable at http://127.0.0.1:8188.");
     const picture = message(conversationId, "image", draft.prompt.trim(), {
       speakerCharacterId: draft.characterId,
       rawPromptText: JSON.stringify(draft),
-      attachments: [{ imagePath: mockPicture(draft), mimeType: "image/svg+xml" }],
+      attachments,
+    });
+    messages.get(conversationId)!.push(picture);
+    return structuredClone(picture);
+  },
+  async addFailedPhoto(conversationId, draft) {
+    const picture = message(conversationId, "image", draft.prompt.trim(), {
+      speakerCharacterId: draft.characterId,
+      rawPromptText: JSON.stringify(draft),
+      attachments: [],
     });
     messages.get(conversationId)!.push(picture);
     return structuredClone(picture);

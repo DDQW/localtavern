@@ -666,9 +666,11 @@ class ChatStore {
     this.picture = { phase: "review", draft };
   }
 
-  /** Renders a (reviewed) draft into chat `id`, the open one by default. The chat stays usable
-   * meanwhile, and the render carries on when another chat is opened. */
-  async renderPicture(draft: ImagePromptDraft, id: Uuid | null = this.conversationId) {
+  /** Renders a (reviewed) draft into chat `id`, the open one by default - or into picture message
+   * `into`, a story photo whose render failed. The chat stays usable meanwhile, and the render
+   * carries on when another chat is opened. A story photo that fails is kept in the chat, unrendered,
+   * to be drawn again from there. */
+  async renderPicture(draft: ImagePromptDraft, id: Uuid | null = this.conversationId, into?: Uuid) {
     if (!id) return;
     this.rendering.set(id, draft);
     if (this.conversationId === id) {
@@ -676,17 +678,34 @@ class ChatStore {
       this.picture = { phase: "render", draft };
     }
     try {
-      const message = await api.generateImage(id, draft);
-      if (message) {
-        if (this.conversationId === id) this.messages.push(toUi(message));
-        else this.parked.get(id)?.messages.push(toUi(message));
-      }
+      const message = await api.generateImage(id, draft, into);
+      if (message) this.showPicture(id, message);
     } catch (e) {
       if (this.conversationId === id) this.error = errorText(e);
+      if (draft.photo && !into) {
+        await api
+          .addFailedPhoto(id, draft)
+          .then((message) => this.showPicture(id, message))
+          .catch(() => {});
+      }
     } finally {
       this.rendering.delete(id);
       if (this.conversationId === id) this.picture = null;
       this.nextPhoto(id);
+    }
+  }
+
+  /** Shows a picture message in chat `id`: in its place when it's already there (a failed photo
+   * drawn again), at the end otherwise. */
+  private showPicture(id: Uuid, message: ChatMessage) {
+    if (this.conversationId === id) {
+      if (this.find(message.id)) this.replace(message);
+      else this.messages.push(toUi(message));
+    } else {
+      const parked = this.parked.get(id)?.messages;
+      const at = parked?.findIndex((m) => m.id === message.id) ?? -1;
+      if (parked && at >= 0) parked[at] = toUi(message);
+      else parked?.push(toUi(message));
     }
   }
 
@@ -711,10 +730,11 @@ class ChatStore {
     if (next) void this.renderPicture(next, id);
   }
 
-  /** Draws a picture again from exactly the same draft (a new seed when the seed is random). */
+  /** Draws a picture again from exactly the same draft (a new seed when the seed is random). A story
+   * photo that couldn't be drawn is drawn into its own place in the chat. */
   async drawAgain(message: ChatMessage) {
     const draft = pictureDraft(message);
-    if (draft && !this.picture) await this.renderPicture(draft);
+    if (draft && !this.picture) await this.renderPicture(draft, this.conversationId, message.attachments.length ? undefined : message.id);
   }
 
   /** Copies a picture into the character's avatar or gallery. A copy, so deleting the chat's

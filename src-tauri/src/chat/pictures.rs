@@ -26,6 +26,18 @@ pub struct ImagePromptDraft {
     pub height: u32,
     /// Who the picture is of (character modes), shown as the picture's speaker.
     pub character_id: Option<Uuid>,
+    /// For a photo sent or taken in the story: what the reply said it showed. Such a picture is part
+    /// of the story, so the model is told about it (see [`super::session::chat_history`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub photo: Option<String>,
+}
+
+/// A picture message for `draft`, not saved yet and with no picture in it.
+fn picture_message(conversation_id: Uuid, draft: &ImagePromptDraft) -> Result<ChatMessage> {
+    let mut message = ChatMessage::new(conversation_id, MessageRole::Image, draft.prompt.trim());
+    message.speaker_character_id = draft.character_id;
+    message.raw_prompt_text = Some(serde_json::to_string(draft)?);
+    Ok(message)
 }
 
 /// The assembler adds its own trailing notes (the world clock, an author's note), which would put
@@ -149,6 +161,7 @@ impl ChatEngine {
             width,
             height,
             character_id: drawn.map(|c| c.id),
+            photo: None,
         }))
     }
 
@@ -156,20 +169,47 @@ impl ChatEngine {
     /// whole draft (negative prompt and size too) is kept as its raw prompt, so "draw again" can
     /// repeat it exactly.
     pub fn add_picture(&self, conversation_id: Uuid, draft: &ImagePromptDraft, image: &GeneratedImage) -> Result<ChatMessage> {
-        let path = images::store_bytes(&self.inner.images_dir, &image.data, &image.mime_type)?;
-        let mut message = ChatMessage::new(conversation_id, MessageRole::Image, draft.prompt.trim());
-        message.speaker_character_id = draft.character_id;
-        message.raw_prompt_text = Some(serde_json::to_string(draft)?);
-        message.attachments = vec![MessageAttachment {
-            image_path: path.to_string_lossy().into_owned(),
-            mime_type: image.mime_type.clone(),
-            description: None,
-        }];
+        let mut message = picture_message(conversation_id, draft)?;
+        message.attachments = vec![self.store_picture(image)?];
         self.db().with(|c| {
             conversations::add_message(c, &message)?;
             Ok(())
         })?;
         Ok(message)
+    }
+
+    /// Keeps a story photo whose render failed in the chat, as a picture message with no picture, so
+    /// it can be drawn again in its place and the model still knows it was sent.
+    pub fn add_failed_photo(&self, conversation_id: Uuid, draft: &ImagePromptDraft) -> Result<ChatMessage> {
+        if draft.photo.is_none() {
+            return Err(Error::Other("Only a photo from the story is kept when it can't be drawn.".into()));
+        }
+        let message = picture_message(conversation_id, draft)?;
+        self.db().with(|c| {
+            conversations::add_message(c, &message)?;
+            Ok(())
+        })?;
+        Ok(message)
+    }
+
+    /// Puts a rendered picture into an existing picture message (one whose render had failed).
+    pub fn fill_picture(&self, message_id: Uuid, image: &GeneratedImage) -> Result<ChatMessage> {
+        let mut message = self
+            .db()
+            .with(|c| conversations::get_message(c, message_id))?
+            .filter(|m| m.role == MessageRole::Image)
+            .ok_or_else(|| Error::Other("That picture is gone.".into()))?;
+        let old = std::mem::replace(&mut message.attachments, vec![self.store_picture(image)?]);
+        self.db().with(|c| conversations::set_attachments(c, message_id, &message.attachments))?;
+        for attachment in &old {
+            images::delete_if_owned(&self.inner.images_dir, std::path::Path::new(&attachment.image_path));
+        }
+        Ok(message)
+    }
+
+    fn store_picture(&self, image: &GeneratedImage) -> Result<MessageAttachment> {
+        let path = images::store_bytes(&self.inner.images_dir, &image.data, &image.mime_type)?;
+        Ok(MessageAttachment { image_path: path.to_string_lossy().into_owned(), mime_type: image.mime_type.clone(), description: None })
     }
 
     /// Deletes a picture message and, when it lives in the app's own folder, its file.

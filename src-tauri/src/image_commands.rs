@@ -131,6 +131,7 @@ pub fn photo_draft_for(settings: &ImageGenSettings, character: Option<&Character
         width: settings.width,
         height: settings.height,
         character_id: character.map(|c| c.id),
+        photo: Some(description.trim().to_string()),
     }
 }
 
@@ -146,13 +147,15 @@ pub fn photo_draft(state: State<'_, AppState>, character_id: Option<Uuid>, descr
     Ok(photo_draft_for(&settings, character.as_ref(), &description))
 }
 
-/// Renders a (reviewed) draft and adds the picture to the chat. `None` when stopped.
+/// Renders a (reviewed) draft and adds the picture to the chat - or, with `into_message`, puts it
+/// into that picture message (a photo whose render had failed). `None` when stopped.
 #[tauri::command]
 pub async fn generate_image(
     state: State<'_, AppState>,
     jobs: State<'_, ImageJobs>,
     conversation_id: Uuid,
     draft: ImagePromptDraft,
+    into_message: Option<Uuid>,
 ) -> Result<Option<ChatMessage>> {
     if draft.prompt.trim().is_empty() {
         return Err(Error::Other("The picture prompt is empty.".into()));
@@ -166,7 +169,16 @@ pub async fn generate_image(
     let Some(image) = rendered? else {
         return Ok(None);
     };
-    state.engine.add_picture(conversation_id, &draft, &image).map(Some)
+    match into_message {
+        Some(id) => state.engine.fill_picture(id, &image).map(Some),
+        None => state.engine.add_picture(conversation_id, &draft, &image).map(Some),
+    }
+}
+
+/// Keeps a story photo that couldn't be drawn in the chat, to be drawn again from there.
+#[tauri::command]
+pub fn add_failed_photo(state: State<'_, AppState>, conversation_id: Uuid, draft: ImagePromptDraft) -> Result<ChatMessage> {
+    state.engine.add_failed_photo(conversation_id, &draft)
 }
 
 #[tauri::command]
@@ -293,6 +305,7 @@ mod tests {
             width: 1024,
             height: 1024,
             character_id: None,
+            photo: None,
         };
 
         let a = render_request(&settings, &draft);

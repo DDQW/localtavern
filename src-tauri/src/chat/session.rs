@@ -8,6 +8,7 @@ use uuid::Uuid;
 use super::presets;
 use crate::error::{Error, Result};
 use crate::models::{Character, ChatMessage, Conversation, ConversationMode, GroupChat, MessageRole, Persona, PromptPreset};
+use crate::prompting::photo_tag;
 use crate::repo::{characters, conversations, group_chats, lorebooks, personas, summaries, user_memories};
 use crate::settings;
 
@@ -264,11 +265,20 @@ fn load_cast(conn: &Connection, conversation: &Conversation, group: Option<&Grou
 }
 
 /// The conversation as the model sees it: every message except generated pictures, which are only
-/// for the user to look at (and would otherwise be re-uploaded to vision models on every turn).
+/// for the user to look at (and would otherwise be re-uploaded to vision models on every turn). A
+/// photo sent or taken in the story stays, as a note of what it showed: drawn or not, it happened.
 pub fn chat_history(conn: &Connection, conversation_id: Uuid) -> Result<Vec<ChatMessage>> {
-    let mut messages = conversations::get_messages(conn, conversation_id)?;
-    messages.retain(|m| m.role != MessageRole::Image);
-    Ok(messages)
+    let messages = conversations::get_messages(conn, conversation_id)?;
+    Ok(messages.into_iter().filter_map(|m| if m.role == MessageRole::Image { photo_note(m) } else { Some(m) }).collect())
+}
+
+/// A story photo's picture message as the system note the model gets instead; `None` for any other picture.
+fn photo_note(picture: ChatMessage) -> Option<ChatMessage> {
+    let draft: super::ImagePromptDraft = serde_json::from_str(picture.raw_prompt_text.as_deref()?).ok()?;
+    let mut note = ChatMessage::new(picture.conversation_id, MessageRole::System, photo_tag::context_note(&draft.photo?));
+    note.id = picture.id;
+    note.timestamp = picture.timestamp;
+    Some(note)
 }
 
 pub fn build_session(conn: &Connection, provider_ids: &[String], conversation_id: Uuid) -> Result<ChatSession> {
