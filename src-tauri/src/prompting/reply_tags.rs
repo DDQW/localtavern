@@ -15,7 +15,7 @@ use super::{breakout, emotion_tag, next_speaker_tag, photo_tag, time_skip_tag};
 /// A `[...]` tag may hold parentheses (photo descriptions do, SD weights like `(red hair:1.2)` too);
 /// a `(...)` one may not. Either may close with the other bracket.
 static TAIL: LazyLock<Regex> = LazyLock::new(|| {
-    const KEYS: &str = r"\s*(?:(?:time[-_ ]?(?:skip|jump|passed|elapsed)|emotion|meters?|photo|picture|image|selfie|next(?:[-_ ]?(?:speaker|up))?)\s*[:=]|private\b)";
+    const KEYS: &str = r"\s*(?:(?:time[-_ ]?(?:skip|jump|passed|elapsed)|emotion|meters?|photo|picture|image|selfie|user[-_ ]?(?:photo|picture|pic)|next(?:[-_ ]?(?:speaker|up))?)\s*[:=]|private\b)";
     Regex::new(&format!(r"(?i)(?:[\s*_`]*(?:\[{KEYS}[^\[\]]*|\({KEYS}[^\])]*)[\])])+[\s*_`]*$")).unwrap()
 });
 
@@ -27,6 +27,8 @@ pub struct ReplyTags {
     pub meters: Option<MeterReading>,
     /// What a photo the character sent in the story shows, for the app to draw.
     pub photo: Option<String>,
+    /// What a photo the user's character took in their message shows, for the app to draw.
+    pub user_photo: Option<String>,
     /// The group member this reply hands the user's message on to, as the model wrote the name.
     pub next: Option<String>,
     /// The speaker takes the user aside into a private talk (group chats).
@@ -44,6 +46,7 @@ pub fn peel(text: &str) -> (String, ReplyTags) {
         emotion: emotion_tag::parse_tail(tail),
         meters: meter_tag::parse_tail(tail),
         photo: photo_tag::parse_tail(tail),
+        user_photo: photo_tag::parse_user_tail(tail),
         next: next_speaker_tag::parse_tail(tail),
         private: breakout::parse_tail(tail),
     };
@@ -110,6 +113,14 @@ mod tests {
         assert_eq!(tags.next.as_deref(), Some("Bob"));
         assert_eq!(tags.emotion.as_deref(), Some("happy"));
         assert_eq!(peel("Just me. [emotion: sad]").1.next, None);
+    }
+
+    #[test]
+    fn peels_the_users_photo_apart_from_the_characters() {
+        let (clean, tags) = peel("Nova grins at your camera.\n\n[user-photo: Nova grinning on the pier]\n[photo: selfie of Nova]");
+        assert_eq!(clean, "Nova grins at your camera.");
+        assert_eq!(tags.user_photo.as_deref(), Some("Nova grinning on the pier"));
+        assert_eq!(tags.photo.as_deref(), Some("selfie of Nova"));
     }
 
     #[test]

@@ -185,7 +185,7 @@ fn birthday_in(born: NaiveDate, year: i32) -> NaiveDate {
 }
 
 /// Completed years on `today`, or `None` when `today` is before the birth date.
-fn age_on(born: NaiveDate, today: NaiveDate) -> Option<i32> {
+pub fn age_on(born: NaiveDate, today: NaiveDate) -> Option<i32> {
     if today < born {
         return None;
     }

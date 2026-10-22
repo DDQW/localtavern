@@ -1538,7 +1538,15 @@ present, keep it as its own final paragraph, still naming whose details they are
                 && self.db().with(crate::imagegen::settings::load)?.auto_photos
             {
                 let user = roles::user_name(ctx.persona.as_ref());
-                append_instruction(&mut request, &photo_tag::build_instruction(&character.name, user));
+                // Intimate photos only for a character the story doesn't make a minor.
+                let today = conversation.world_state.as_ref().map_or_else(|| Utc::now().date_naive(), |w| w.fictional_date_time.date());
+                let minor = character.birth_date.is_some_and(|born| world_state::age_on(born, today).is_none_or(|age| age < 18));
+                append_instruction(&mut request, &photo_tag::build_instruction(&character.name, user, !minor));
+                // The user's character may be taking a photo of their own: the reply describes it.
+                let latest = history.iter().rev().find(|m| m.role == MessageRole::User).map(|m| m.text.as_str());
+                if latest.is_some_and(photo_tag::mentions_a_photo) {
+                    append_instruction(&mut request, &photo_tag::user_photo_instruction(user));
+                }
             }
         }
         // The picture rides on the user's turn, but the system notes after it come last and the model
@@ -1710,12 +1718,22 @@ present, keep it as its own final paragraph, still naming whose details they are
         Ok((clean, tags, Some(report)))
     }
 
-    /// A `[photo: ...]` description to announce, when Settings ask for photos to be drawn.
-    fn photo_to_draw(&self, photo: Option<String>) -> Result<Option<String>> {
-        match photo {
-            Some(description) if self.db().with(crate::imagegen::settings::load)?.auto_photos => Ok(Some(description)),
-            _ => Ok(None),
+    /// The photos a reply's tags ask the app to draw, when Settings ask for that: one the user's
+    /// character took in their message (with the look of whichever character it names), and one
+    /// the speaker sent. Each is (whose look to use, description).
+    fn photos_to_draw(&self, ctx: &ReplyContext, tags: &ReplyTags, speaker_id: Option<Uuid>) -> Result<Vec<(Option<Uuid>, String)>> {
+        if !self.db().with(crate::imagegen::settings::load)?.auto_photos {
+            return Ok(Vec::new());
         }
+        let mut photos = Vec::new();
+        if let Some(description) = &tags.user_photo {
+            let names: Vec<(Uuid, &str)> = ctx.characters.iter().map(|c| (c.id, c.name.as_str())).collect();
+            photos.push((photo_tag::first_named(description, &names), description.clone()));
+        }
+        if let Some(description) = &tags.photo {
+            photos.push((speaker_id, description.clone()));
+        }
+        Ok(photos)
     }
 
     fn emit_failure(&self, error: &ProviderError, sink: &Arc<dyn EventSink>) {
@@ -1796,13 +1814,13 @@ present, keep it as its own final paragraph, still naming whose details they are
         let StreamResult { text, shown_text, reasoning, usage, images: generated, end } = result;
 
         let succeeded = matches!(end, StreamEnd::Completed);
-        let mut photo = None;
+        let mut photos = Vec::new();
         let mut next = None;
         let mut private = false;
         if succeeded {
             message.usage = usage;
             let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, true, sink)?;
-            photo = self.photo_to_draw(tags.photo.clone())?;
+            photos = self.photos_to_draw(&ctx, &tags, speaker_id)?;
             next = tags.next.as_deref().and_then(|name| next_speaker_tag::resolve(name, &others));
             private = offer_private && tags.private;
             message.text = match &cut {
@@ -1830,13 +1848,8 @@ present, keep it as its own final paragraph, still naming whose details they are
             message.finalize_generation();
             self.db().with(|c| conversations::add_message(c, &message))?;
             sink.emit(ChatEvent::MessageUpdated { message: message.clone() });
-            if let Some(description) = photo {
-                sink.emit(ChatEvent::PhotoSent {
-                    conversation_id,
-                    message_id: message.id,
-                    character_id: speaker_id,
-                    description,
-                });
+            for (character_id, description) in photos {
+                sink.emit(ChatEvent::PhotoSent { conversation_id, message_id: message.id, character_id, description });
             }
         }
 
@@ -2006,11 +2019,11 @@ present, keep it as its own final paragraph, still naming whose details they are
 
         let succeeded = matches!(end, StreamEnd::Completed);
         let reasoning = nonempty(reasoning);
-        let mut photo = None;
+        let mut photos = Vec::new();
         if succeeded {
             target.usage = usage;
             let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, moves_clock, &sink)?;
-            photo = self.photo_to_draw(tags.photo.clone())?;
+            photos = self.photos_to_draw(&ctx, &tags, target.speaker_character_id)?;
             let clean = match &cut {
                 Some(cut) => cut.apply(&clean),
                 None => clean,
@@ -2032,16 +2045,10 @@ present, keep it as its own final paragraph, still naming whose details they are
         self.db().with(|c| conversations::update_message(c, &target))?;
         let reply_text = target.text.clone();
         let target_id = target.id;
-        let photographer = target.speaker_character_id;
         // Also restores the original text on the UI when nothing new arrived.
         sink.emit(ChatEvent::MessageUpdated { message: target });
-        if let Some(description) = photo {
-            sink.emit(ChatEvent::PhotoSent {
-                conversation_id: ctx.conversation.id,
-                message_id: target_id,
-                character_id: photographer,
-                description,
-            });
+        for (character_id, description) in photos {
+            sink.emit(ChatEvent::PhotoSent { conversation_id: ctx.conversation.id, message_id: target_id, character_id, description });
         }
 
         match end {

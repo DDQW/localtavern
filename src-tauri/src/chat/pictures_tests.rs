@@ -291,8 +291,68 @@ async fn no_photo_instruction_or_event_when_auto_photos_are_off() {
     let (result, events) = send(&f, conv, "hi").await;
     result.unwrap();
     let system = f.provider.requests()[0].system_instruction.clone().unwrap_or_default();
-    assert!(!system.contains("sends User a photo"), "{system}");
+    assert!(!system.contains("photos whenever") && !system.contains("[photo:"), "{system}");
     assert!(!events.iter().any(|e| matches!(e, ChatEvent::PhotoSent { .. })), "nothing to draw");
     let reply = messages(&f, conv).into_iter().find(|m| m.role == MessageRole::Character).unwrap();
     assert_eq!(reply.text, "Here.", "a stray tag is still kept out of the story");
+}
+
+fn photos_sent(events: &[ChatEvent]) -> Vec<(Option<Uuid>, String)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            ChatEvent::PhotoSent { character_id, description, .. } => Some((*character_id, description.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_photo_the_user_takes_is_described_by_the_reply_and_drawn() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("\"Nice shot!\"\n\n[user-photo: the harbour at dusk, gulls over the water]"), finish("STOP")]),
+        Script::Items(vec![chunk("Nova laughs.\n[user-photo: Nova laughing on the pier, wind in her hair]"), finish("STOP")]),
+        Script::Items(vec![chunk("\"Lovely evening.\""), finish("STOP")]),
+    ]);
+    let conv = ready_roleplay(&f);
+    let nova = f.engine.resume(conv).unwrap().characters[0].id;
+
+    // A photo of something else: drawn without anyone's look.
+    let (_, events) = send(&f, conv, "*Soso decides to make a picture of the harbour*").await;
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap();
+    assert!(system.contains("If User takes a photo or picture in User's latest message, also describe that photo"), "{system}");
+    assert_eq!(photos_sent(&events), [(None, "the harbour at dusk, gulls over the water".to_string())]);
+    assert_eq!(messages(&f, conv)[1].text, "\"Nice shot!\"");
+
+    // A photo of the character: drawn with her look.
+    let (_, events) = send(&f, conv, "*snaps a photo of Nova*").await;
+    assert_eq!(photos_sent(&events), [(Some(nova), "Nova laughing on the pier, wind in her hair".to_string())]);
+
+    // No photo words, no extra instruction.
+    send(&f, conv, "What a view.").await.0.unwrap();
+    assert!(!f.provider.requests()[2].system_instruction.clone().unwrap().contains("[user-photo:"));
+}
+
+#[tokio::test]
+async fn intimate_photos_are_offered_only_for_characters_who_arent_minors() {
+    use chrono::Datelike;
+    let f = fixture(vec![
+        Script::Items(vec![chunk("hi"), finish("STOP")]),
+        Script::Items(vec![chunk("hi"), finish("STOP")]),
+    ]);
+    let conv = ready_roleplay(&f);
+    let mut nova = f.engine.resume(conv).unwrap().characters[0].clone();
+    let story_date = world(&f, conv).unwrap().fictional_date_time.date();
+
+    nova.birth_date = story_date.with_year(story_date.year() - 25);
+    f.db.with(|c| characters::upsert(c, &nova)).unwrap();
+    send(&f, conv, "hey").await.0.unwrap();
+    assert!(f.provider.requests()[0].system_instruction.clone().unwrap().contains("suggestive or nude photos of Nova"));
+
+    nova.birth_date = story_date.with_year(story_date.year() - 16);
+    f.db.with(|c| characters::upsert(c, &nova)).unwrap();
+    send(&f, conv, "hey").await.0.unwrap();
+    let system = f.provider.requests()[1].system_instruction.clone().unwrap();
+    assert!(!system.contains("nude") && !system.contains("intimate"), "never for a minor: {system}");
+    assert!(system.contains("Nova sends User photos whenever a real person would"), "ordinary photos still: {system}");
 }
