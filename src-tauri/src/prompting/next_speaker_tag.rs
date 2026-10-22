@@ -6,18 +6,14 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use super::instructions::{self, Instructions};
 use super::roles::join_names;
 
 /// One line for the system instruction. `others` are the members who may still answer the user's
 /// latest message. Leaving the tag out is the default, so a plain exchange stays one reply.
-pub fn build_instruction(speaker: &str, others: &[&str], user: &str) -> String {
-    let names = join_names(others, "or");
-    format!(
-        "Several members may answer the same message of {user}'s. Leave it at {speaker}'s reply when that answers the moment. Only when {names} \
-would naturally speak up right after it (they were addressed too, have a strong reaction, or {speaker}'s reply calls for one), end the \
-reply with one last line in exactly this form, square brackets included: [next: <name>], naming exactly one of {names}. Never write \
-that reply yourself: they answer in their own turn."
-    )
+pub fn build_instruction(ins: &Instructions, speaker: &str, others: &[&str], user: &str) -> String {
+    let others = join_names(others, "or");
+    ins.render(instructions::NEXT_SPEAKER, &[("char", speaker), ("user", user), ("others", &others)])
 }
 
 /// `[next: ...]` / `(next speaker = ...)` and the like, anywhere in `tail`.
@@ -51,7 +47,7 @@ mod tests {
 
     #[test]
     fn instruction_names_the_speaker_the_candidates_and_the_format() {
-        let line = build_instruction("Alice", &["Bob", "Cara"], "Alex");
+        let line = build_instruction(&Instructions::default(), "Alice", &["Bob", "Cara"], "Alex");
         assert!(line.starts_with("Several members may answer the same message of Alex's. Leave it at Alice's reply"), "{line}");
         assert!(line.contains("Only when Bob or Cara would naturally speak up"), "{line}");
         assert!(line.contains("square brackets included: [next: <name>], naming exactly one of Bob or Cara."), "{line}");

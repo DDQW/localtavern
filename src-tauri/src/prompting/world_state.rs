@@ -1,5 +1,6 @@
 use chrono::{Datelike, NaiveDate, Weekday};
 
+use super::instructions::{self, Instructions};
 use crate::holidays::{DatedHoliday, SchoolBreak};
 use crate::models::{DayKind, DayPlan, Meter, Schedule, WorldState};
 
@@ -30,35 +31,29 @@ pub struct WorldFacts<'a> {
 /// the clock and weather, then where the story is set and what kind of day it is (weekday,
 /// weekend, public holiday, upcoming holidays), what each character's routine has them doing, and
 /// birthdays with ages as of the in-story date.
-pub fn format(state: &WorldState, facts: &WorldFacts) -> String {
+pub fn format(ins: &Instructions, state: &WorldState, facts: &WorldFacts) -> String {
     let weather = match state.weather_notes.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
         Some(notes) => format!("{} ({notes})", state.weather.name()),
         None => state.weather.name().to_string(),
     };
     // en-US long format, e.g. "Saturday, June 14, 2025 3:45 PM"
     let when = state.fictional_date_time.format("%A, %B %-d, %Y %-I:%M %p");
-    let mut lines = vec![format!(
-        "Current in-story date/time: {when}. Current weather: {weather}. \
-Keep the narration consistent with this date/time and weather unless the story explicitly changes it."
-    )];
+    let mut lines = vec![ins.render(instructions::WORLD_NOW, &[("when", &when.to_string()), ("weather", &weather)])];
     let today = state.fictional_date_time.date();
 
     if let Some(place) = facts.place.as_deref() {
-        lines.push(format!("The story is set in {place}."));
+        lines.push(ins.render(instructions::WORLD_PLACE, &[("place", place)]));
     }
     let day_off_on = |date: NaiveDate| facts.holidays.iter().any(|h| h.date == date && h.day_off);
     let todays: Vec<&DatedHoliday> = facts.holidays.iter().filter(|h| h.date == today).collect();
     if !todays.is_empty() {
         let names = todays.iter().map(|h| h.name.as_str()).collect::<Vec<_>>().join(" / ");
-        lines.push(if day_off_on(today) {
-            format!("Today is a public holiday: {names}. Most people have the day off.")
-        } else {
-            format!("Today is {names} (not a day off).")
-        });
+        let key = if day_off_on(today) { instructions::WORLD_HOLIDAY } else { instructions::WORLD_OBSERVANCE };
+        lines.push(ins.render(key, &[("names", &names)]));
     } else if matches!(today.weekday(), Weekday::Sat | Weekday::Sun) {
-        lines.push("It is the weekend.".into());
+        lines.push(ins.render(instructions::WORLD_WEEKEND, &[]));
     } else if facts.place.is_some() || !facts.schedules.is_empty() {
-        lines.push("It is a regular weekday.".into());
+        lines.push(ins.render(instructions::WORLD_WEEKDAY, &[]));
     }
     let upcoming: Vec<String> = facts
         .holidays
@@ -68,23 +63,16 @@ Keep the narration consistent with this date/time and weather unless the story e
         .map(|h| format!("{} ({})", h.name, h.date.format("%A, %B %-d")))
         .collect();
     if !upcoming.is_empty() {
-        lines.push(format!("Upcoming holidays: {}.", upcoming.join("; ")));
+        lines.push(ins.render(instructions::WORLD_UPCOMING, &[("list", &upcoming.join("; "))]));
     }
 
     let school_out = facts.school.iter().find(|b| b.covers(today));
     if let Some(b) = school_out {
-        lines.push(format!(
-            "School holidays: {} until {}. Schools are closed; students are free and school-day routines do not apply.",
-            b.name,
-            b.end.format("%A, %B %-d")
-        ));
+        let end = b.end.format("%A, %B %-d").to_string();
+        lines.push(ins.render(instructions::WORLD_SCHOOL_OUT, &[("name", &b.name), ("end", &end)]));
     } else if let Some(b) = facts.school.iter().find(|b| b.start > today) {
-        lines.push(format!(
-            "School holidays start soon: {} from {} to {}.",
-            b.name,
-            b.start.format("%A, %B %-d"),
-            b.end.format("%B %-d")
-        ));
+        let (start, end) = (b.start.format("%A, %B %-d").to_string(), b.end.format("%B %-d").to_string());
+        lines.push(ins.render(instructions::WORLD_SCHOOL_SOON, &[("name", &b.name), ("start", &start), ("end", &end)]));
     }
 
     let routines: Vec<String> = facts
@@ -94,10 +82,7 @@ Keep the narration consistent with this date/time and weather unless the story e
         .map(|&(name, schedule)| routine_line(name.trim(), schedule, state, &day_off_on, school_out.is_some()))
         .collect();
     if !routines.is_empty() {
-        lines.push(format!(
-            "Daily routines (where each character's schedule has them right now; the story may override it): {}",
-            routines.join(" ")
-        ));
+        lines.push(ins.render(instructions::WORLD_ROUTINES, &[("list", &routines.join(" "))]));
     }
 
     let meters: Vec<String> = facts
@@ -107,7 +92,7 @@ Keep the narration consistent with this date/time and weather unless the story e
         .map(|(name, m)| format!("{} - arousal {}/100, climax {}/100 (climaxed {}x so far).", name.trim(), m.arousal, m.climax, m.orgasms))
         .collect();
     if !meters.is_empty() {
-        lines.push(format!("Arousal meters (kept by the story; continue from these): {}", meters.join(" ")));
+        lines.push(ins.render(instructions::WORLD_METERS, &[("list", &meters.join(" "))]));
     }
 
     let birthdays: Vec<String> = facts
@@ -117,7 +102,7 @@ Keep the narration consistent with this date/time and weather unless the story e
         .map(|&(name, born)| birthday_line(name.trim(), born, today))
         .collect();
     if !birthdays.is_empty() {
-        lines.push(format!("Birthdays: {}", birthdays.join(" ")));
+        lines.push(ins.render(instructions::WORLD_BIRTHDAYS, &[("list", &birthdays.join(" "))]));
     }
     lines.join("\n")
 }
@@ -200,7 +185,7 @@ mod tests {
     use chrono::NaiveDate;
 
     fn format_plain(state: &WorldState) -> String {
-        format(state, &WorldFacts::default())
+        format(instructions::defaults(), state, &WorldFacts::default())
     }
 
     fn born<'a>(list: &[(&'a str, NaiveDate)]) -> WorldFacts<'a> {
@@ -256,45 +241,45 @@ mod tests {
 
     #[test]
     fn no_birthdays_means_no_birthday_line() {
-        assert!(!format(&on(2025, 6, 1), &WorldFacts::default()).contains("Birthdays"));
+        assert!(!format(instructions::defaults(), &on(2025, 6, 1), &WorldFacts::default()).contains("Birthdays"));
     }
 
     #[test]
     fn gives_age_as_of_the_story_date() {
-        let text = format(&on(2025, 6, 1), &born(&[("Mira", date(2001, 3, 3)), ("Alex", date(2000, 12, 24))]));
+        let text = format(instructions::defaults(), &on(2025, 6, 1), &born(&[("Mira", date(2001, 3, 3)), ("Alex", date(2000, 12, 24))]));
         assert!(text.ends_with("
 Birthdays: Mira was born March 3, 2001 (24 years old). Alex was born December 24, 2000 (24 years old)."), "{text}");
     }
 
     #[test]
     fn announces_the_birthday_itself() {
-        let text = format(&on(2025, 3, 3), &born(&[("Mira", date(2001, 3, 3))]));
+        let text = format(instructions::defaults(), &on(2025, 3, 3), &born(&[("Mira", date(2001, 3, 3))]));
         assert!(text.contains("Mira was born March 3, 2001 (24 years old). Today is Mira's birthday (Mira turns 24)."), "{text}");
     }
 
     #[test]
     fn announces_tomorrow_and_the_coming_week_but_not_later() {
-        assert!(format(&on(2025, 3, 2), &born(&[("Mira", date(2001, 3, 3))])).contains("Mira's birthday is tomorrow (Mira turns 24)."));
-        assert!(format(&on(2025, 2, 28), &born(&[("Mira", date(2001, 3, 3))])).contains("Mira's birthday is in 3 days (Mira turns 24)."));
-        assert!(!format(&on(2025, 2, 20), &born(&[("Mira", date(2001, 3, 3))])).contains("birthday is"));
+        assert!(format(instructions::defaults(), &on(2025, 3, 2), &born(&[("Mira", date(2001, 3, 3))])).contains("Mira's birthday is tomorrow (Mira turns 24)."));
+        assert!(format(instructions::defaults(), &on(2025, 2, 28), &born(&[("Mira", date(2001, 3, 3))])).contains("Mira's birthday is in 3 days (Mira turns 24)."));
+        assert!(!format(instructions::defaults(), &on(2025, 2, 20), &born(&[("Mira", date(2001, 3, 3))])).contains("birthday is"));
     }
 
     #[test]
     fn upcoming_birthday_across_new_year() {
-        let text = format(&on(2025, 12, 30), &born(&[("Noel", date(1990, 1, 2))]));
+        let text = format(instructions::defaults(), &on(2025, 12, 30), &born(&[("Noel", date(1990, 1, 2))]));
         assert!(text.contains("Noel was born January 2, 1990 (35 years old). Noel's birthday is in 3 days (Noel turns 36)."), "{text}");
     }
 
     #[test]
     fn leap_day_birthdays_are_celebrated_on_february_28() {
-        let text = format(&on(2025, 2, 28), &born(&[("Leo", date(2004, 2, 29))]));
+        let text = format(instructions::defaults(), &on(2025, 2, 28), &born(&[("Leo", date(2004, 2, 29))]));
         assert!(text.contains("(21 years old). Today is Leo's birthday (Leo turns 21)."), "{text}");
-        assert!(format(&on(2024, 2, 29), &born(&[("Leo", date(2004, 2, 29))])).contains("Today is Leo's birthday (Leo turns 20)."));
+        assert!(format(instructions::defaults(), &on(2024, 2, 29), &born(&[("Leo", date(2004, 2, 29))])).contains("Today is Leo's birthday (Leo turns 20)."));
     }
 
     #[test]
     fn birth_after_the_story_date_gives_only_the_day() {
-        let text = format(&on(1250, 3, 1), &born(&[("Mira", date(2001, 3, 3))]));
+        let text = format(instructions::defaults(), &on(1250, 3, 1), &born(&[("Mira", date(2001, 3, 3))]));
         assert!(text.contains("Mira's birthday is March 3. Mira's birthday is in 2 days."), "{text}");
         assert!(!text.contains("years old"), "{text}");
     }
@@ -333,7 +318,7 @@ Birthdays: Mira was born March 3, 2001 (24 years old). Alex was born December 24
             schedules: vec![("Mira", &schedule)],
             ..Default::default()
         };
-        let text = format(&on(2025, 6, 2), &facts); // Monday 09:00
+        let text = format(instructions::defaults(), &on(2025, 6, 2), &facts); // Monday 09:00
         assert!(text.contains("\nThe story is set in Germany (DE-BY).\nIt is a regular weekday."), "{text}");
         assert!(text.contains("Mira - workday; now: work until 16:00; next: gym at 18:00."), "{text}");
     }
@@ -342,7 +327,7 @@ Birthdays: Mira was born March 3, 2001 (24 years old). Alex was born December 24
     fn weekends_and_free_time() {
         let schedule = worker();
         let facts = WorldFacts { schedules: vec![("Mira", &schedule)], ..Default::default() };
-        let text = format(&on(2025, 6, 7), &facts); // Saturday
+        let text = format(instructions::defaults(), &on(2025, 6, 7), &facts); // Saturday
         assert!(text.contains("It is the weekend."), "{text}");
         assert!(text.contains("Mira - day off; now: free time."), "{text}");
     }
@@ -360,13 +345,13 @@ Birthdays: Mira was born March 3, 2001 (24 years old). Alex was born December 24
             schedules: vec![("Mira", &schedule)],
             ..Default::default()
         };
-        let text = format(&on(2025, 12, 25), &facts); // Thursday 09:00
+        let text = format(instructions::defaults(), &on(2025, 12, 25), &facts); // Thursday 09:00
         assert!(text.contains("Today is a public holiday: Christmas Day. Most people have the day off."), "{text}");
         assert!(text.contains("Upcoming holidays: St. Stephen's Day (Friday, December 26); New Year's Eve (Wednesday, December 31)."), "{text}");
         assert!(!text.contains("Too far"), "{text}");
         assert!(text.contains("Mira - holiday; now: brunch until 11:00."), "{text}");
 
-        let eve = format(&on(2025, 12, 31), &facts);
+        let eve = format(instructions::defaults(), &on(2025, 12, 31), &facts);
         assert!(eve.contains("Today is New Year's Eve (not a day off)."), "{eve}");
         assert!(eve.contains("Mira - workday; now: work"), "{eve}");
     }

@@ -4,6 +4,8 @@
 
 import type { Api, EventHandler } from "./api";
 import type {
+  InstructionInfo,
+  Instructions,
   Character,
   ChatMessage,
   ChatSession,
@@ -1039,6 +1041,17 @@ You are the character. (Mock prompt for message ${messageId}.)
     groups.splice(groups.findIndex((g) => g.id === id), 1);
   },
 
+  async getInstructions() {
+    return { instructions: structuredClone(instructions), defaults: INSTRUCTION_DEFAULTS };
+  },
+  async saveInstructions(next) {
+    instructions = structuredClone(next);
+    for (const info of INSTRUCTION_DEFAULTS) {
+      const text = instructions.texts[info.key];
+      if (text !== undefined && (!text.trim() || text.trim() === info.default.trim())) delete instructions.texts[info.key];
+    }
+    return structuredClone(instructions);
+  },
   async getImageSettings() {
     return structuredClone(imageSettings);
   },
@@ -1173,6 +1186,40 @@ You are the character. (Mock prompt for message ${messageId}.)
       if (i >= 0) list.splice(i, 1);
     }
   },
+};
+
+// A few of the real built-in texts, enough to try the Settings section.
+const INSTRUCTION_DEFAULTS: InstructionInfo[] = [
+  {
+    key: "photo",
+    group: "Photos",
+    title: "Characters send photos",
+    help: "Every roleplay reply, while \"Draw the photos characters send\" is on in the picture settings.",
+    placeholders: ["{char}", "{user}"],
+    default: "{char} sends {user} photos whenever a real person would: a selfie to show how {char} looks … [photo: <what the photo shows>]",
+  },
+  {
+    key: "private",
+    group: "Group chats",
+    title: "Taking you aside (group chats)",
+    help: "Every new group reply, in groups with private talks on.",
+    placeholders: ["{char}", "{user}"],
+    default: "{char} can take {user} aside whenever that would come naturally … [private]",
+  },
+];
+INSTRUCTION_DEFAULTS.unshift({
+  key: "systemNote",
+  group: "Roleplay rules",
+  title: "System note wrapper",
+  help: "Wraps everything the app slips into the history as a user-role turn.",
+  placeholders: ["{text}"],
+  default: "[System note: {text}]",
+});
+let instructions: Instructions = {
+  texts: {},
+  userPhotos: true,
+  intimatePhotos: true,
+  photoWords: ["photo", "picture", "pic", "selfie", "snapshot", "snap", "camera"],
 };
 
 let imageSettings: ImageGenSettings = {

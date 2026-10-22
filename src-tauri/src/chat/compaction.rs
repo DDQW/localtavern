@@ -7,6 +7,7 @@
 
 use serde::Serialize;
 
+use crate::prompting::instructions::{self, Instructions};
 use crate::llm::LlmRequest;
 use crate::models::{Character, ChatMessage, ConversationSummary, MessageRole};
 
@@ -149,9 +150,9 @@ pub fn summary_prompt(previous: Option<&str>, transcript: &str, names: &Names) -
 }
 
 /// The block that stands in for the summarized messages, appended to the system instruction.
-pub fn summary_instruction(summary: &str, roleplay: bool) -> String {
-    let label = if roleplay { "The story so far" } else { "Summary of the earlier conversation" };
-    format!("{label} (older messages are no longer shown; this summary replaces them):\n{}", summary.trim())
+pub fn summary_instruction(ins: &Instructions, summary: &str, roleplay: bool) -> String {
+    let key = if roleplay { instructions::SUMMARY_STORY } else { instructions::SUMMARY_ASSISTANT };
+    ins.render(key, &[("summary", summary.trim())])
 }
 
 #[cfg(test)]

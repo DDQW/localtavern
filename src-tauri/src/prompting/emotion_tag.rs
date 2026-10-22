@@ -5,17 +5,15 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use super::instructions::{self, Instructions};
+
 static TAG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\s*\[\s*emotion\s*:\s*([a-zA-Z0-9_\- ]+?)\s*\]\s*$").unwrap());
 
 /// One line to append to the system instruction, naming the character's configured emotion keys so
 /// the model picks from that exact set.
-pub fn build_instruction(character_name: &str, emotion_keys: &[String]) -> String {
-    let keys = emotion_keys.join(", ");
-    format!(
-        "At the very end of every reply, on its own, append a tag naming the single emotion {character_name} feels while saying it, chosen from exactly this list: {keys}. \
-Format: [emotion: <one of the list above>]. Always include it, never explain it."
-    )
+pub fn build_instruction(ins: &Instructions, character_name: &str, emotion_keys: &[String]) -> String {
+    ins.render(instructions::EMOTION_TAG, &[("char", character_name), ("emotions", &emotion_keys.join(", "))])
 }
 
 static ANY: LazyLock<Regex> =
@@ -70,7 +68,7 @@ mod tests {
 
     #[test]
     fn instruction_names_the_character_and_lists_keys() {
-        let instruction = build_instruction("Trinity", &["happy".into(), "sad".into()]);
+        let instruction = build_instruction(instructions::defaults(), "Trinity", &["happy".into(), "sad".into()]);
         assert!(instruction.contains("Trinity"));
         assert!(instruction.contains("happy, sad"));
         assert!(instruction.contains("[emotion:"));

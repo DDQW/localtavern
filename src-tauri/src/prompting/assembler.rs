@@ -14,7 +14,8 @@ use crate::models::{
 };
 
 use super::context::PromptAssemblyContext;
-use super::roles::{join_names, picture_note, system_note, user_name};
+use super::instructions::{self, Instructions};
+use super::roles::{join_names, picture_note, user_name};
 use super::world_info::{WorldInfoMatch, WorldInfoScanner};
 
 pub fn assemble(ctx: &PromptAssemblyContext, scanner: &dyn WorldInfoScanner) -> LlmRequest {
@@ -43,7 +44,7 @@ pub fn assemble(ctx: &PromptAssemblyContext, scanner: &dyn WorldInfoScanner) -> 
             PromptBlockType::ChatHistory => {
                 history_seen = true;
                 history = build_history(ctx, &macros);
-                inject_world_info_at_depth(&mut history, &matches, &macros);
+                inject_world_info_at_depth(ctx, &mut history, &matches, &macros);
                 continue;
             }
             PromptBlockType::WorldInfo => continue,
@@ -84,7 +85,7 @@ pub fn assemble(ctx: &PromptAssemblyContext, scanner: &dyn WorldInfoScanner) -> 
             continue;
         }
         let index = history.len().saturating_sub(block.injection_depth.max(0) as usize);
-        history.insert(index, LlmMessage::new(LlmRole::User, system_note(&text)));
+        history.insert(index, LlmMessage::new(LlmRole::User, ctx.instructions.note(&text)));
     }
 
     let preset = ctx.preset;
@@ -126,7 +127,7 @@ fn add_world_info_parts(
 /// Injects AtDepth matches into the message history as synthetic user messages (system notes).
 /// Entries sharing a depth are merged into one message so they keep scanner priority order; deeper
 /// groups are injected first so shallower groups stay closer to the end.
-fn inject_world_info_at_depth(history: &mut Vec<LlmMessage>, matches: &[WorldInfoMatch], macros: &Macros) {
+fn inject_world_info_at_depth(ctx: &PromptAssemblyContext, history: &mut Vec<LlmMessage>, matches: &[WorldInfoMatch], macros: &Macros) {
     let mut groups: BTreeMap<i32, Vec<&WorldInfoMatch>> = BTreeMap::new();
     for m in matches.iter().filter(|m| m.position == WorldInfoPosition::AtDepth) {
         groups.entry(m.depth).or_default().push(m);
@@ -141,7 +142,7 @@ fn inject_world_info_at_depth(history: &mut Vec<LlmMessage>, matches: &[WorldInf
             .join("\n");
         if !text.trim().is_empty() {
             let index = history.len().saturating_sub(depth.max(0) as usize);
-            history.insert(index, LlmMessage::new(LlmRole::User, system_note(&text)));
+            history.insert(index, LlmMessage::new(LlmRole::User, ctx.instructions.note(&text)));
         }
     }
 }
@@ -166,7 +167,7 @@ fn build_history(ctx: &PromptAssemblyContext, macros: &Macros) -> Vec<LlmMessage
             };
             let mut text = macros.fill(message.effective_text());
             if message.role == MessageRole::System {
-                text = system_note(&text);
+                text = ctx.instructions.note(&text);
             }
 
             if prefix_speaker && message.role == MessageRole::Character {
@@ -186,7 +187,7 @@ fn build_history(ctx: &PromptAssemblyContext, macros: &Macros) -> Vec<LlmMessage
             let attachments = if message.attachments.is_empty() {
                 None
             } else if let Some(descriptions) = descriptions.filter(|_| described) {
-                text = format!("{}\n\n{}", text.trim_end(), picture_note(&descriptions)).trim_start().to_string();
+                text = format!("{}\n\n{}", text.trim_end(), picture_note(ctx.instructions, &descriptions)).trim_start().to_string();
                 None
             } else {
                 Some(
@@ -246,20 +247,20 @@ fn resolve_block_text(block: &PromptBlock, ctx: &PromptAssemblyContext, macros: 
                 custom.unwrap_or_default().to_string()
             }
         }
-        PromptBlockType::PersonaDescription => resolve_persona_description(ctx.persona),
+        PromptBlockType::PersonaDescription => resolve_persona_description(ctx.instructions, ctx.persona),
         PromptBlockType::CharacterDescription => {
-            join_per_character(ctx.characters, macros, description_with_personality, "description")
+            join_per_character(ctx.instructions, ctx.characters, macros, |c| description_with_personality(ctx.instructions, c), "description")
         }
         PromptBlockType::Scenario => match ctx.scenario {
             Some(scenario) => scenario.trim().to_string(),
-            None => join_per_character(ctx.characters, macros, |c| c.scenario.clone(), "scenario"),
+            None => join_per_character(ctx.instructions, ctx.characters, macros, |c| c.scenario.clone(), "scenario"),
         },
         PromptBlockType::ExampleDialogue => {
-            join_per_character(ctx.characters, macros, |c| c.example_dialogue.clone(), "example dialogue")
+            join_per_character(ctx.instructions, ctx.characters, macros, |c| c.example_dialogue.clone(), "example dialogue")
         }
         PromptBlockType::AuthorsNote => ctx.authors_note_text.or(custom).unwrap_or_default().to_string(),
         PromptBlockType::Custom | PromptBlockType::PostHistoryInstructions => custom.unwrap_or_default().to_string(),
-        PromptBlockType::UserMemory => format_user_memories(ctx.user_memories),
+        PromptBlockType::UserMemory => format_user_memories(ctx.instructions, ctx.user_memories),
         PromptBlockType::WorldState => ctx.world_state_text.or(custom).unwrap_or_default().to_string(),
         // World info placement is per-entry (handled outside block resolution); history is not text.
         PromptBlockType::WorldInfo | PromptBlockType::ChatHistory => String::new(),
@@ -327,33 +328,38 @@ fn replace_ignore_ascii_case(haystack: &str, needle: &str, replacement: &str) ->
     out
 }
 
-fn format_user_memories(memories: &[UserMemory]) -> String {
+fn format_user_memories(ins: &Instructions, memories: &[UserMemory]) -> String {
     if memories.is_empty() {
         return String::new();
     }
     let lines: Vec<String> = memories.iter().map(|m| format!("- {}", m.content)).collect();
-    format!("What you remember about the user from past conversations:\n{}", lines.join("\n"))
+    ins.render(instructions::MEMORIES_HEADER, &[("memories", &lines.join("\n"))])
 }
 
-fn resolve_persona_description(persona: Option<&Persona>) -> String {
+fn resolve_persona_description(ins: &Instructions, persona: Option<&Persona>) -> String {
     match persona {
-        Some(p) if !p.description.trim().is_empty() => format!("{}'s persona: {}", user_name(persona), p.description.trim()),
+        Some(p) if !p.description.trim().is_empty() => {
+            ins.render(instructions::PERSONA_LABEL, &[("user", user_name(persona)), ("description", p.description.trim())])
+        }
         _ => String::new(),
     }
 }
 
 /// The card's description followed by its personality, SillyTavern-style ("{{char}}'s personality:
 /// ..."). Presets have no block of their own for the personality, so it rides with the description.
-fn description_with_personality(c: &Character) -> String {
+fn description_with_personality(ins: &Instructions, c: &Character) -> String {
+    // `{{char}}` stays a macro here: it's filled with this card's name like the rest of the card.
+    let label = |personality: &str| ins.render(instructions::PERSONALITY_LABEL, &[("char", "{{char}}"), ("personality", personality)]);
     match (c.description.trim(), c.personality.trim()) {
         (description, "") => description.to_string(),
-        ("", personality) => format!("{{{{char}}}}'s personality: {personality}"),
-        (description, personality) => format!("{description}\n{{{{char}}}}'s personality: {personality}"),
+        ("", personality) => label(personality),
+        (description, personality) => format!("{description}\n{}", label(personality)),
     }
 }
 
 /// One field from every character's card, each with its own `{{char}}` filled in.
 fn join_per_character(
+    ins: &Instructions,
     characters: &[Character],
     macros: &Macros,
     select: impl Fn(&Character) -> String,
@@ -366,7 +372,10 @@ fn join_per_character(
             .iter()
             .map(|c| (c, select(c)))
             .filter(|(_, text)| !text.trim().is_empty())
-            .map(|(c, text)| format!("{}'s {label}: {}", c.name, macros.for_character(c).fill(&text)))
+            .map(|(c, text)| {
+                let text = macros.for_character(c).fill(&text);
+                ins.render(instructions::CAST_LABEL, &[("char", &c.name), ("field", label), ("text", &text)])
+            })
             .collect::<Vec<_>>()
             .join("\n"),
     }

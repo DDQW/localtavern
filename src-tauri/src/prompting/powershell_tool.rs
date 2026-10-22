@@ -8,6 +8,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use super::instructions::{self, Instructions};
+
 /// The literal text that opens a tool call - may be followed by the elevate attribute and then `>`.
 pub const OPEN_TAG: &str = "<powershell-run";
 pub const CLOSE_TAG: &str = "</powershell-run>";
@@ -24,16 +26,8 @@ pub struct PowerShellToolCallRequest {
     pub elevate: bool,
 }
 
-pub fn build_instruction() -> &'static str {
-    "You have access to a PowerShell 7 tool on the user's Windows machine. To run a command, reply with \
-EXACTLY this and nothing else - no code fence, no explanation before or after it: \
-<powershell-run>your command here</powershell-run>. \
-If the command needs Administrator rights, add the elevate attribute: \
-<powershell-run elevate=\"true\">your command here</powershell-run> - the user will be asked to approve \
-elevation separately, every time, so only set it when the command genuinely requires it. \
-After you emit the tag, stop: its real output is given back to you as the next message, and you then \
-continue the conversation using that real output. Never invent or guess what a command would print. \
-Only request a command when it's actually necessary to help the user - most replies need no tool at all."
+pub fn build_instruction(ins: &Instructions) -> String {
+    ins.render(instructions::POWERSHELL_TOOL, &[])
 }
 
 /// Parses one complete `<powershell-run ...>...</powershell-run>` tag. `None` if `tag_text` isn't a
@@ -139,7 +133,7 @@ mod tests {
 
     #[test]
     fn instruction_mentions_the_tag_and_elevation() {
-        let instruction = build_instruction();
+        let instruction = build_instruction(instructions::defaults());
         assert!(instruction.contains("<powershell-run>"));
         assert!(instruction.contains("elevate"));
     }

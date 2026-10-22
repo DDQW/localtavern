@@ -373,6 +373,26 @@ async fn a_photo_the_user_takes_is_described_by_the_reply_and_drawn() {
 }
 
 #[tokio::test]
+async fn the_photo_texts_and_switches_from_settings_are_what_the_model_gets() {
+    use crate::prompting::instructions::{self, Instructions};
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Here.\n[user-photo: the harbour]"), finish("STOP")]),
+    ]);
+    let conv = ready_roleplay(&f);
+    let mut ins = Instructions { user_photos: false, intimate_photos: false, ..Default::default() };
+    ins.texts.insert(instructions::PHOTO.into(), "{char} may text {user} a picture: [photo: <what it shows>]".into());
+    f.db.with(|c| instructions::save(c, ins)).unwrap();
+
+    let (_, events) = send(&f, conv, "*takes a picture of the harbour*").await;
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap();
+    assert!(system.contains("Nova may text User a picture: [photo: <what it shows>]"), "{system}");
+    assert!(!system.contains("photos whenever a real person would"), "the built-in text is replaced: {system}");
+    assert!(!system.contains("nude") && !system.contains("[user-photo:"), "both switches are off: {system}");
+    assert!(photos_sent(&events).is_empty(), "the user's photo isn't drawn while that's off");
+    assert_eq!(messages(&f, conv)[1].text, "Here.", "its tag is still kept out of the story");
+}
+
+#[tokio::test]
 async fn intimate_photos_are_offered_only_for_characters_who_arent_minors() {
     use chrono::Datelike;
     let f = fixture(vec![

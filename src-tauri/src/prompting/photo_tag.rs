@@ -7,6 +7,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use super::instructions::{self, Instructions};
+
 /// One line for the system instruction. Photos are offered as ordinary behaviour - whenever a real
 /// person with a phone would send or take one - not as a rare exception: framed as "most replies
 /// send no photo, only when the story calls for it", models never sent one. Explicit that the
@@ -15,45 +17,20 @@ use regex::Regex;
 ///
 /// `intimate` (for a character not known to be under 18) adds that the photos can be as intimate as
 /// the moment: suggestive or nude ones of the character themselves when the mood is flirty or sexual.
-pub fn build_instruction(character_name: &str, user_name: &str, intimate: bool) -> String {
-    let (c, u) = (character_name, user_name);
-    let intimate = if intimate {
-        format!(
-            " The photos can be as intimate as the moment between them: when the mood is flirty or sexual and {c} wants to, \
-{c} can send {u} suggestive or nude photos of {c}, described plainly."
-        )
+pub fn build_instruction(ins: &Instructions, character_name: &str, user_name: &str, intimate: bool) -> String {
+    let vars = [("char", character_name), ("user", user_name)];
+    let photo = ins.render(instructions::PHOTO, &vars);
+    if intimate {
+        format!("{photo} {}", ins.render(instructions::PHOTO_INTIMATE, &vars))
     } else {
-        String::new()
-    };
-    format!(
-        "{c} sends {u} photos whenever a real person would: a selfie to show how {c} looks or what {c} is wearing, a snapshot of \
-where {c} is, what {c} is doing or something {c} wants {u} to see - above all while they are apart and texting, and whenever {u} \
-asks for one. When they are together, {c} can take a picture of the moment or of the two of them.{intimate} When {c} sends or takes a photo in \
-this reply, show it happening in the story and end the reply with one last line in exactly this form, square brackets included: \
-[photo: <what the photo shows, as a camera would see it: who is in it, their pose, expression and what they are wearing (if \
-anything), the place and the lighting>]. Write the description only inside the brackets, not in the story text. Leave the line out \
-when no photo is sent or taken."
-    )
-}
-
-/// Whether the user's message may have their character taking a photo - then the reply is asked to
-/// describe it. Just the words; whether a photo is really taken there is the model's call.
-pub fn mentions_a_photo(text: &str) -> bool {
-    static WORDS: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(?:photo|photograph|picture|pic|pics|selfie|snapshot|snap|snaps|snapped|camera|shot of)\b").unwrap()
-    });
-    WORDS.is_match(text)
+        photo
+    }
 }
 
 /// One more line for the system instruction when the user's message may have the user's character
 /// taking a photo: the reply describes that photo in its own tag, so the app can show it too.
-pub fn user_photo_instruction(user_name: &str) -> String {
-    let u = user_name;
-    format!(
-        "If {u} takes a photo or picture in {u}'s latest message, also describe that photo, as one more last line in exactly this \
-form, square brackets included: [user-photo: <what {u}'s photo shows, as the camera sees it: who or what is in it (anyone by name), \
-their pose, expression and what they are wearing (if anything), the place and the lighting>]. Leave this line out when {u} takes no photo."
-    )
+pub fn user_photo_instruction(ins: &Instructions, user_name: &str) -> String {
+    ins.render(instructions::USER_PHOTO, &[("user", user_name)])
 }
 
 /// `[user-photo: ...]` (or `user picture`), up to its `]`.
@@ -150,9 +127,13 @@ fn clean_description(description: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn ins() -> Instructions {
+        Instructions::default()
+    }
+
     #[test]
     fn instruction_names_both_sides_and_the_format() {
-        let line = build_instruction("Nova", "Alex", false);
+        let line = build_instruction(&ins(), "Nova", "Alex", false);
         assert!(line.starts_with("Nova sends Alex photos whenever a real person would: a selfie"), "{line}");
         assert!(!line.contains("nude"), "{line}");
         assert!(line.contains("while they are apart and texting, and whenever Alex asks for one"), "{line}");
@@ -165,20 +146,20 @@ mod tests {
 
     #[test]
     fn an_adult_character_can_send_intimate_photos_when_the_moment_fits() {
-        let line = build_instruction("Nova", "Alex", true);
-        assert!(line.contains("When they are together, Nova can take a picture of the moment or of the two of them. The photos can be as intimate"), "{line}");
-        assert!(line.contains("when the mood is flirty or sexual and Nova wants to, Nova can send Alex suggestive or nude photos of Nova"), "{line}");
+        let line = build_instruction(&ins(), "Nova", "Alex", true);
+        assert!(line.contains("Leave the line out when no photo is sent or taken. The photos can be as intimate as the moment"), "{line}");
+        assert!(line.ends_with("when the mood is flirty or sexual and Nova wants to, Nova can send Alex suggestive or nude photos of Nova, described plainly."), "{line}");
         assert!(!line.contains("adult"), "the model isn't asked to judge ages: {line}");
-        assert!(line.ends_with("Leave the line out when no photo is sent or taken."), "{line}");
     }
 
     #[test]
     fn a_photo_word_in_the_users_message_asks_for_the_users_photo() {
-        assert!(mentions_a_photo("*Soso decides to make a picture of the harbour*"));
-        assert!(mentions_a_photo("I snap a quick selfie with you."));
-        assert!(mentions_a_photo("*raises the Camera*"));
-        assert!(!mentions_a_photo("We walk down to the beach together."));
-        let line = user_photo_instruction("Soso");
+        let ins = ins();
+        assert!(ins.mentions_a_photo("*Soso decides to make a picture of the harbour*"));
+        assert!(ins.mentions_a_photo("I snap a quick selfie with you."));
+        assert!(ins.mentions_a_photo("*raises the Camera*"));
+        assert!(!ins.mentions_a_photo("We walk down to the beach together."));
+        let line = user_photo_instruction(&ins, "Soso");
         assert!(line.starts_with("If Soso takes a photo or picture in Soso's latest message, also describe that photo"), "{line}");
         assert!(line.contains("square brackets included: [user-photo: <what Soso's photo shows"), "{line}");
         assert!(line.ends_with("Leave this line out when Soso takes no photo."), "{line}");

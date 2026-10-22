@@ -609,6 +609,26 @@ export interface ImageBackendConfig {
   scheduler: string;
 }
 
+/** The app's own roleplay instructions: the user's wording (a missing text uses the built-in one) and switches. */
+export interface Instructions {
+  texts: Record<string, string>;
+  userPhotos: boolean;
+  intimatePhotos: boolean;
+  photoWords: string[];
+}
+
+/** One built-in instruction, as Settings shows it. */
+export interface InstructionInfo {
+  key: string;
+  /** Where Settings lists it. */
+  group: string;
+  title: string;
+  /** When the app adds it. */
+  help: string;
+  placeholders: string[];
+  default: string;
+}
+
 export interface ImageGenSettings {
   backend: ImageBackend;
   a1111: ImageBackendConfig;

@@ -8,6 +8,8 @@ use std::sync::LazyLock;
 use chrono::Duration;
 use regex::Regex;
 
+use super::instructions::{self, Instructions};
+
 /// The tag in the shapes models actually produce: `[time-skip: 3 hours]`, `(Time skip: 1h 30m)`,
 /// `[time_skip: 2-3 minutes]`.
 static TAG: LazyLock<Regex> = LazyLock::new(|| {
@@ -25,14 +27,8 @@ static PART: LazyLock<Regex> = LazyLock::new(|| {
 const MAX_SKIP_SECONDS: f64 = 30.0 * 24.0 * 3600.0;
 
 /// One line to append to the system instruction, asking for a structured tag.
-pub fn build_instruction() -> &'static str {
-    "The story has a clock that only moves when you move it. At the very end of every reply, on its \
-own last line, append a tag saying how much in-story time that reply covered - never omit it, and \
-never write 0: a short line of dialogue or a quick reaction is about 1 minute; a described action, a \
-wait or some small talk is several minutes; a meal, a drive or a long conversation is tens of \
-minutes; an explicit time jump (an overnight, a training montage, \"the rest of the evening\") must \
-match what was narrated. Format: [time-skip: <number> <minutes|hours|days>] with a single number, \
-e.g. [time-skip: 2 minutes], [time-skip: 45 minutes] or [time-skip: 3 hours]. Do not explain the tag."
+pub fn build_instruction(ins: &Instructions) -> String {
+    ins.render(instructions::TIME_SKIP_TAG, &[])
 }
 
 /// The elapsed time named by a tag in `tail` (the trailing tags peeled off a reply), clamped to (0, 30 days].
@@ -124,7 +120,7 @@ mod tests {
 
     #[test]
     fn instruction_mentions_the_tag_format() {
-        let instruction = build_instruction();
+        let instruction = build_instruction(instructions::defaults());
         assert!(instruction.contains("[time-skip:"));
         assert!(instruction.contains("never omit it"));
     }

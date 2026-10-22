@@ -146,6 +146,8 @@ pub fn run() {
             commands::holiday_overview,
             commands::draft_scenario,
             commands::draft_group_scenario,
+            commands::get_instructions,
+            commands::save_instructions,
             commands::draft_greetings,
             commands::draft_lore_entries,
             commands::draft_schedule,

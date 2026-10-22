@@ -34,6 +34,7 @@ use crate::repo::{
 };
 use crate::secrets::KeyringSecretStore;
 use crate::prompting::appearance::AppearanceSubject;
+use crate::prompting::instructions::{self, Instruction, Instructions};
 use crate::{library, picked, prompting, settings};
 
 pub struct AppState {
@@ -364,6 +365,25 @@ pub fn set_track_story_cast(state: State<'_, AppState>, on: bool) -> Result<()> 
 pub async fn draft_scenario(state: State<'_, AppState>, character: Character, idea: String) -> Result<String> {
     let engine = state.engine.clone();
     engine.draft_scenario(&character, &idea).await
+}
+
+/// The instructions the app adds to roleplay prompts on its own: the user's wording and switches,
+/// and the built-in texts (with when each is added and its placeholders) to show and reset to.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstructionsView {
+    pub instructions: Instructions,
+    pub defaults: &'static [Instruction],
+}
+
+#[tauri::command]
+pub fn get_instructions(state: State<'_, AppState>) -> Result<InstructionsView> {
+    Ok(InstructionsView { instructions: state.db.with(instructions::load)?, defaults: instructions::ALL })
+}
+
+#[tauri::command]
+pub fn save_instructions(state: State<'_, AppState>, instructions: Instructions) -> Result<Instructions> {
+    state.db.with(|c| instructions::save(c, instructions))
 }
 
 #[tauri::command]

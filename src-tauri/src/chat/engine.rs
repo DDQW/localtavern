@@ -41,7 +41,8 @@ use crate::prompting::powershell_tool::{self, PowerShellToolCallRequest, ToolRes
 use crate::prompting::group_reply::SpeakerCut;
 use crate::prompting::reply_tags::{self, ReplyTags};
 use crate::prompting::{
-    self, breakout, emotion_tag, next_speaker_tag, photo_tag, roles, time_skip_tag, world_state, KeywordWorldInfoScanner,
+    self, breakout, emotion_tag, instructions, next_speaker_tag, photo_tag, roles, time_skip_tag, world_state,
+    KeywordWorldInfoScanner,
     PromptAssemblyContext,
 };
 use crate::providers::{LlmGeneratedImage, LlmProviderRegistry, ProviderError};
@@ -200,9 +201,6 @@ fn last_turn(messages: &[ChatMessage]) -> Option<&ChatMessage> {
     messages.iter().rev().find(|m| m.role != MessageRole::System)
 }
 
-/// The nudge Continue appends as a trailing user turn (a system note), so the model extends rather
-/// than restarts.
-const CONTINUE_NUDGE: &str = "Continue your last message without repeating its original content.";
 
 /// An [`ExecutionResult`] as the text the model (and the tool bubble) gets.
 fn format_execution(result: &ExecutionResult) -> String {
@@ -943,8 +941,9 @@ present, keep it as its own final paragraph, still naming whose details they are
             if last.is_some_and(|m| m.role == MessageRole::System && m.speaker_character_id == Some(character.id)) {
                 return Ok(None);
             }
-            let mut marker =
-                ChatMessage::new(group_conversation_id, MessageRole::System, breakout::marker_text(roles::user_name(persona), &character.name));
+            let ins = instructions::load(c)?;
+            let text = breakout::marker_text(&ins, roles::user_name(persona), &character.name);
+            let mut marker = ChatMessage::new(group_conversation_id, MessageRole::System, text);
             marker.speaker_character_id = Some(character.id);
             conversations::add_message(c, &marker)?;
             Ok(Some(marker))
@@ -1015,7 +1014,8 @@ present, keep it as its own final paragraph, still naming whose details they are
         }
 
         let mut history = ctx.messages.clone();
-        history.push(ChatMessage::new(conversation_id, MessageRole::User, roles::system_note(CONTINUE_NUDGE)));
+        let ins = self.db().with(instructions::load)?;
+        history.push(ChatMessage::new(conversation_id, MessageRole::User, ins.note(&ins.render(instructions::CONTINUE_NUDGE, &[]))));
         // The world clock and emotion tags belong to whole replies; a continuation is neither.
         let speaker = target.speaker_character_id.and_then(|id| ctx.characters.iter().find(|c| c.id == id)).cloned();
         let request = self.assemble(&ctx, &history, AssembleOptions { speaker: speaker.as_ref(), ..Default::default() })?;
@@ -1068,7 +1068,8 @@ present, keep it as its own final paragraph, still naming whose details they are
             return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
         }
 
-        let instruction = roles::impersonation_request(roles::user_name(ctx.persona.as_ref()), &ctx.characters);
+        let ins = self.db().with(instructions::load)?;
+        let instruction = roles::impersonation_request(&ins, roles::user_name(ctx.persona.as_ref()), &ctx.characters);
 
         let mut history = ctx.messages.clone();
         match history.last_mut() {
@@ -1432,6 +1433,8 @@ present, keep it as its own final paragraph, still naming whose details they are
             let memories = if conversation.mode == ConversationMode::Assistant { user_memories::get_all(c)? } else { vec![] };
             Ok((memories, summaries::get(c, conversation.id)?))
         })?;
+        // The app's own instructions, in the user's wording where Settings change it.
+        let ins = self.db().with(instructions::load)?;
         // Regenerating an older reply sends only what came before it - the group's messages too.
         let cutoff = ctx.messages.iter().find(|m| !history.iter().any(|h| h.id == m.id)).map(|m| m.timestamp);
         // A compacted chat sends its summary in place of the messages it covers.
@@ -1451,21 +1454,22 @@ present, keep it as its own final paragraph, still naming whose details they are
                         .and_then(|id| b.group_cast.iter().find(|c| c.id == id))
                         .map_or_else(|| "Someone".to_string(), |c| c.name.clone()),
                 };
-                merged = breakout::merge_history(history, &b.group_messages, name, cutoff);
+                merged = breakout::merge_history(&ins, history, &b.group_messages, name, cutoff);
                 &merged[..]
             }
             None => history,
         };
 
         let world_text = match conversation.world_state.as_ref().filter(|_| conversation.mode == ConversationMode::Roleplay) {
-            Some(state) => Some(world_state::format(state, &self.world_facts(ctx, state)?)),
+            Some(state) => Some(world_state::format(&ins, state, &self.world_facts(ctx, state)?)),
             None => None,
         };
 
         let mut pctx = PromptAssemblyContext::new(conversation, options.preset.unwrap_or(&ctx.preset), history)
             .with_characters(&ctx.characters)
             .with_lorebooks(&ctx.lorebooks)
-            .with_user_memories(&memories);
+            .with_user_memories(&memories)
+            .with_instructions(&ins);
         if let Some(persona) = &ctx.persona {
             pctx = pctx.with_persona(persona);
         }
@@ -1489,26 +1493,26 @@ present, keep it as its own final paragraph, still naming whose details they are
 
         if let Some(summary) = &summary {
             let roleplay = conversation.mode == ConversationMode::Roleplay;
-            append_instruction(&mut request, &compaction::summary_instruction(&summary.text, roleplay));
+            append_instruction(&mut request, &compaction::summary_instruction(&ins, &summary.text, roleplay));
         }
 
         // Not left to the preset: its system prompt is the user's to rewrite, and these must hold whatever it says.
         if conversation.mode == ConversationMode::Roleplay && !options.as_user {
             let user = roles::user_name(ctx.persona.as_ref());
-            if let Some(rules) = roles::reply_rules(user, &ctx.characters, options.speaker) {
+            if let Some(rules) = roles::reply_rules(&ins, user, &ctx.characters, options.speaker) {
                 append_instruction(&mut request, &rules);
             }
             if let (Some(b), Some(me)) = (&ctx.breakout, ctx.characters.first()) {
                 let others: Vec<&str> = b.group_cast.iter().filter(|c| c.id != me.id).map(|c| c.name.as_str()).collect();
-                append_instruction(&mut request, &breakout::rules(&me.name, user, &b.group_name, &others));
+                append_instruction(&mut request, &breakout::rules(&ins, &me.name, user, &b.group_name, &others));
                 if let Some(summary) = &b.group_summary {
-                    append_instruction(&mut request, &breakout::group_summary_instruction(summary));
+                    append_instruction(&mut request, &breakout::group_summary_instruction(&ins, summary));
                 }
             }
             // A member remembers their own private talk in the group; nobody else hears of it.
             if let Some(me) = options.speaker.filter(|_| ctx.group.is_some()) {
                 if let Some(talk) = ctx.private_talks.iter().find(|t| t.character_id == me.id) {
-                    if let Some(memory) = breakout::private_memory(&me.name, user, talk.summary.as_deref(), &talk.messages) {
+                    if let Some(memory) = breakout::private_memory(&ins, &me.name, user, talk.summary.as_deref(), &talk.messages) {
                         append_instruction(&mut request, &memory);
                     }
                 }
@@ -1516,21 +1520,21 @@ present, keep it as its own final paragraph, still naming whose details they are
         }
         if let Some(character) = options.speaker.filter(|c| options.reply_tags && !c.expressions.is_empty()) {
             let keys: Vec<String> = character.expressions.iter().map(|e| e.emotion.clone()).collect();
-            append_instruction(&mut request, &emotion_tag::build_instruction(&character.name, &keys));
+            append_instruction(&mut request, &emotion_tag::build_instruction(&ins, &character.name, &keys));
         }
         if options.tools && conversation.mode == ConversationMode::Assistant {
-            append_instruction(&mut request, powershell_tool::build_instruction());
+            append_instruction(&mut request, &powershell_tool::build_instruction(&ins));
         }
         if options.reply_tags && conversation.mode == ConversationMode::Roleplay && conversation.world_state.is_some() {
-            append_instruction(&mut request, time_skip_tag::build_instruction());
+            append_instruction(&mut request, &time_skip_tag::build_instruction(&ins));
         }
         if let Some(character) = options.speaker.filter(|_| options.reply_tags && !options.next_speakers.is_empty()) {
             let user = roles::user_name(ctx.persona.as_ref());
-            append_instruction(&mut request, &next_speaker_tag::build_instruction(&character.name, options.next_speakers, user));
+            append_instruction(&mut request, &next_speaker_tag::build_instruction(&ins, &character.name, options.next_speakers, user));
         }
         if let Some(character) = options.speaker.filter(|_| options.reply_tags && options.offer_private) {
             let user = roles::user_name(ctx.persona.as_ref());
-            append_instruction(&mut request, &breakout::private_tag_instruction(&character.name, user));
+            append_instruction(&mut request, &breakout::private_tag_instruction(&ins, &character.name, user));
         }
         if let Some(character) = options.speaker {
             if options.reply_tags
@@ -1541,11 +1545,11 @@ present, keep it as its own final paragraph, still naming whose details they are
                 // Intimate photos only for a character the story doesn't make a minor.
                 let today = conversation.world_state.as_ref().map_or_else(|| Utc::now().date_naive(), |w| w.fictional_date_time.date());
                 let minor = character.birth_date.is_some_and(|born| world_state::age_on(born, today).is_none_or(|age| age < 18));
-                append_instruction(&mut request, &photo_tag::build_instruction(&character.name, user, !minor));
+                append_instruction(&mut request, &photo_tag::build_instruction(&ins, &character.name, user, ins.intimate_photos && !minor));
                 // The user's character may be taking a photo of their own: the reply describes it.
                 let latest = history.iter().rev().find(|m| m.role == MessageRole::User).map(|m| m.text.as_str());
-                if latest.is_some_and(photo_tag::mentions_a_photo) {
-                    append_instruction(&mut request, &photo_tag::user_photo_instruction(user));
+                if ins.user_photos && latest.is_some_and(|text| ins.mentions_a_photo(text)) {
+                    append_instruction(&mut request, &photo_tag::user_photo_instruction(&ins, user));
                 }
             }
         }
@@ -1553,13 +1557,13 @@ present, keep it as its own final paragraph, still naming whose details they are
         // answers those - so say outright that there is a picture to look at.
         let pictures = history.iter().rev().find(|m| m.role == MessageRole::User).map_or(0, |m| m.attachments.len());
         if pictures > 0 {
-            append_instruction(&mut request, &roles::picture_rule(pictures, conversation.mode == ConversationMode::Roleplay));
+            append_instruction(&mut request, &roles::picture_rule(&ins, pictures, conversation.mode == ConversationMode::Roleplay));
         }
         // A group reply's request ends by saying whose reply it is, after everything else.
         if let Some(me) = options.speaker.filter(|_| options.reply_tags && !options.as_user && ctx.group.is_some()) {
             let others: Vec<&str> = ctx.characters.iter().filter(|c| c.id != me.id).map(|c| c.name.as_str()).collect();
             if !others.is_empty() {
-                request.history.push(LlmMessage::new(LlmRole::User, roles::group_turn_note(&me.name, &others)));
+                request.history.push(LlmMessage::new(LlmRole::User, roles::group_turn_note(&ins, &me.name, &others)));
             }
         }
         Ok(request)
@@ -1726,7 +1730,7 @@ present, keep it as its own final paragraph, still naming whose details they are
             return Ok(Vec::new());
         }
         let mut photos = Vec::new();
-        if let Some(description) = &tags.user_photo {
+        if let Some(description) = tags.user_photo.as_ref().filter(|_| self.db().with(instructions::load).is_ok_and(|i| i.user_photos)) {
             let names: Vec<(Uuid, &str)> = ctx.characters.iter().map(|c| (c.id, c.name.as_str())).collect();
             photos.push((photo_tag::first_named(description, &names), description.clone()));
         }

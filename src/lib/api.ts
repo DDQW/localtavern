@@ -6,6 +6,8 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { mockApi } from "./mock";
 import type {
   Appearance,
+  InstructionInfo,
+  Instructions,
   AppearanceSubject,
   Country,
   HolidayOverview,
@@ -175,6 +177,8 @@ export interface Api {
   saveGroupChat(group: GroupChat): Promise<GroupChat>;
   deleteGroupChat(groupId: Uuid): Promise<void>;
 
+  getInstructions(): Promise<{ instructions: Instructions; defaults: InstructionInfo[] }>;
+  saveInstructions(instructions: Instructions): Promise<Instructions>;
   getImageSettings(): Promise<ImageGenSettings>;
   saveImageSettings(settings: ImageGenSettings): Promise<ImageGenSettings>;
   /** Checkpoints/samplers/schedulers from the server in `settings` (which needn't be saved yet). */
@@ -325,6 +329,8 @@ const tauriApi: Api = {
   saveGroupChat: (group) => invoke("save_group_chat", { group }),
   deleteGroupChat: (groupId) => invoke("delete_group_chat", { groupId }),
 
+  getInstructions: () => invoke("get_instructions"),
+  saveInstructions: (instructions) => invoke("save_instructions", { instructions }),
   getImageSettings: () => invoke("get_image_settings"),
   saveImageSettings: (settings) => invoke("save_image_settings", { settings }),
   imageBackendOptions: (settings) => invoke("image_backend_options", { settings }),

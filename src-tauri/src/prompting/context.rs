@@ -1,3 +1,4 @@
+use super::instructions::{self, Instructions};
 use crate::models::{Character, ChatMessage, Conversation, Lorebook, Persona, PromptPreset, UserMemory};
 
 /// Everything the assembler needs to build one LLM request for a conversation turn. Borrowed, so
@@ -17,6 +18,8 @@ pub struct PromptAssemblyContext<'a> {
     pub world_state_text: Option<&'a str>,
     /// A group's own scenario, in place of the characters' card scenarios.
     pub scenario: Option<&'a str>,
+    /// The app's own texts (labels, system-note wrapper), in the user's wording.
+    pub instructions: &'a Instructions,
 }
 
 impl<'a> PromptAssemblyContext<'a> {
@@ -33,6 +36,7 @@ impl<'a> PromptAssemblyContext<'a> {
             user_memories: &[],
             world_state_text: None,
             scenario: None,
+            instructions: instructions::defaults(),
         }
     }
 
@@ -68,6 +72,11 @@ impl<'a> PromptAssemblyContext<'a> {
 
     pub fn with_world_state_text(mut self, text: &'a str) -> Self {
         self.world_state_text = Some(text);
+        self
+    }
+
+    pub fn with_instructions(mut self, instructions: &'a Instructions) -> Self {
+        self.instructions = instructions;
         self
     }
 

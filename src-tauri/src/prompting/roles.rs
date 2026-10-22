@@ -3,6 +3,7 @@
 //! sword*" is easy for a model to misread as the character's own doing, or to answer by narrating
 //! the user's next move as well. These texts spell out, by name, whose message is whose.
 
+use super::instructions::{self, Instructions};
 use crate::models::{Character, Persona};
 
 /// The name `{{user}}` stands for: the persona's, or "User" without one.
@@ -23,30 +24,27 @@ pub fn join_names(names: &[&str], conjunction: &str) -> String {
 /// lore at depth, the Continue nudge...). Unmarked it would read as something the user's character
 /// said, since every other user-role message is theirs.
 pub fn system_note(text: &str) -> String {
-    format!("[System note: {}]", text.trim())
+    instructions::defaults().note(text)
 }
 
 /// Tells the model the user's latest message carries picture(s) it can see, and to answer them.
-pub fn picture_rule(count: usize, roleplay: bool) -> String {
+pub fn picture_rule(ins: &Instructions, count: usize, roleplay: bool) -> String {
     let what = if count == 1 { "a picture".to_string() } else { format!("{count} pictures") };
-    if roleplay {
-        format!("The user's latest message includes {what}: something they are showing the character(s). Look at it and react in character to what it actually shows.")
-    } else {
-        format!("The user's latest message includes {what}. Look at it and answer with what it actually shows.")
-    }
+    let key = if roleplay { instructions::PICTURE_SHOWN } else { instructions::PICTURE_SHOWN_ASSISTANT };
+    ins.render(key, &[("what", &what)])
 }
 
 /// Stands in for pictures on an earlier user message once each has a description: the model saw them
 /// on that turn, and resending the images made it decode them again on every later reply.
-pub fn picture_note(descriptions: &[&str]) -> String {
+pub fn picture_note(ins: &Instructions, descriptions: &[&str]) -> String {
     let text = match descriptions {
-        [one] => format!("The user sent a picture with this message. It showed: {}", one.trim()),
+        [one] => ins.render(instructions::PICTURE_NOTE_ONE, &[("description", one.trim())]),
         many => {
             let each: Vec<String> = many.iter().enumerate().map(|(i, d)| format!("Picture {}: {}", i + 1, d.trim())).collect();
-            format!("The user sent {} pictures with this message. {}", many.len(), each.join(" "))
+            ins.render(instructions::PICTURE_NOTE_MANY, &[("count", &many.len().to_string()), ("descriptions", &each.join(" "))])
         }
     };
-    system_note(&text)
+    ins.note(&text)
 }
 
 /// The rules sent with every roleplay reply, whatever the preset says (a preset's own system prompt
@@ -56,7 +54,7 @@ pub fn picture_note(descriptions: &[&str]) -> String {
 /// Says nothing about side characters either way - whether the model may voice extras is the
 /// preset's call. The one hard line is the user's character, plus, in a group, the other members
 /// (they get turns of their own).
-pub fn reply_rules(user: &str, characters: &[Character], speaker: Option<&Character>) -> Option<String> {
+pub fn reply_rules(ins: &Instructions, user: &str, characters: &[Character], speaker: Option<&Character>) -> Option<String> {
     let speaker = speaker.or(match characters {
         [only] => Some(only),
         _ => None,
@@ -66,55 +64,44 @@ pub fn reply_rules(user: &str, characters: &[Character], speaker: Option<&Charac
     // character's actions must never be credited to.
     let (roles, members, actor) = if characters.len() > 1 {
         let names: Vec<&str> = characters.iter().map(|c| c.name.as_str()).collect();
-        let whose_turn = speaker.map(|me| format!(", one reply at a time, and this reply is {}'s", me.name)).unwrap_or_default();
-        let roles = format!(
-            "Roles: the user plays {user}; you play {cast}{whose_turn}. Every user-role message is written by {user}: everything in it, *actions* included, is what {user} says, does, thinks or feels - never one of the characters. In {user}'s messages \"I\", \"me\" and \"my\" mean {user}. Each of your earlier messages starts with the name of the character who spoke it.",
-            cast = join_names(&names, "and"),
-        );
+        let cast = join_names(&names, "and");
+        // Without a speaker (only for estimating the request's size) the whole cast stands in.
+        let me = speaker.map_or(cast.as_str(), |c| c.name.as_str());
+        let roles = ins.render(instructions::RULES_GROUP, &[("user", user), ("cast", &cast), ("char", me)]);
         let others: Vec<&str> = names.iter().copied().filter(|n| speaker.is_some_and(|me| me.name != *n)).collect();
         let members = match (others.is_empty(), speaker) {
-            (false, Some(me)) => format!(
-                " Don't write lines or actions for {}: they speak in their own turns, so end the reply where {me}'s part ends. Start it \
-straight with {me}'s words or actions, without \"{me}:\" in front - the app labels every message itself.",
-                join_names(&others, "or"),
-                me = me.name,
-            ),
-            _ => String::new(),
+            (false, Some(me)) => {
+                Some(ins.render(instructions::RULES_GROUP_MEMBERS, &[("others", &join_names(&others, "or")), ("char", &me.name)]))
+            }
+            _ => None,
         };
         (roles, members, "a character")
     } else {
         let me = speaker?.name.as_str();
-        let roles = format!(
-            "Roles: the user plays {user}; you play {me}. Every user-role message is written by {user}: everything in it, *actions* included, is what {user} says, does, thinks or feels - never {me}. In {user}'s messages \"I\", \"me\" and \"my\" mean {user}, and \"you\" usually means {me}. Your own messages are {me}'s side of the story."
-        );
-        (roles, String::new(), me)
+        (ins.render(instructions::RULES_SOLO, &[("user", user), ("char", me)]), None, me)
     };
 
-    Some(format!(
-        "{roles} Text in *asterisks* is action or narration and text in \"quotes\" is speech; both belong to whoever wrote that message. A message in the form [System note: ...] comes from the app, not from {user}: follow it without mentioning it.{members} {user} belongs to the user alone: never write what {user} says, does, thinks or feels, never retell {user}'s actions as if {actor} did them, and don't repeat what {user} just did - react to it and move the scene forward."
-    ))
+    let common = ins.render(instructions::RULES_COMMON, &[("user", user)]);
+    let user_only = ins.render(instructions::RULES_USER_ONLY, &[("user", user), ("actor", actor)]);
+    let parts = [Some(roles), Some(common), members, Some(user_only)];
+    Some(parts.into_iter().flatten().filter(|p| !p.trim().is_empty()).collect::<Vec<_>>().join(" "))
 }
 
 /// The last turn of a group reply's request: whose reply this is, said where the model reads it
 /// last. Without it the request ends on the previous member's reply, and a model plans (and
 /// reasons through) the whole scene - every member's answer - to write one of them.
-pub fn group_turn_note(speaker: &str, others: &[&str]) -> String {
+pub fn group_turn_note(ins: &Instructions, speaker: &str, others: &[&str]) -> String {
     let others = join_names(others, "and");
-    system_note(&format!(
-        "Now write {speaker}'s reply, and only {speaker}'s. Any reply from {others} comes in a message of its own, so don't plan, \
-think through or write their replies: think only about what {speaker} says and does next."
-    ))
+    system_note(&ins.render(instructions::GROUP_TURN, &[("char", speaker), ("others", &others)]))
 }
 
 /// The trailing note asking for the user's own next message (Impersonate). It goes into the last
 /// user turn, not the system prompt - a system-prompt nudge alone lost to strong character cards -
 /// and says outright that the usual sides are swapped for this one message.
-pub fn impersonation_request(user: &str, characters: &[Character]) -> String {
+pub fn impersonation_request(ins: &Instructions, user: &str, characters: &[Character]) -> String {
     let names: Vec<&str> = characters.iter().map(|c| c.name.as_str()).collect();
     let others = if names.is_empty() { "the assistant".to_string() } else { join_names(&names, "or") };
-    system_note(&format!(
-        "This time, write {user}'s next message instead of a reply. {user} is the user's character, so for this one message the sides are swapped: write only what {user} says and does, from {user}'s point of view, matching the person, tense and style of {user}'s earlier messages. Don't write anything {others} says or does, and don't continue the last reply. Reply with only the message text, nothing else."
-    ))
+    ins.note(&ins.render(instructions::IMPERSONATE, &[("user", user), ("others", &others)]))
 }
 
 #[cfg(test)]
@@ -142,9 +129,9 @@ mod tests {
 
     #[test]
     fn picture_notes_carry_each_description() {
-        assert_eq!(picture_note(&["A cat. "]), "[System note: The user sent a picture with this message. It showed: A cat.]");
+        assert_eq!(picture_note(instructions::defaults(), &["A cat. "]), "[System note: The user sent a picture with this message. It showed: A cat.]");
         assert_eq!(
-            picture_note(&["A cat.", "A dog."]),
+            picture_note(instructions::defaults(), &["A cat.", "A dog."]),
             "[System note: The user sent 2 pictures with this message. Picture 1: A cat. Picture 2: A dog.]"
         );
     }
@@ -157,7 +144,7 @@ mod tests {
     #[test]
     fn one_on_one_rules_name_both_sides() {
         let nova = cast(&["Nova"]);
-        let rules = reply_rules("Alex", &nova, Some(&nova[0])).unwrap();
+        let rules = reply_rules(instructions::defaults(), "Alex", &nova, Some(&nova[0])).unwrap();
 
         assert!(rules.starts_with("Roles: the user plays Alex; you play Nova."), "{rules}");
         assert!(rules.contains("Every user-role message is written by Alex"), "{rules}");
@@ -174,13 +161,13 @@ mod tests {
     #[test]
     fn a_one_character_chat_without_a_known_speaker_uses_that_character() {
         let nova = cast(&["Nova"]);
-        assert_eq!(reply_rules("Alex", &nova, None), reply_rules("Alex", &nova, Some(&nova[0])));
+        assert_eq!(reply_rules(instructions::defaults(), "Alex", &nova, None), reply_rules(instructions::defaults(), "Alex", &nova, Some(&nova[0])));
     }
 
     #[test]
     fn group_rules_say_whose_turn_it_is_and_keep_other_members_out() {
         let crew = cast(&["Alice", "Bob", "Cara"]);
-        let rules = reply_rules("Alex", &crew, Some(&crew[0])).unwrap();
+        let rules = reply_rules(instructions::defaults(), "Alex", &crew, Some(&crew[0])).unwrap();
 
         assert!(rules.starts_with("Roles: the user plays Alex; you play Alice, Bob and Cara, one reply at a time, and this reply is Alice's."), "{rules}");
         assert!(rules.contains("never one of the characters"), "{rules}");
@@ -194,19 +181,19 @@ mod tests {
     #[test]
     fn group_rules_without_a_speaker_name_the_whole_cast() {
         let crew = cast(&["Alice", "Bob"]);
-        let rules = reply_rules("Alex", &crew, None).unwrap();
-        assert!(rules.starts_with("Roles: the user plays Alex; you play Alice and Bob."), "{rules}");
+        let rules = reply_rules(instructions::defaults(), "Alex", &crew, None).unwrap();
+        assert!(rules.starts_with("Roles: the user plays Alex; you play Alice and Bob,"), "{rules}");
         assert!(!rules.contains("Don't write lines or actions for"), "{rules}");
     }
 
     #[test]
     fn no_character_means_no_rules() {
-        assert_eq!(reply_rules("Alex", &[], None), None);
+        assert_eq!(reply_rules(instructions::defaults(), "Alex", &[], None), None);
     }
 
     #[test]
     fn the_group_turn_note_names_the_speaker_and_leaves_the_others_out() {
-        let note = group_turn_note("Alice", &["Bob", "Cara"]);
+        let note = group_turn_note(&Instructions::default(), "Alice", &["Bob", "Cara"]);
         assert!(note.starts_with("[System note: Now write Alice's reply, and only Alice's. Any reply from Bob and Cara comes in a message of its own"), "{note}");
         assert!(note.contains("don't plan, think through or write their replies"), "{note}");
         assert!(note.ends_with("think only about what Alice says and does next.]"), "{note}");
@@ -214,13 +201,13 @@ mod tests {
 
     #[test]
     fn impersonation_swaps_sides_explicitly() {
-        let note = impersonation_request("Alex", &cast(&["Nova"]));
+        let note = impersonation_request(instructions::defaults(), "Alex", &cast(&["Nova"]));
         assert!(note.starts_with("[System note: This time, write Alex's next message instead of a reply."), "{note}");
         assert!(note.contains("the sides are swapped: write only what Alex says and does"), "{note}");
         assert!(note.contains("Don't write anything Nova says or does"), "{note}");
         assert!(note.ends_with("nothing else.]"), "{note}");
 
-        assert!(impersonation_request("Alex", &cast(&["Alice", "Bob"])).contains("Don't write anything Alice or Bob says"));
-        assert!(impersonation_request("User", &[]).contains("Don't write anything the assistant says"));
+        assert!(impersonation_request(instructions::defaults(), "Alex", &cast(&["Alice", "Bob"])).contains("Don't write anything Alice or Bob says"));
+        assert!(impersonation_request(instructions::defaults(), "User", &[]).contains("Don't write anything the assistant says"));
     }
 }
