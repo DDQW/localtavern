@@ -57,7 +57,12 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (22, include_str!("../../migrations/0022_group_joint_replies.sql")),
     (23, include_str!("../../migrations/0023_breakouts.sql")),
     (24, include_str!("../../migrations/0024_group_scenario_setting.sql")),
+    (25, include_str!("../../migrations/0025_message_prompts.sql")),
 ];
+
+/// The migration that moved the saved prompts out of ChatMessages. The space they freed is only
+/// given back to the disk by a VACUUM, which can't run inside the migration's transaction.
+const PROMPTS_MOVED: i32 = 25;
 
 /// Opens (creating if needed) the database at `path`, enables foreign keys and applies pending migrations.
 pub fn open(path: &Path) -> Result<Connection> {
@@ -97,6 +102,9 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         tx.execute("DELETE FROM SchemaVersion;", [])?;
         tx.execute("INSERT INTO SchemaVersion(Version) VALUES (?1);", [version])?;
         tx.commit()?;
+    }
+    if current > 0 && current < PROMPTS_MOVED {
+        conn.execute_batch("VACUUM;")?;
     }
     Ok(())
 }
@@ -175,6 +183,49 @@ mod tests {
         assert_eq!(loaded.blocks.len(), preset.blocks.len(), "the old blocks are gone and the preset loads");
         assert!(conn.prepare("SELECT * FROM CharacterNotebookEntries;").is_err());
         assert!(conn.prepare("SELECT * FROM QuestLogEntries;").is_err());
+    }
+
+    #[test]
+    fn saved_prompts_move_out_of_the_message_rows() {
+        // A database as version 24 left it: prompts in RawPromptText and inside AlternatesJson.
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE SchemaVersion (Version INTEGER NOT NULL);").unwrap();
+        for (_, sql) in MIGRATIONS.iter().filter(|(v, _)| *v <= 24) {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute("INSERT INTO SchemaVersion(Version) VALUES (24);", []).unwrap();
+        conn.execute("INSERT INTO Conversations (Id, Title, Mode, CreatedAt, UpdatedAt) VALUES ('c', 't', 1, 't', 't');", [])
+            .unwrap();
+        let message = "INSERT INTO ChatMessages (Id, ConversationId, Role, Text, Timestamp, RawPromptText, AlternatesJson, \
+            ActiveAlternateIndex) VALUES (?1, 'c', ?2, ?3, '2025-01-01T00:00:00Z', ?4, ?5, ?6);";
+        let swiped = r#"[{"Text":"one","ReasoningText":null,"RawPrompt":"p1"},{"Text":"two","ReasoningText":"r","RawPrompt":"p2"}]"#;
+        conn.execute(message, rusqlite::params!["a", 1, "two", "p2", swiped, 1]).unwrap();
+        conn.execute(message, rusqlite::params!["b", 1, "old", "p-old", "[]", 0]).unwrap();
+        conn.execute(message, rusqlite::params!["pic", 4, "a cat", "{\"prompt\":\"a cat\"}", "[]", 0]).unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let prompts: Vec<(String, i64, String)> = conn
+            .prepare("SELECT MessageId, AlternateIndex, Prompt FROM MessagePrompts ORDER BY MessageId, AlternateIndex;")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let expected = [("a", 0, "p1"), ("a", 1, "p2"), ("b", 0, "p-old")].map(|(m, i, p)| (m.to_string(), i, p.to_string()));
+        assert_eq!(prompts, expected);
+
+        let row = |id: &str| -> (Option<String>, String) {
+            conn.query_row("SELECT RawPromptText, AlternatesJson FROM ChatMessages WHERE Id = ?1;", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+        };
+        let (raw, alternates) = row("a");
+        assert_eq!(raw, None);
+        assert!(!alternates.contains("RawPrompt"), "{alternates}");
+        let loaded: Vec<crate::models::MessageAlternate> = json::from_blob(&alternates).unwrap();
+        assert_eq!(loaded.iter().map(|a| a.text.as_str()).collect::<Vec<_>>(), ["one", "two"]);
+        assert_eq!(loaded[1].reasoning_text.as_deref(), Some("r"));
+        assert_eq!(row("pic").0.as_deref(), Some("{\"prompt\":\"a cat\"}"), "a picture keeps its draft");
     }
 
     #[test]

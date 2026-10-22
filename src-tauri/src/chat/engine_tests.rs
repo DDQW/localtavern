@@ -24,6 +24,9 @@ use crate::providers::{
 use crate::repo::{characters, conversations, group_chats, personas as persona_repo};
 use crate::settings;
 
+#[path = "perf_bench.rs"]
+mod perf_bench;
+
 #[path = "pictures_tests.rs"]
 mod pictures;
 
@@ -383,7 +386,8 @@ async fn a_reply_streams_is_persisted_and_finalized_with_usage() {
     assert_eq!((reply.role, reply.text.as_str()), (MessageRole::Character, "Hello!"));
     assert_eq!(reply.alternates.len(), 1);
     assert_eq!(reply.usage.unwrap().total_tokens, Some(5));
-    assert!(reply.raw_prompt_text.as_deref().unwrap().contains("=== User ===\nHi there"));
+    assert!(reply.raw_prompt_text.is_none() && reply.has_prompt, "the prompt is kept apart from the message");
+    assert!(f.engine.message_prompt(reply.id).unwrap().unwrap().contains("=== User ===\nHi there"));
 
     // The final state is what the UI is told last.
     let updated = events.iter().rev().find_map(|e| match e {
@@ -1679,7 +1683,7 @@ async fn continue_appends_to_the_same_reply_without_adding_an_alternate() {
             (LlmRole::User, "[System note: Continue your last message without repeating its original content.]"),
         ]
     );
-    assert!(reply.raw_prompt_text.as_deref().unwrap().contains("[System note: Continue your last message"));
+    assert!(f.engine.message_prompt(reply.id).unwrap().unwrap().contains("[System note: Continue your last message"));
     assert!(request.system_instruction.as_deref().unwrap().contains("you play Nova"), "the roles still hold");
 }
 

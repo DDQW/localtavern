@@ -81,6 +81,8 @@ export interface Api {
   swipePrevious(messageId: Uuid): Promise<ChatMessage>;
   stopGeneration(conversationId: Uuid): Promise<void>;
   editMessage(messageId: Uuid, text: string): Promise<ChatMessage>;
+  /** The prompt the reply's shown variant was generated from, if it was saved. */
+  messagePrompt(messageId: Uuid): Promise<string | null>;
   /** Returns the story clock when deleting the reply put it back. */
   deleteMessage(messageId: Uuid): Promise<WorldState | null>;
 
@@ -229,6 +231,7 @@ const tauriApi: Api = {
   swipePrevious: (messageId) => invoke("swipe_previous", { messageId }),
   stopGeneration: (conversationId) => invoke("stop_generation", { conversationId }),
   editMessage: (messageId, text) => invoke("edit_message", { messageId, text }),
+  messagePrompt: (messageId) => invoke("message_prompt", { messageId }),
   deleteMessage: (messageId) => invoke("delete_message", { messageId }),
 
   setConversationModel: (conversationId, providerId, model) =>

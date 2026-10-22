@@ -22,7 +22,9 @@ int_enum!(MessageRole { User = 0, Character = 1, System = 2, Tool = 3, Image = 4
 pub struct MessageAlternate {
     pub text: String,
     pub reasoning_text: Option<String>,
-    #[serde(default)]
+    /// Only while the variant is being made: it is stored in `MessagePrompts`, not in the
+    /// alternates blob, and loaded on demand ([`crate::repo::conversations::get_prompt`]).
+    #[serde(default, skip_serializing)]
     pub raw_prompt: Option<String>,
 }
 
@@ -59,8 +61,12 @@ pub struct ChatMessage {
     pub text: String,
     /// The model's reasoning trace, kept apart from `text` so the UI can hide it by default.
     pub reasoning_text: Option<String>,
-    /// The exact prompt sent to the provider to produce this reply, for inspection.
+    /// The exact prompt sent to the provider to produce this reply, for inspection. Set while a
+    /// reply is made; a loaded reply leaves it empty (see `has_prompt`). A picture keeps its draft here.
     pub raw_prompt_text: Option<String>,
+    /// Whether a prompt was saved for this message, so the chat can offer to show it.
+    #[serde(default)]
+    pub has_prompt: bool,
     /// Every generated variant (regeneration appends, swiping navigates).
     pub alternates: Vec<MessageAlternate>,
     pub active_alternate_index: i32,
@@ -84,6 +90,7 @@ impl ChatMessage {
             text: text.into(),
             reasoning_text: None,
             raw_prompt_text: None,
+            has_prompt: false,
             alternates: Vec::new(),
             active_alternate_index: 0,
             attachments: Vec::new(),
@@ -128,6 +135,7 @@ impl ChatMessage {
             raw_prompt: self.raw_prompt_text.clone().filter(|p| !p.is_empty()),
         }];
         self.active_alternate_index = 0;
+        self.has_prompt |= self.alternates[0].raw_prompt.is_some();
     }
 
     /// Appends a freshly regenerated variant and switches to showing it. A message that predates
@@ -136,6 +144,7 @@ impl ChatMessage {
         if self.alternates.is_empty() {
             self.finalize_generation();
         }
+        self.has_prompt |= raw_prompt.is_some();
         self.alternates.push(MessageAlternate { text, reasoning_text, raw_prompt });
         self.swipe_to(self.alternates.len() - 1);
     }
@@ -143,6 +152,7 @@ impl ChatMessage {
     /// Replaces the shown variant's text, reasoning and prompt in place (used by "Continue": it is
     /// still the same generation, just longer, so no new alternate is added).
     pub fn extend_active(&mut self, text: String, reasoning_text: Option<String>, raw_prompt: Option<String>) {
+        self.has_prompt |= raw_prompt.is_some();
         if let Some(i) = self.active_index() {
             self.alternates[i].text = text.clone();
             self.alternates[i].reasoning_text = reasoning_text.clone();

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { api, errorText } from "$lib/api";
   import { chat } from "$lib/chat.svelte";
   import { fileUrl } from "$lib/media";
   import { lightbox } from "$lib/lightbox.svelte";
@@ -38,6 +39,21 @@
           ? "The reply gave no time, so the per-message default was used"
           : "Story time this reply covered, as estimated by the model",
   );
+
+  // Prompts are big (the whole history each), so one is only fetched while its fold is open.
+  let prompt = $state<string | null>(null);
+  async function onPromptToggle(event: Event) {
+    if (!(event.currentTarget as HTMLDetailsElement).open) {
+      prompt = null;
+      return;
+    }
+    prompt = "Loading…";
+    try {
+      prompt = (await api.messagePrompt(message.id)) ?? "No prompt was saved for this version.";
+    } catch (error) {
+      prompt = errorText(error);
+    }
+  }
 
   let copied = $state(false);
   async function copy() {
@@ -139,10 +155,10 @@
       </div>
     {/if}
 
-    {#if message.rawPromptText && !isPicture}
-      <details class="fold">
+    {#if message.hasPrompt && !isPicture && !message.streaming}
+      <details class="fold" ontoggle={onPromptToggle}>
         <summary>Prompt sent to model</summary>
-        <pre class="plain mono">{message.rawPromptText}</pre>
+        {#if prompt !== null}<pre class="plain mono">{prompt}</pre>{/if}
       </details>
     {/if}
   </div>

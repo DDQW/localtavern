@@ -39,6 +39,7 @@ fn map_message(row: &Row) -> rusqlite::Result<ChatMessage> {
         text: row.get("Text")?,
         reasoning_text: row.get("ReasoningText")?,
         raw_prompt_text: row.get("RawPromptText")?,
+        has_prompt: row.get("HasPrompt")?,
         alternates: rows::blob(row, "AlternatesJson")?,
         active_alternate_index: row.get("ActiveAlternateIndex")?,
         attachments: rows::blob(row, "AttachmentsJson")?,
@@ -233,8 +234,52 @@ pub fn delete(conn: &Connection, id: Uuid) -> Result<()> {
 
 // ---- messages ----
 
+/// Every message column, plus whether a prompt was saved for it (the prompts themselves stay in
+/// `MessagePrompts` until one is asked for).
+const MESSAGE_COLUMNS: &str =
+    "m.*, EXISTS (SELECT 1 FROM MessagePrompts p WHERE p.MessageId = m.Id) AS HasPrompt";
+
+/// Only a picture keeps its draft in the row; a reply's prompt goes to `MessagePrompts`.
+fn row_prompt(m: &ChatMessage) -> Option<&str> {
+    (m.role == MessageRole::Image).then_some(m.raw_prompt_text.as_deref()).flatten()
+}
+
+/// Saves the prompts the message carries in memory, one per variant. A loaded message carries none,
+/// and the ones already saved stay.
+fn save_prompts(conn: &Connection, m: &ChatMessage) -> Result<()> {
+    if m.role == MessageRole::Image {
+        return Ok(());
+    }
+    let mut prompts: Vec<(usize, &str)> =
+        m.alternates.iter().enumerate().filter_map(|(i, a)| Some((i, a.raw_prompt.as_deref()?))).collect();
+    if m.alternates.is_empty() {
+        prompts.extend(m.raw_prompt_text.as_deref().map(|p| (0, p)));
+    }
+    for (index, prompt) in prompts.into_iter().filter(|(_, p)| !p.is_empty()) {
+        conn.execute(
+            "INSERT OR REPLACE INTO MessagePrompts (MessageId, AlternateIndex, Prompt) VALUES (?1, ?2, ?3);",
+            params![m.id.to_string(), index as i64, prompt],
+        )?;
+    }
+    Ok(())
+}
+
+/// The prompt the message's shown variant was generated from, if one was saved.
+pub fn get_prompt(conn: &Connection, message_id: Uuid) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT p.Prompt FROM ChatMessages m
+             JOIN MessagePrompts p ON p.MessageId = m.Id AND p.AlternateIndex = MAX(m.ActiveAlternateIndex, 0)
+             WHERE m.Id = ?1;",
+            [message_id.to_string()],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
 pub fn add_message(conn: &Connection, m: &ChatMessage) -> Result<()> {
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
         "INSERT INTO ChatMessages
             (Id, ConversationId, Role, SpeakerCharacterId, Text, ReasoningText, RawPromptText, AlternatesJson,
              ActiveAlternateIndex, AttachmentsJson, DetectedEmotion, Timestamp, PromptTokens, CompletionTokens, TotalTokens,
@@ -247,7 +292,7 @@ pub fn add_message(conn: &Connection, m: &ChatMessage) -> Result<()> {
             m.speaker_character_id.map(|i| i.to_string()),
             m.effective_text(),
             m.reasoning_text,
-            m.raw_prompt_text,
+            row_prompt(m),
             json::to_blob(&m.alternates)?,
             m.active_alternate_index,
             json::to_blob(&m.attachments)?,
@@ -259,12 +304,15 @@ pub fn add_message(conn: &Connection, m: &ChatMessage) -> Result<()> {
             m.clock.as_ref().map(json::to_blob).transpose()?,
         ],
     )?;
+    save_prompts(&tx, m)?;
+    tx.commit()?;
     Ok(())
 }
 
 /// Updates an existing message's editable/regenerable fields - edit, swipe and regenerate all land here.
 pub fn update_message(conn: &Connection, m: &ChatMessage) -> Result<()> {
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
         "UPDATE ChatMessages SET
             Text = ?1, ReasoningText = ?2, RawPromptText = ?3, AlternatesJson = ?4, ActiveAlternateIndex = ?5,
             AttachmentsJson = ?6, DetectedEmotion = ?7, ClockJson = ?8
@@ -272,7 +320,7 @@ pub fn update_message(conn: &Connection, m: &ChatMessage) -> Result<()> {
         params![
             m.effective_text(),
             m.reasoning_text,
-            m.raw_prompt_text,
+            row_prompt(m),
             json::to_blob(&m.alternates)?,
             m.active_alternate_index,
             json::to_blob(&m.attachments)?,
@@ -281,6 +329,8 @@ pub fn update_message(conn: &Connection, m: &ChatMessage) -> Result<()> {
             m.id.to_string(),
         ],
     )?;
+    save_prompts(&tx, m)?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -301,12 +351,12 @@ pub fn delete_message(conn: &Connection, id: Uuid) -> Result<()> {
 
 pub fn get_message(conn: &Connection, id: Uuid) -> Result<Option<ChatMessage>> {
     Ok(conn
-        .query_row("SELECT * FROM ChatMessages WHERE Id = ?1;", [id.to_string()], map_message)
+        .query_row(&format!("SELECT {MESSAGE_COLUMNS} FROM ChatMessages m WHERE m.Id = ?1;"), [id.to_string()], map_message)
         .optional()?)
 }
 
 pub fn get_messages(conn: &Connection, conversation_id: Uuid) -> Result<Vec<ChatMessage>> {
-    let mut stmt = conn.prepare("SELECT * FROM ChatMessages WHERE ConversationId = ?1 ORDER BY RowId;")?;
+    let mut stmt = conn.prepare(&format!("SELECT {MESSAGE_COLUMNS} FROM ChatMessages m WHERE m.ConversationId = ?1 ORDER BY m.RowId;"))?;
     let list = stmt.query_map([conversation_id.to_string()], map_message)?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(list)
 }
@@ -316,13 +366,13 @@ pub fn search_messages(conn: &Connection, query: &str, limit: i64) -> Result<Vec
     let Some(fts) = build_fts_query(query) else {
         return Ok(Vec::new());
     };
-    let mut stmt = conn.prepare(
-        "SELECT m.* FROM ChatMessages m
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {MESSAGE_COLUMNS} FROM ChatMessages m
          JOIN ChatMessagesFts fts ON fts.rowid = m.RowId
          WHERE ChatMessagesFts MATCH ?1
          ORDER BY m.RowId DESC
-         LIMIT ?2;",
-    )?;
+         LIMIT ?2;"
+    ))?;
     let list = stmt.query_map(params![fts, limit], map_message)?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(list)
 }
@@ -471,9 +521,54 @@ mod tests {
         let loaded = get_messages(&conn, c.id).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].text, "second"); // the active alternate wins
-        assert_eq!(loaded[0].alternates, m.alternates);
+        assert_eq!(loaded[0].alternates[0], m.alternates[0]);
+        assert_eq!(loaded[0].alternates[1].raw_prompt, None, "prompts aren't loaded with the message");
+        assert!(loaded[0].has_prompt);
+        assert_eq!(get_prompt(&conn, m.id).unwrap().as_deref(), Some("p"));
         assert_eq!(loaded[0].attachments, m.attachments);
         assert_eq!(loaded[0].usage, m.usage);
+    }
+
+    #[test]
+    fn prompts_follow_the_shown_variant_and_survive_updates_of_a_loaded_message() {
+        let conn = open_in_memory().unwrap();
+        let c = conversation(&conn);
+        let mut m = ChatMessage::new(c.id, MessageRole::Character, "one");
+        m.raw_prompt_text = Some("prompt one".into());
+        m.finalize_generation();
+        add_message(&conn, &m).unwrap();
+
+        // Regenerating a loaded message (which carries no prompts) adds the new one beside the old.
+        let mut loaded = get_message(&conn, m.id).unwrap().unwrap();
+        loaded.add_alternate("two".into(), None, Some("prompt two".into()));
+        update_message(&conn, &loaded).unwrap();
+        assert_eq!(get_prompt(&conn, m.id).unwrap().as_deref(), Some("prompt two"));
+
+        let mut loaded = get_message(&conn, m.id).unwrap().unwrap();
+        loaded.swipe_to(0);
+        update_message(&conn, &loaded).unwrap();
+        assert_eq!(get_prompt(&conn, m.id).unwrap().as_deref(), Some("prompt one"));
+
+        let greeting = ChatMessage::new(c.id, MessageRole::Character, "Hello");
+        add_message(&conn, &greeting).unwrap();
+        assert!(!get_message(&conn, greeting.id).unwrap().unwrap().has_prompt);
+        assert_eq!(get_prompt(&conn, greeting.id).unwrap(), None);
+
+        delete_message(&conn, m.id).unwrap();
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM MessagePrompts;", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0, "a message's prompts go with it");
+    }
+
+    #[test]
+    fn a_picture_keeps_its_draft_in_the_row() {
+        let conn = open_in_memory().unwrap();
+        let c = conversation(&conn);
+        let mut picture = ChatMessage::new(c.id, MessageRole::Image, "a cat");
+        picture.raw_prompt_text = Some("{\"prompt\":\"a cat\"}".into());
+        add_message(&conn, &picture).unwrap();
+        let loaded = get_message(&conn, picture.id).unwrap().unwrap();
+        assert_eq!(loaded.raw_prompt_text, picture.raw_prompt_text);
+        assert!(!loaded.has_prompt);
     }
 
     #[test]

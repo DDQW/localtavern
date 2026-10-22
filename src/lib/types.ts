@@ -9,7 +9,6 @@ export type ConversationMode = "roleplay" | "assistant";
 export interface MessageAlternate {
   text: string;
   reasoningText: string | null;
-  rawPrompt: string | null;
 }
 
 export interface MessageAttachment {
@@ -32,7 +31,9 @@ export interface ChatMessage {
   speakerCharacterId: Uuid | null;
   text: string;
   reasoningText: string | null;
+  /** A picture's draft. A reply's prompt is fetched on demand (`api.messagePrompt`) when `hasPrompt`. */
   rawPromptText: string | null;
+  hasPrompt: boolean;
   alternates: MessageAlternate[];
   activeAlternateIndex: number;
   attachments: MessageAttachment[];

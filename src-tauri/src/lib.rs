@@ -127,6 +127,7 @@ pub fn run() {
             commands::swipe_previous,
             commands::stop_generation,
             commands::edit_message,
+            commands::message_prompt,
             commands::delete_message,
             commands::set_conversation_model,
             commands::set_conversation_preset,

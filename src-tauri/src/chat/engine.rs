@@ -784,6 +784,11 @@ present, keep it as its own final paragraph, still naming whose details they are
 
     // ------------------------------------------------------------------ message edits
 
+    /// The prompt a reply's shown variant was generated from, when it was saved.
+    pub fn message_prompt(&self, message_id: Uuid) -> Result<Option<String>> {
+        self.db().with(|c| conversations::get_prompt(c, message_id))
+    }
+
     pub fn edit_message(&self, message_id: Uuid, text: &str) -> Result<ChatMessage> {
         self.db().with(|c| {
             let mut message = conversations::get_message(c, message_id)?.ok_or_else(|| Error::Other("Message not found.".into()))?;

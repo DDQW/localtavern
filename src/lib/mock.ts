@@ -200,7 +200,8 @@ function message(conversationId: Uuid, role: ChatMessage["role"], text: string, 
     text,
     reasoningText: null,
     rawPromptText: null,
-    alternates: role === "character" ? [{ text, reasoningText: extra.reasoningText ?? null, rawPrompt: null }] : [],
+    hasPrompt: role === "character",
+    alternates: role === "character" ? [{ text, reasoningText: extra.reasoningText ?? null }] : [],
     activeAlternateIndex: 0,
     attachments: [],
     detectedEmotion: null,
@@ -415,11 +416,11 @@ async function stream(conversationId: Uuid, target: ChatMessage, onEvent: EventH
   }
   running.delete(conversationId);
   if (replacing) {
-    target.alternates = target.alternates.length ? target.alternates : [{ text: target.text, reasoningText: null, rawPrompt: null }];
-    target.alternates.push({ text, reasoningText: reasoning, rawPrompt: null });
+    target.alternates = target.alternates.length ? target.alternates : [{ text: target.text, reasoningText: null }];
+    target.alternates.push({ text, reasoningText: reasoning });
     target.activeAlternateIndex = target.alternates.length - 1;
   } else {
-    target.alternates = [{ text, reasoningText: reasoning, rawPrompt: null }];
+    target.alternates = [{ text, reasoningText: reasoning }];
   }
   target.text = text;
   onEvent({ type: "messageUpdated", message: structuredClone(target) });
@@ -549,7 +550,7 @@ export const mockApi: Api = {
       } else {
         tool.text = `[PowerShell tool result]\nCommand: ${command[2]}\nThe user declined to run this command.`;
       }
-      tool.alternates = [{ text: tool.text, reasoningText: null, rawPrompt: null }];
+      tool.alternates = [{ text: tool.text, reasoningText: null }];
       onEvent({ type: "messageUpdated", message: structuredClone(tool) });
       const answer = message(conversationId, "character", "");
       list.push(answer);
@@ -703,6 +704,14 @@ export const mockApi: Api = {
     target.text = text;
     if (target.alternates.length) target.alternates[target.activeAlternateIndex].text = text;
     return structuredClone(target);
+  },
+  async messagePrompt(messageId) {
+    const target = [...messages.values()].flat().find((m) => m.id === messageId);
+    return target?.hasPrompt ? `[system]
+You are the character. (Mock prompt for message ${messageId}.)
+
+[user]
+...` : null;
   },
   async deleteMessage(messageId) {
     for (const list of messages.values()) {

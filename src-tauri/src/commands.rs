@@ -278,6 +278,11 @@ pub fn stop_generation(state: State<'_, AppState>, conversation_id: Uuid) {
 }
 
 #[tauri::command]
+pub fn message_prompt(state: State<'_, AppState>, message_id: Uuid) -> Result<Option<String>> {
+    state.engine.message_prompt(message_id)
+}
+
+#[tauri::command]
 pub fn edit_message(state: State<'_, AppState>, message_id: Uuid, text: String) -> Result<ChatMessage> {
     state.engine.edit_message(message_id, &text)
 }
