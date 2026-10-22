@@ -84,11 +84,11 @@
         <button onclick={() => chat.pickSpeaker(character.id)}>{character.name}</button>
       {/each}
     </div>
-  {:else if chat.isGroup && !chat.busy && chat.lastTurn && chat.notYetAnswered.length > 0}
-    <!-- Someone who hasn't answered your message yet can still add a reply to it. -->
+  {:else if chat.isGroup && !chat.busy && chat.lastTurn && chat.session}
+    <!-- Any member can add another reply, as often as you like, even if they already answered. -->
     <div class="speakers" role="group" aria-label="Add a reply from">
       <span class="muted">Add a reply from</span>
-      {#each chat.notYetAnswered as character (character.id)}
+      {#each chat.session.characters as character (character.id)}
         <button class="ghost" onclick={() => chat.pickSpeaker(character.id)}>{character.name}</button>
       {/each}
     </div>

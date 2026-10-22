@@ -108,17 +108,6 @@ class ChatStore {
     return this.isGroup && !this.busy && this.lastTurn?.role === "user";
   }
 
-  /** In a group: the members who haven't answered the user's latest message yet (any of them can
-   * still add a reply to it). */
-  get notYetAnswered(): Character[] {
-    if (!this.isGroup || !this.session) return [];
-    const since = this.messages.findLastIndex((m) => m.role === "user");
-    const answered = new Set(
-      this.messages.slice(since + 1).filter((m) => m.role === "character").map((m) => m.speakerCharacterId),
-    );
-    return this.session.characters.filter((c) => !answered.has(c.id));
-  }
-
   /** Continue extends the last reply, so it needs one (and nothing already running). */
   get canContinue(): boolean {
     return !!this.session && !this.busy && this.lastTurn?.role === "character";
