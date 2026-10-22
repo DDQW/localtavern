@@ -180,15 +180,16 @@ Format: [time-skip: <number> <minutes|hours|days>] with a single number, e.g. [t
         key: PHOTO,
         group: PHOTOS,
         title: "Characters send photos",
-        help: "Every roleplay reply, while \"Draw the photos characters send\" is on in the picture settings. Must keep the [photo: ...] line format for the app to find the photo.",
+        help: "Every roleplay reply, while \"Draw the photos characters send\" is on in the picture settings. The picture is drawn from the character card's look, outfit and description, copied unchanged; this line is only the shot. Must keep the [photo: ...] line format for the app to find the photo.",
         placeholders: &["{char}", "{user}"],
         default: "{char} sends {user} photos whenever a real person would: a selfie to show how {char} looks or what {char} is wearing, a \
 snapshot of where {char} is, what {char} is doing or something {char} wants {user} to see - above all while they are apart and texting, \
 and whenever {user} asks for one. When they are together, {char} can take a picture of the moment or of the two of them. When {char} \
 sends or takes a photo in this reply, show it happening in the story and end the reply with one last line in exactly this form, square \
-brackets included: [photo: <what the photo shows, as a camera would see it: who is in it, their pose, expression and what they are \
-wearing (if anything), the place and the lighting>]. Write the description only inside the brackets, not in the story text. Leave the \
-line out when no photo is sent or taken.",
+brackets included: [photo: <only the shot: {char}'s pose, expression and what {char} is doing, the place and the lighting>]. Do not \
+describe {char}'s body, face, hair, skin, eyes, age, species, measurements or clothing in that line, and do not change them: the app \
+copies those from {char}'s character card exactly, and the picture is drawn from the card. Write the description only inside the \
+brackets, not in the story text. Leave the line out when no photo is sent or taken.",
     },
     Instruction {
         key: PHOTO_INTIMATE,
@@ -197,7 +198,8 @@ line out when no photo is sent or taken.",
         help: "Added after the photo text while \"Characters can send intimate photos\" is on - never for a character whose birth date makes them under 18 at the story's date.",
         placeholders: &["{char}", "{user}"],
         default: "The photos can be as intimate as the moment between them: when the mood is flirty or sexual and {char} wants to, {char} \
-can send {user} suggestive or nude photos of {char}, described plainly.",
+can send {user} suggestive or nude photos of {char}. The line may say the photo is suggestive or nude, but it still must not describe \
+or change {char}'s body: those details stay the character card's, word for word.",
     },
     Instruction {
         key: USER_PHOTO,
@@ -206,9 +208,9 @@ can send {user} suggestive or nude photos of {char}, described plainly.",
         help: "Added when your latest message contains one of the photo words, while \"Draw the photos you take\" is on. Must keep the [user-photo: ...] line format.",
         placeholders: &["{user}"],
         default: "If {user} takes a photo or picture in {user}'s latest message, also describe that photo, as one more last line in exactly \
-this form, square brackets included: [user-photo: <what {user}'s photo shows, as the camera sees it: who or what is in it (anyone by \
-name), their pose, expression and what they are wearing (if anything), the place and the lighting>]. Leave this line out when {user} \
-takes no photo.",
+this form, square brackets included: [user-photo: <what {user}'s photo shows, as the camera sees it: who is in it (anyone by name), \
+their pose, expression, the place and the lighting>]. If a character is in it, do not describe or change their body, face, hair, skin \
+or clothing; the app copies those from their character card. Leave this line out when {user} takes no photo.",
     },
     // ---- pictures the user sends
     Instruction {
