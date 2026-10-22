@@ -144,20 +144,26 @@ fn queue_error(status: reqwest::StatusCode, body: &str) -> Error {
     Error::Other(format!("{SERVER} refused the workflow: {}", parts.join("; ")))
 }
 
-/// The first picture in a finished history entry, preferring saved outputs over previews.
-fn first_image(entry: &Value) -> Option<Map<String, Value>> {
+/// The first media file in a finished history entry. Prefers video/`gifs` outputs (VHS etc.), then
+/// still images; saved outputs over previews.
+fn first_media(entry: &Value) -> Option<Map<String, Value>> {
     let outputs = entry.get("outputs")?.as_object()?;
-    let images: Vec<&Map<String, Value>> = outputs
-        .values()
-        .filter_map(|o| o.get("images").and_then(Value::as_array))
-        .flatten()
-        .filter_map(Value::as_object)
-        .collect();
-    images
-        .iter()
-        .find(|i| i.get("type").and_then(Value::as_str) == Some("output"))
-        .or_else(|| images.first())
-        .map(|i| (*i).clone())
+    let pick = |key: &str| -> Vec<&Map<String, Value>> {
+        outputs
+            .values()
+            .filter_map(|o| o.get(key).and_then(Value::as_array))
+            .flatten()
+            .filter_map(Value::as_object)
+            .collect()
+    };
+    for key in ["gifs", "videos", "images"] {
+        let files = pick(key);
+        if let Some(file) = files.iter().find(|i| i.get("type").and_then(Value::as_str) == Some("output")).or_else(|| files.first())
+        {
+            return Some((*file).clone());
+        }
+    }
+    None
 }
 
 /// Why a run failed, from its history status messages.
@@ -218,8 +224,11 @@ pub async fn generate(client: &reqwest::Client, url: &str, custom_workflow: &str
             }
             let done = entry.pointer("/status/completed").and_then(Value::as_bool).unwrap_or(true);
             if done {
-                break first_image(entry)
-                    .ok_or_else(|| Error::Other(format!("The {SERVER} workflow finished without a picture - does it end in a Save Image node?")))?;
+                break first_media(entry).ok_or_else(|| {
+                    Error::Other(format!(
+                        "The {SERVER} workflow finished without a picture or video - does it end in Save Image / Video Combine?"
+                    ))
+                })?;
             }
         }
         if started.elapsed() > MAX_WAIT {

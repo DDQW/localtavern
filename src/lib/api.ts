@@ -192,6 +192,7 @@ export interface Api {
   imagePrompt(conversationId: Uuid, mode: ImageMode, characterId: Uuid | null): Promise<ImagePromptDraft | null>;
   /** The ready-to-draw draft for a photo a character sent in the story. */
   photoDraft(characterId: Uuid | null, description: string): Promise<ImagePromptDraft>;
+  videoDraft(characterId: Uuid | null, description: string): Promise<ImagePromptDraft>;
   /** Renders a draft and adds it to the chat - or into picture message `intoMessage` (a story photo
    * whose render failed); null when stopped (stopImage). */
   generateImage(conversationId: Uuid, draft: ImagePromptDraft, intoMessage?: Uuid): Promise<ChatMessage | null>;
@@ -339,6 +340,7 @@ const tauriApi: Api = {
   stopCharacterPicture: (characterId) => invoke("stop_character_picture", { characterId }),
   imagePrompt: (conversationId, mode, characterId) => invoke("image_prompt", { conversationId, mode, characterId }),
   photoDraft: (characterId, description) => invoke("photo_draft", { characterId, description }),
+  videoDraft: (characterId, description) => invoke("video_draft", { characterId, description }),
   generateImage: (conversationId, draft, intoMessage) =>
     invoke("generate_image", { conversationId, draft, intoMessage: intoMessage ?? null }),
   addFailedPhoto: (conversationId, draft) => invoke("add_failed_photo", { conversationId, draft }),

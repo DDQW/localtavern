@@ -29,6 +29,7 @@ pub const TIME_SKIP_TAG: &str = "timeSkipTag";
 pub const PHOTO: &str = "photo";
 pub const PHOTO_INTIMATE: &str = "photoIntimate";
 pub const USER_PHOTO: &str = "userPhoto";
+pub const VIDEO: &str = "video";
 // Pictures the user sends
 pub const PICTURE_SHOWN: &str = "pictureShown";
 pub const PICTURE_SHOWN_ASSISTANT: &str = "pictureShownAssistant";
@@ -211,6 +212,19 @@ or change {char}'s body: the picture keeps {char}'s look from the character card
 this form, square brackets included: [user-photo: <what {user}'s photo shows, as the camera sees it: who is in it (anyone by name), \
 their pose, expression, the place and the lighting>]. If a character is in it, do not describe or change their body, face, hair, skin \
 or clothing; the picture keeps that character's look from their card. Leave this line out when {user} takes no photo.",
+    },
+    Instruction {
+        key: VIDEO,
+        group: PHOTOS,
+        title: "Characters send videos",
+        help: "Every roleplay reply, while \"Draw the videos characters send\" is on in the picture settings. Needs a ComfyUI video workflow. Must keep the [video: ...] line format.",
+        placeholders: &["{char}", "{user}"],
+        default: "{char} can also send {user} short videos whenever a real person would (a moving selfie, a clip of where {char} is, \
+something happening). When {char} sends or takes a video in this reply, show it happening in the story and end the reply with one \
+last line in exactly this form, square brackets included: [video: <only the shot: motion, pose, expression, what is happening, the \
+place and the lighting>]. Do not describe or change {char}'s body, face, hair, skin, eyes, age, species, race or clothing in that \
+line: the clip keeps {char}'s look from the character card. Write the description only inside the brackets. Leave the line out when \
+no video is sent or taken. Prefer a still [photo: ...] for a frozen moment; use [video: ...] when motion matters.",
     },
     // ---- pictures the user sends
     Instruction {

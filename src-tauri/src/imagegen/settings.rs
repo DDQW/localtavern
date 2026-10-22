@@ -48,6 +48,10 @@ pub struct ImageGenSettings {
     /// A ComfyUI workflow in API format with `%prompt%`-style placeholders; empty uses the built-in
     /// text-to-image workflow.
     pub comfy_workflow: String,
+    /// ComfyUI API workflow for story videos (`[video: ...]`). Required for video; empty means videos
+    /// cannot be rendered yet. Same `%prompt%` placeholders as the still workflow.
+    #[serde(default)]
+    pub comfy_video_workflow: String,
     /// What starts ComfyUI (its `run_*.bat`, say); run hidden when LocalTavern starts. Empty: the
     /// user starts ComfyUI themselves.
     pub comfy_launcher: String,
@@ -67,6 +71,9 @@ pub struct ImageGenSettings {
     pub unload_ollama_first: bool,
     /// Draw the photos characters send in the story (`[photo: ...]` tags) automatically.
     pub auto_photos: bool,
+    /// Render the videos characters send in the story (`[video: ...]` tags) automatically.
+    #[serde(default)]
+    pub auto_videos: bool,
 }
 
 impl Default for ImageGenSettings {
@@ -81,6 +88,7 @@ impl Default for ImageGenSettings {
                 ..Default::default()
             },
             comfy_workflow: String::new(),
+            comfy_video_workflow: String::new(),
             comfy_launcher: String::new(),
             // SDXL's portrait bucket; the "face" and scene modes reshape it (see `prompts::size_for`).
             width: 832,
@@ -94,6 +102,7 @@ impl Default for ImageGenSettings {
             review_prompt: true,
             unload_ollama_first: true,
             auto_photos: true,
+            auto_videos: true,
         }
     }
 }

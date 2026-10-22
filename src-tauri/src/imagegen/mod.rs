@@ -71,13 +71,22 @@ pub async fn generate(
     client: &reqwest::Client,
     settings: &ImageGenSettings,
     request: &ImageRequest,
+    video: bool,
     cancel: &CancellationToken,
 ) -> Result<Option<GeneratedImage>> {
     let url = &settings.active().url;
     let work = async {
         match settings.backend {
-            ImageBackend::A1111 => a1111::generate(client, url, request).await,
-            ImageBackend::ComfyUi => comfy::generate(client, url, &settings.comfy_workflow, request).await,
+            ImageBackend::A1111 => {
+                if video {
+                    return Err(Error::Other("Story videos need the ComfyUI backend.".into()));
+                }
+                a1111::generate(client, url, request).await
+            }
+            ImageBackend::ComfyUi => {
+                let workflow = if video { &settings.comfy_video_workflow } else { &settings.comfy_workflow };
+                comfy::generate(client, url, workflow, request).await
+            }
         }
     };
     tokio::select! {
@@ -117,6 +126,8 @@ pub fn sniff_mime(data: &[u8]) -> &'static str {
         [0xFF, 0xD8, 0xFF, ..] => "image/jpeg",
         [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "image/webp",
         [b'G', b'I', b'F', b'8', ..] => "image/gif",
+        [b'\x1a', b'E', b'\xdf', b'\xa3', ..] => "video/webm",
+        [_, _, _, _, b'f', b't', b'y', b'p', ..] => "video/mp4",
         _ => "image/png",
     }
 }
@@ -152,6 +163,8 @@ mod tests {
         assert_eq!(sniff_mime(&[0xFF, 0xD8, 0xFF, 0xE0]), "image/jpeg");
         assert_eq!(sniff_mime(b"RIFF\0\0\0\0WEBPVP8 "), "image/webp");
         assert_eq!(sniff_mime(b"GIF89a"), "image/gif");
+        assert_eq!(sniff_mime(b"\x1aE\xdf\xa3...."), "video/webm");
+        assert_eq!(sniff_mime(b"....ftypisom"), "video/mp4");
         assert_eq!(sniff_mime(b""), "image/png");
     }
 

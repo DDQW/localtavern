@@ -8,7 +8,7 @@ use uuid::Uuid;
 use super::presets;
 use crate::error::{Error, Result};
 use crate::models::{Character, ChatMessage, Conversation, ConversationMode, GroupChat, MessageRole, Persona, PromptPreset};
-use crate::prompting::photo_tag;
+use crate::prompting::{photo_tag, video_tag};
 use crate::repo::{characters, conversations, group_chats, lorebooks, personas, summaries, user_memories};
 use crate::settings;
 
@@ -272,10 +272,17 @@ pub fn chat_history(conn: &Connection, conversation_id: Uuid) -> Result<Vec<Chat
     Ok(messages.into_iter().filter_map(|m| if m.role == MessageRole::Image { photo_note(m) } else { Some(m) }).collect())
 }
 
-/// A story photo's picture message as the system note the model gets instead; `None` for any other picture.
+/// A story photo/video's picture message as the system note the model gets instead; `None` for any other picture.
 fn photo_note(picture: ChatMessage) -> Option<ChatMessage> {
     let draft: super::ImagePromptDraft = serde_json::from_str(picture.raw_prompt_text.as_deref()?).ok()?;
-    let mut note = ChatMessage::new(picture.conversation_id, MessageRole::System, photo_tag::context_note(&draft.photo?));
+    let text = if let Some(photo) = draft.photo.as_deref() {
+        photo_tag::context_note(photo)
+    } else if let Some(video) = draft.video.as_deref() {
+        video_tag::context_note(video)
+    } else {
+        return None;
+    };
+    let mut note = ChatMessage::new(picture.conversation_id, MessageRole::System, text);
     note.id = picture.id;
     note.timestamp = picture.timestamp;
     Some(note)

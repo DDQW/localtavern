@@ -14,6 +14,7 @@ pub mod next_speaker_tag;
 pub mod photo_tag;
 pub mod powershell_tool;
 pub mod reply_tags;
+pub mod video_tag;
 pub mod roles;
 pub mod time_skip_tag;
 pub mod world_info;

@@ -41,7 +41,7 @@ use crate::prompting::powershell_tool::{self, PowerShellToolCallRequest, ToolRes
 use crate::prompting::group_reply::SpeakerCut;
 use crate::prompting::reply_tags::{self, ReplyTags};
 use crate::prompting::{
-    self, breakout, emotion_tag, instructions, next_speaker_tag, photo_tag, roles, world_state,
+    self, breakout, emotion_tag, instructions, next_speaker_tag, photo_tag, roles, video_tag, world_state,
     KeywordWorldInfoScanner,
     PromptAssemblyContext,
 };
@@ -1548,6 +1548,13 @@ present, keep it as its own final paragraph, still naming whose details they are
                     append_instruction(&mut request, &photo_tag::user_photo_instruction(&ins, user));
                 }
             }
+            if options.reply_tags
+                && conversation.mode == ConversationMode::Roleplay
+                && self.db().with(crate::imagegen::settings::load)?.auto_videos
+            {
+                let user = roles::user_name(ctx.persona.as_ref());
+                append_instruction(&mut request, &video_tag::build_instruction(&ins, &character.name, user));
+            }
         }
         // The picture rides on the user's turn, but the system notes after it come last and the model
         // answers those - so say outright that there is a picture to look at.
@@ -1729,6 +1736,14 @@ present, keep it as its own final paragraph, still naming whose details they are
         Ok(photos)
     }
 
+    /// Story videos tagged in the reply (`[video: ...]`), when that setting is on.
+    fn videos_to_draw(&self, tags: &ReplyTags, speaker_id: Option<Uuid>) -> Result<Vec<(Option<Uuid>, String)>> {
+        if !self.db().with(crate::imagegen::settings::load)?.auto_videos {
+            return Ok(Vec::new());
+        }
+        Ok(tags.video.as_ref().map(|description| (speaker_id, description.clone())).into_iter().collect())
+    }
+
     fn emit_failure(&self, error: &ProviderError, sink: &Arc<dyn EventSink>) {
         sink.emit(ChatEvent::Error { message: user_message(error), kind: Some(error.kind) });
     }
@@ -1808,12 +1823,14 @@ present, keep it as its own final paragraph, still naming whose details they are
 
         let succeeded = matches!(end, StreamEnd::Completed);
         let mut photos = Vec::new();
+        let mut videos = Vec::new();
         let mut next = None;
         let mut private = false;
         if succeeded {
             message.usage = usage;
             let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, true, sink)?;
             photos = self.photos_to_draw(&ctx, &tags, speaker_id)?;
+            videos = self.videos_to_draw(&tags, speaker_id)?;
             next = tags.next.as_deref().and_then(|name| next_speaker_tag::resolve(name, &others));
             private = offer_private && tags.private;
             message.text = match &cut {
@@ -1843,6 +1860,9 @@ present, keep it as its own final paragraph, still naming whose details they are
             sink.emit(ChatEvent::MessageUpdated { message: message.clone() });
             for (character_id, description) in photos {
                 sink.emit(ChatEvent::PhotoSent { conversation_id, message_id: message.id, character_id, description });
+            }
+            for (character_id, description) in videos {
+                sink.emit(ChatEvent::VideoSent { conversation_id, message_id: message.id, character_id, description });
             }
         }
 
@@ -2013,10 +2033,12 @@ present, keep it as its own final paragraph, still naming whose details they are
         let succeeded = matches!(end, StreamEnd::Completed);
         let reasoning = nonempty(reasoning);
         let mut photos = Vec::new();
+        let mut videos = Vec::new();
         if succeeded {
             target.usage = usage;
             let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, moves_clock, &sink)?;
             photos = self.photos_to_draw(&ctx, &tags, target.speaker_character_id)?;
+            videos = self.videos_to_draw(&tags, target.speaker_character_id)?;
             let clean = match &cut {
                 Some(cut) => cut.apply(&clean),
                 None => clean,
@@ -2042,6 +2064,9 @@ present, keep it as its own final paragraph, still naming whose details they are
         sink.emit(ChatEvent::MessageUpdated { message: target });
         for (character_id, description) in photos {
             sink.emit(ChatEvent::PhotoSent { conversation_id: ctx.conversation.id, message_id: target_id, character_id, description });
+        }
+        for (character_id, description) in videos {
+            sink.emit(ChatEvent::VideoSent { conversation_id: ctx.conversation.id, message_id: target_id, character_id, description });
         }
 
         match end {

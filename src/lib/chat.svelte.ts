@@ -400,7 +400,8 @@ class ChatStore {
    * and its photos. */
   private handle(conversationId: Uuid, event: ChatEvent) {
     if (this.conversationId !== conversationId) {
-      if (event.type === "photoSent") void this.drawSentPhoto(conversationId, event.characterId, event.description);
+      if (event.type === "photoSent") void this.drawSentPhoto(conversationId, event.characterId, event.description, false);
+      else if (event.type === "videoSent") void this.drawSentPhoto(conversationId, event.characterId, event.description, true);
       else this.handleParked(conversationId, event);
       return;
     }
@@ -455,7 +456,10 @@ class ChatStore {
         if (this.session) this.session.conversation.title = event.title;
         break;
       case "photoSent":
-        void this.drawSentPhoto(conversationId, event.characterId, event.description);
+        void this.drawSentPhoto(conversationId, event.characterId, event.description, false);
+        break;
+      case "videoSent":
+        void this.drawSentPhoto(conversationId, event.characterId, event.description, true);
         break;
       case "breakoutStarted":
         this.takenAside = { breakoutId: event.breakoutId, characterId: event.characterId };
@@ -698,11 +702,11 @@ class ChatStore {
     }
   }
 
-  /** A photo a character sent in chat `id` (open or not): drawn straight away with no review, or
+  /** A photo/video a character sent in chat `id` (open or not): rendered straight away with no review, or
    * after the picture already under way there. */
-  private async drawSentPhoto(id: Uuid, characterId: Uuid | null, description: string) {
+  private async drawSentPhoto(id: Uuid, characterId: Uuid | null, description: string, video: boolean) {
     try {
-      const draft = await api.photoDraft(characterId, description);
+      const draft = video ? await api.videoDraft(characterId, description) : await api.photoDraft(characterId, description);
       this.photoQueue.set(id, [...(this.photoQueue.get(id) ?? []), draft]);
       this.nextPhoto(id);
     } catch (e) {

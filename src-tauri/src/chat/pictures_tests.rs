@@ -20,6 +20,7 @@ fn draft(prompt: &str, character_id: Option<Uuid>) -> ImagePromptDraft {
         height: 832,
         character_id,
         photo: None,
+        video: None,
     }
 }
 

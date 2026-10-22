@@ -16,6 +16,9 @@ pub fn mime_from_extension(path: &str) -> &'static str {
         Some("webp") => "image/webp",
         Some("gif") => "image/gif",
         Some("bmp") => "image/bmp",
+        Some("mp4" | "m4v") => "video/mp4",
+        Some("webm") => "video/webm",
+        Some("mov") => "video/quicktime",
         _ => "application/octet-stream",
     }
 }
@@ -27,6 +30,9 @@ pub fn extension_from_mime(mime: &str) -> &'static str {
         "image/webp" => ".webp",
         "image/gif" => ".gif",
         "image/bmp" => ".bmp",
+        "video/mp4" => ".mp4",
+        "video/webm" => ".webm",
+        "video/quicktime" => ".mov",
         _ => ".bin",
     }
 }

@@ -1156,6 +1156,10 @@ You are the character. (Mock prompt for message ${messageId}.)
       photo: description.trim(),
     };
   },
+  async videoDraft(characterId, description) {
+    const draft = await this.photoDraft(characterId, description);
+    return { ...draft, photo: null, video: description.trim() };
+  },
   async generateImage(conversationId, draft, intoMessage) {
     imageRunning.set(conversationId, true);
     for (let i = 0; i < 15; i++) {
@@ -1240,6 +1244,7 @@ let imageSettings: ImageGenSettings = {
   a1111: { url: "http://127.0.0.1:7860", model: "", sampler: "Euler a", scheduler: "" },
   comfy: { url: "http://127.0.0.1:8188", model: "", sampler: "euler", scheduler: "normal" },
   comfyWorkflow: "",
+  comfyVideoWorkflow: "",
   comfyLauncher: "",
   width: 832,
   height: 1216,
@@ -1252,6 +1257,7 @@ let imageSettings: ImageGenSettings = {
   reviewPrompt: true,
   unloadOllamaFirst: true,
   autoPhotos: true,
+  autoVideos: true,
 };
 const imageRunning = new Map<Uuid, boolean>();
 

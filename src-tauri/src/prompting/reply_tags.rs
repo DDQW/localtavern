@@ -9,16 +9,17 @@ use chrono::Duration;
 use regex::Regex;
 
 use super::meter_tag::{self, MeterReading};
-use super::{breakout, emotion_tag, next_speaker_tag, photo_tag, time_skip_tag};
+use super::{breakout, emotion_tag, next_speaker_tag, photo_tag, time_skip_tag, video_tag};
 
 /// One or more tags at the very end of a reply, each optionally wrapped in `*`, `_` or backticks.
 /// A `[...]` tag may hold parentheses (photo descriptions do, SD weights like `(red hair:1.2)` too);
 /// a `(...)` one may not. Either may close with the other bracket.
 static TAIL: LazyLock<Regex> = LazyLock::new(|| {
     let keys = format!(
-        r"\s*(?:(?:time[-_ ]?(?:skip|jump|passed|elapsed)|emotion|meters?|next(?:[-_ ]?(?:speaker|up))?)\s*[:=]|{}|{}|private\b)",
+        r"\s*(?:(?:time[-_ ]?(?:skip|jump|passed|elapsed)|emotion|meters?|next(?:[-_ ]?(?:speaker|up))?)\s*[:=]|{}|{}|{}|private\b)",
         photo_tag::KEY,
-        photo_tag::USER_KEY
+        photo_tag::USER_KEY,
+        video_tag::KEY
     );
     Regex::new(&format!(r"(?i)(?:[\s*_`]*(?:\[{keys}[^\[\]]*|\({keys}[^\])]*)[\])])+[\s*_`]*$")).unwrap()
 });
@@ -33,6 +34,8 @@ pub struct ReplyTags {
     pub photo: Option<String>,
     /// What a photo the user's character took in their message shows, for the app to draw.
     pub user_photo: Option<String>,
+    /// What a video the character sent in the story shows, for the app to render.
+    pub video: Option<String>,
     /// The group member this reply hands the user's message on to, as the model wrote the name.
     pub next: Option<String>,
     /// The speaker takes the user aside into a private talk (group chats).
@@ -52,6 +55,7 @@ pub fn peel(text: &str) -> (String, ReplyTags) {
                 meters: meter_tag::parse_tail(tail),
                 photo: photo_tag::parse_tail(tail),
                 user_photo: photo_tag::parse_user_tail(tail),
+                video: video_tag::parse_tail(tail),
                 next: next_speaker_tag::parse_tail(tail),
                 private: breakout::parse_tail(tail),
             };
@@ -66,6 +70,11 @@ pub fn peel(text: &str) -> (String, ReplyTags) {
     if tags.user_photo.is_none() {
         if let Some((rest, description)) = photo_tag::take_user_inline(&clean) {
             (clean, tags.user_photo) = (rest, Some(description));
+        }
+    }
+    if tags.video.is_none() {
+        if let Some((rest, description)) = video_tag::take_inline(&clean) {
+            (clean, tags.video) = (rest, Some(description));
         }
     }
     (clean, tags)
@@ -88,6 +97,15 @@ mod tests {
             assert_eq!(tags.emotion.as_deref(), Some("happy"), "{text}");
             assert_eq!(tags.meters, Some(MeterReading { arousal: Some(30), climax: Some(5), orgasm: false }), "{text}");
         }
+    }
+
+    #[test]
+    fn peels_a_video_tag() {
+        let (clean, tags) = peel("She hits record.\n\n[video: walking through rain, neon street]\n[emotion: happy]");
+        assert_eq!(clean, "She hits record.");
+        assert_eq!(tags.video.as_deref(), Some("walking through rain, neon street"));
+        assert_eq!(tags.photo, None);
+        assert_eq!(tags.emotion.as_deref(), Some("happy"));
     }
 
     #[test]

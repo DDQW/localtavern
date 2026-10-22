@@ -216,6 +216,7 @@ pub fn run() {
             image_commands::generate_image,
             image_commands::add_failed_photo,
             image_commands::photo_draft,
+            image_commands::video_draft,
             image_commands::stop_image,
             image_commands::delete_picture,
         ])

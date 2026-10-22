@@ -30,6 +30,10 @@ pub struct ImagePromptDraft {
     /// of the story, so the model is told about it (see [`super::session::chat_history`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub photo: Option<String>,
+    /// For a video sent in the story: what the reply said it showed. Rendered with the ComfyUI video
+    /// workflow instead of the still one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<String>,
 }
 
 /// A picture message for `draft`, not saved yet and with no picture in it.
@@ -173,6 +177,7 @@ impl ChatEngine {
             height,
             character_id: drawn.map(|c| c.id),
             photo: None,
+            video: None,
         }))
     }
 
@@ -192,8 +197,8 @@ impl ChatEngine {
     /// Keeps a story photo whose render failed in the chat, as a picture message with no picture, so
     /// it can be drawn again in its place and the model still knows it was sent.
     pub fn add_failed_photo(&self, conversation_id: Uuid, draft: &ImagePromptDraft) -> Result<ChatMessage> {
-        if draft.photo.is_none() {
-            return Err(Error::Other("Only a photo from the story is kept when it can't be drawn.".into()));
+        if draft.photo.is_none() && draft.video.is_none() {
+            return Err(Error::Other("Only a photo or video from the story is kept when it can't be drawn.".into()));
         }
         let message = picture_message(conversation_id, draft)?;
         self.db().with(|c| {

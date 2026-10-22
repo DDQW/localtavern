@@ -19,7 +19,7 @@
       .getImageSettings()
       .then(async (loaded) => {
         settings = loaded;
-        showWorkflow = loaded.comfyWorkflow.trim().length > 0;
+        showWorkflow = loaded.comfyWorkflow.trim().length > 0 || loaded.comfyVideoWorkflow.trim().length > 0;
         // The chat's "Picture settings…" link lands here; the page above loads first, so jump now.
         if (location.hash === "#pictures") {
           await tick();
@@ -191,6 +191,13 @@
       describes it and the photo is drawn into the chat right away, without the review step.
     </p>
     <label class="check">
+      <input type="checkbox" bind:checked={settings.autoVideos} /> Draw the videos characters send in the story
+    </label>
+    <p class="muted small">
+      Same idea with <code>[video: …]</code> clips. Needs the ComfyUI backend and a video workflow below (Export API). Still
+      photos keep using the normal image workflow.
+    </p>
+    <label class="check">
       <input type="checkbox" bind:checked={settings.unloadOllamaFirst} /> Share the graphics card with Ollama
     </label>
     <p class="muted small">
@@ -211,6 +218,20 @@
           Leave it empty for the built-in workflow.
         </p>
         <textarea class="workflow" rows="8" bind:value={settings.comfyWorkflow} spellcheck="false" placeholder="&#123;&quot;3&quot;: &#123;&quot;class_type&quot;: &quot;KSampler&quot;, …&#125;&#125;"></textarea>
+        <label class="field">
+          Video workflow (API export)
+          <textarea
+            class="workflow"
+            rows="8"
+            bind:value={settings.comfyVideoWorkflow}
+            spellcheck="false"
+            placeholder="Paste a text-to-video or image-to-video API workflow. Same %prompt% placeholders."
+          ></textarea>
+        </label>
+        <p class="muted small">
+          Used for <code>[video: …]</code> story clips. End it with a Video Combine / Save Video node so ComfyUI returns a
+          file under <code>gifs</code> or <code>videos</code> in the history.
+        </p>
       {/if}
     {/if}
 

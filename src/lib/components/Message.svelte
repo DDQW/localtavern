@@ -107,13 +107,17 @@
 
     {#if isPicture}
       {#each message.attachments as attachment (attachment.imagePath)}
-        <button class="picture" onclick={() => (lightbox.src = fileUrl(attachment.imagePath))} aria-label="View picture full size">
-          <img src={fileUrl(attachment.imagePath)} alt={message.text} />
-        </button>
+        {#if /^(video)\//i.test(attachment.mimeType)}
+          <video class="picture clip" controls preload="metadata" src={fileUrl(attachment.imagePath)} aria-label="Story video"></video>
+        {:else}
+          <button class="picture" onclick={() => (lightbox.src = fileUrl(attachment.imagePath))} aria-label="View picture full size">
+            <img src={fileUrl(attachment.imagePath)} alt={message.text} />
+          </button>
+        {/if}
       {/each}
       {#if message.attachments.length === 0}
         <div class="failed-photo" role="status">
-          <span>📷 This photo couldn't be drawn.</span>
+          <span>{message.rawPromptText?.includes('"video"') ? "🎬 This video couldn't be rendered." : "📷 This photo couldn't be drawn."}</span>
           <button onclick={() => chat.drawAgain(message)} disabled={!!chat.picture}>
             {chat.picture ? "Waiting for the picture under way…" : "Try again"}
           </button>
@@ -312,6 +316,14 @@
     border: 1px dashed var(--border);
     border-radius: 8px;
     color: var(--muted);
+  }
+
+  video.clip {
+    display: block;
+    max-width: min(100%, 420px);
+    max-height: 360px;
+    border-radius: 8px;
+    background: #000;
   }
   .attachments {
     display: flex;

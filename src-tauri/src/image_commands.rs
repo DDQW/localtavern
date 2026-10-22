@@ -165,6 +165,19 @@ pub async fn image_prompt(
 /// or written description) and usual outfit go into the prompt; `description` is only the shot the
 /// reply named (pose, place, lighting). Portrait size, as a phone photo.
 pub fn photo_draft_for(settings: &ImageGenSettings, character: Option<&Character>, description: &str) -> ImagePromptDraft {
+    story_media_draft(settings, character, description, false)
+}
+
+pub fn video_draft_for(settings: &ImageGenSettings, character: Option<&Character>, description: &str) -> ImagePromptDraft {
+    story_media_draft(settings, character, description, true)
+}
+
+fn story_media_draft(
+    settings: &ImageGenSettings,
+    character: Option<&Character>,
+    description: &str,
+    video: bool,
+) -> ImagePromptDraft {
     let (prompt, negative_prompt) = match character {
         Some(character) => {
             let style = &character.picture_style;
@@ -177,6 +190,7 @@ pub fn photo_draft_for(settings: &ImageGenSettings, character: Option<&Character
         }
         None => (prompts::combine(&settings.prompt_prefix, "", description), settings.negative_prompt.clone()),
     };
+    let shot = description.trim().to_string();
     ImagePromptDraft {
         mode: ImageMode::Character,
         prompt,
@@ -184,7 +198,8 @@ pub fn photo_draft_for(settings: &ImageGenSettings, character: Option<&Character
         width: settings.width,
         height: settings.height,
         character_id: character.map(|c| c.id),
-        photo: Some(description.trim().to_string()),
+        photo: (!video).then_some(shot.clone()),
+        video: video.then_some(shot),
     }
 }
 
@@ -198,6 +213,18 @@ pub fn photo_draft(state: State<'_, AppState>, character_id: Option<Uuid>, descr
         Ok((imagegen::settings::load(c)?, character))
     })?;
     Ok(photo_draft_for(&settings, character.as_ref(), &description))
+}
+
+#[tauri::command]
+pub fn video_draft(state: State<'_, AppState>, character_id: Option<Uuid>, description: String) -> Result<ImagePromptDraft> {
+    let (settings, character) = state.db.with(|c| {
+        let character = match character_id {
+            Some(id) => crate::repo::characters::get(c, id)?,
+            None => None,
+        };
+        Ok((imagegen::settings::load(c)?, character))
+    })?;
+    Ok(video_draft_for(&settings, character.as_ref(), &description))
 }
 
 /// Renders a (reviewed) draft and adds the picture to the chat - or, with `into_message`, puts it
@@ -214,11 +241,21 @@ pub async fn generate_image(
         return Err(Error::Other("The picture prompt is empty.".into()));
     }
     let settings = state.db.with(imagegen::settings::load)?;
+    if draft.video.is_some() {
+        if settings.backend != imagegen::ImageBackend::ComfyUi {
+            return Err(Error::Other("Story videos need the ComfyUI backend in Settings → Pictures.".into()));
+        }
+        if settings.comfy_video_workflow.trim().is_empty() {
+            return Err(Error::Other(
+                "Paste a ComfyUI video workflow (Export API) under Settings → Pictures before characters can send videos.".into(),
+            ));
+        }
+    }
     let request = render_request(&settings, &draft);
     let (token, _guard) = jobs.claim(conversation_id)?;
     jobs.comfy.ensure_ready(&jobs.client, &settings, &token).await?;
     make_room(&state, &jobs, &settings).await;
-    let rendered = imagegen::generate(&jobs.client, &settings, &request, &token).await;
+    let rendered = imagegen::generate(&jobs.client, &settings, &request, draft.video.is_some(), &token).await;
     give_back(&jobs, &settings).await;
     let Some(image) = rendered? else {
         return Ok(None);
@@ -328,7 +365,7 @@ pub async fn draw_character_picture(
     let (token, _guard) = jobs.claim(character.id)?;
     jobs.comfy.ensure_ready(&jobs.client, &settings, &token).await?;
     make_room(&state, &jobs, &settings).await;
-    let rendered = imagegen::generate(&jobs.client, &settings, &request, &token).await;
+    let rendered = imagegen::generate(&jobs.client, &settings, &request, false, &token).await;
     give_back(&jobs, &settings).await;
     let Some(image) = rendered? else {
         return Ok(None);
@@ -362,6 +399,7 @@ mod tests {
             height: 1024,
             character_id: None,
             photo: None,
+            video: None,
         };
 
         let a = render_request(&settings, &draft);

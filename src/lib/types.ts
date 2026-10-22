@@ -505,6 +505,8 @@ export type ChatEvent =
   | { type: "titleChanged"; conversationId: Uuid; title: string }
   /** The character sent the user a photo in the story; the app draws it. */
   | { type: "photoSent"; conversationId: Uuid; messageId: Uuid; characterId: Uuid | null; description: string }
+  /** The character sent the user a video in the story; the app renders it. */
+  | { type: "videoSent"; conversationId: Uuid; messageId: Uuid; characterId: Uuid | null; description: string }
   /** A group member took the user aside: open their private talk and let them speak first. */
   | { type: "breakoutStarted"; conversationId: Uuid; breakoutId: Uuid; characterId: Uuid }
   | { type: "compacting"; conversationId: Uuid }
@@ -655,6 +657,10 @@ export interface ImageGenSettings {
   unloadOllamaFirst: boolean;
   /** Draw the photos characters send in the story automatically. */
   autoPhotos: boolean;
+  /** ComfyUI API workflow for story videos (`[video: ...]`). */
+  comfyVideoWorkflow: string;
+  /** Render the videos characters send in the story automatically. */
+  autoVideos: boolean;
 }
 
 export interface ImageBackendOptions {
@@ -673,6 +679,8 @@ export interface ImagePromptDraft {
   characterId: Uuid | null;
   /** For a photo sent or taken in the story: what the reply said it showed. */
   photo?: string | null;
+  /** For a video sent in the story: what the reply said it showed. */
+  video?: string | null;
 }
 
 /** One picture of a character's set. */
