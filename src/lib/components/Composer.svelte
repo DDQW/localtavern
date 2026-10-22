@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { api, errorText, inTauri } from "$lib/api";
   import { chat } from "$lib/chat.svelte";
@@ -36,6 +37,18 @@
   // ---- the Picture menu ----
   let pictureMenu = $state(false);
   let menuWrap = $state<HTMLDivElement>();
+  let menuEl = $state<HTMLDivElement>();
+  // The menu opens leftwards from the button, unless that would run off the screen (on a phone the
+  // button sits on the left once the row wraps); then it opens rightwards.
+  let menuOpensRight = $state(false);
+
+  async function togglePictureMenu() {
+    pictureMenu = !pictureMenu;
+    if (!pictureMenu) return;
+    menuOpensRight = false;
+    await tick();
+    menuOpensRight = (menuEl?.getBoundingClientRect().left ?? 0) < 8;
+  }
 
   /** Any click outside the menu closes it. */
   function onWindowClick(event: MouseEvent) {
@@ -124,7 +137,7 @@
     {#if chat.isRoleplay && chat.session}
       <div class="menuwrap" bind:this={menuWrap}>
         <button
-          onclick={() => (pictureMenu = !pictureMenu)}
+          onclick={togglePictureMenu}
           disabled={pictureBusy}
           aria-haspopup="menu"
           aria-expanded={pictureMenu}
@@ -133,7 +146,7 @@
           Picture
         </button>
         {#if pictureMenu}
-          <div class="menu" role="menu">
+          <div class="menu" class:opens-right={menuOpensRight} role="menu" bind:this={menuEl}>
             {#each chat.session.characters as character (character.id)}
               <button role="menuitem" onclick={() => draw("character", character.id)}>{character.name}, full body</button>
               <button role="menuitem" onclick={() => draw("face", character.id)}>{character.name}'s face</button>
@@ -226,6 +239,16 @@
     border-radius: var(--radius-sm);
     background: var(--panel);
     box-shadow: var(--shadow);
+  }
+
+  .menu.opens-right {
+    right: auto;
+    left: 0;
+  }
+
+  /* Never wider than the screen; long names wrap instead. */
+  .menu {
+    max-width: calc(100vw - 16px);
   }
 
   .menu button,

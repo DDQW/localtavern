@@ -60,7 +60,9 @@
       {#if isAssistant}
         <button class="ghost" onclick={() => (showPrompt = !showPrompt)} aria-expanded={showPrompt}>System prompt</button>
       {/if}
-      <button class="narrow" onclick={() => (showPickers = !showPickers)} aria-expanded={showPickers} title="Persona, preset, model and history">⚙</button>
+      <button class="narrow pick" onclick={() => (showPickers = !showPickers)} aria-expanded={showPickers} title="Persona, preset, model and history">
+        ⚙ <span class="model-name">{conversation.model || "Pick a model"}</span>
+      </button>
       {#if chat.isRoleplay}
         <button class="narrow" onclick={() => (ui.storyOpen = true)} title="Story panel">Story</button>
       {/if}
@@ -256,6 +258,22 @@
 
     .narrow {
       display: inline-block;
+    }
+
+    /* Shows which model the chat uses, so it's clear where to change it. */
+    .pick {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+      max-width: 44vw;
+    }
+
+    .model-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
     }
 
     .pickers:not(.open) {
