@@ -122,6 +122,6 @@ mod tests {
     fn instruction_mentions_the_tag_format() {
         let instruction = build_instruction(instructions::defaults());
         assert!(instruction.contains("[time-skip:"));
-        assert!(instruction.contains("never omit it"));
+        assert!(instruction.contains("never omit it"), "built-in text kept for Settings; the engine no longer injects it");
     }
 }

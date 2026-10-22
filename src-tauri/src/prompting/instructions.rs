@@ -166,7 +166,7 @@ chosen from exactly this list: {emotions}. Format: [emotion: <one of the list ab
         key: TIME_SKIP_TAG,
         group: TAGS,
         title: "Time-skip tag",
-        help: "Every roleplay reply while the story has a clock. Must keep the [time-skip: ...] format.",
+        help: "Not injected any more: the story clock is set by hand in the Story panel. Kept here so you can still edit the old wording if you want it back in a custom preset.",
         placeholders: &[],
         default: "The story has a clock that only moves when you move it. At the very end of every reply, on its own last line, \
 append a tag saying how much in-story time that reply covered - never omit it, and never write 0: a short line of dialogue or a quick \

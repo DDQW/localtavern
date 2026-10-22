@@ -58,7 +58,7 @@ pub struct WorldState {
     pub fictional_date_time: NaiveDateTime,
     pub weather: WeatherCondition,
     pub weather_notes: Option<String>,
-    /// Fallback tick only - the model normally estimates each reply's elapsed time itself.
+    /// Unused while the clock is manual (Story panel). Kept for older saves.
     pub default_advance_minutes_per_message: i32,
     pub auto_drift_weather_enabled: bool,
     /// Where the story is set (ISO 3166-1 alpha-2, e.g. "DE"); picks the public holidays.
@@ -74,8 +74,7 @@ pub struct WorldState {
     /// character not listed wears their default.
     #[serde(default)]
     pub outfits: std::collections::BTreeMap<Uuid, Uuid>,
-    /// Largest in-story jump one reply may make on its own, in minutes (0 = no limit). A model that
-    /// overshoots ("3 days" for a coffee) is clamped to this.
+    /// Unused while the clock is manual (Story panel). Kept for older saves.
     #[serde(default = "default_max_skip_minutes")]
     pub max_skip_minutes: i32,
     /// Track an arousal / climax meter per character: after each reply the story is read for what

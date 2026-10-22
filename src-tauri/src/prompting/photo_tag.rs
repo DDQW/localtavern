@@ -15,8 +15,8 @@ use super::instructions::{self, Instructions};
 /// brackets are required: told only "describe it", a model writes the description into the story
 /// text where the app can't find it.
 ///
-/// `intimate` (for a character not known to be under 18) adds that the photos can be as intimate as
-/// the moment: suggestive or nude ones of the character themselves when the mood is flirty or sexual.
+/// `intimate` (when that switch is on in Settings) adds that the photos can be as intimate as the
+/// moment: suggestive or nude ones of the character themselves when the mood is flirty or sexual.
 pub fn build_instruction(ins: &Instructions, character_name: &str, user_name: &str, intimate: bool) -> String {
     let vars = [("char", character_name), ("user", user_name)];
     let photo = ins.render(instructions::PHOTO, &vars);

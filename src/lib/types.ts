@@ -184,9 +184,9 @@ export interface Meter {
 export interface ClockSnapshot {
   fictionalDateTime: string;
   advancedMinutes: number;
-  /** No readable time-skip tag: the flat per-message tick was used. */
+  /** Kept for older messages; new replies no longer move the clock. */
   estimated: boolean;
-  /** The model asked for this many minutes and was held to the limit. */
+  /** Kept for older messages; new replies no longer move the clock. */
   clampedFrom: number | null;
 }
 

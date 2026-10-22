@@ -25,14 +25,6 @@
 
   const weatherLabel = (w: string) => w.replace(/([a-z])([A-Z])/g, "$1 $2");
   const WEATHER: WeatherCondition[] = ["Clear", "PartlyCloudy", "Overcast", "Rain", "Thunderstorm", "Snow", "Fog", "Windy"];
-  const SKIP_LIMITS = [
-    { label: "1 hour", minutes: 60 },
-    { label: "3 hours", minutes: 180 },
-    { label: "6 hours", minutes: 360 },
-    { label: "12 hours", minutes: 720 },
-    { label: "1 day", minutes: 1440 },
-    { label: "No limit", minutes: 0 },
-  ];
   const JUMPS = [
     { label: "+1 hour", minutes: 60 },
     { label: "+6 hours", minutes: 360 },
@@ -156,11 +148,6 @@
     void chat.updateWorld({ customHolidays: world.customHolidays.filter((_, i) => i !== index) });
   }
 
-  function setMinutes(e: Event & { currentTarget: HTMLInputElement }) {
-    const minutes = Math.round(Number(e.currentTarget.value));
-    if (Number.isFinite(minutes) && minutes >= 1) void chat.updateWorld({ defaultAdvanceMinutesPerMessage: minutes });
-    else e.currentTarget.value = String(world?.defaultAdvanceMinutesPerMessage ?? 5);
-  }
 </script>
 
 {#snippet editor()}
@@ -219,25 +206,7 @@
             onchange={(e) => chat.updateWorld({ weatherNotes: e.currentTarget.value })}
           />
         </label>
-        <label class="field">
-          Largest automatic jump per reply
-          <select value={world.maxSkipMinutes ?? 360} disabled={locked} onchange={(e) => chat.updateWorld({ maxSkipMinutes: Number(e.currentTarget.value) })}>
-            {#each SKIP_LIMITS as l (l.minutes)}<option value={l.minutes}>{l.label}</option>{/each}
-          </select>
-        </label>
-        <label class="field">
-          Minutes per message (when the reply gives no time)
-          <input type="number" min="1" step="1" value={world.defaultAdvanceMinutesPerMessage} disabled={locked} onchange={setMinutes} />
-        </label>
-        <label class="check">
-          <input
-            type="checkbox"
-            checked={world.autoDriftWeatherEnabled}
-            disabled={locked}
-            onchange={(e) => chat.updateWorld({ autoDriftWeatherEnabled: e.currentTarget.checked })}
-          />
-          Auto-drift weather over time
-        </label>
+        <p class="muted small">The clock and weather only change when you edit them here. Replies do not move them.</p>
       </div>
 
       {#if dressable.length > 0}
