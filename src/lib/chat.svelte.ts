@@ -96,15 +96,27 @@ class ChatStore {
     return !!this.session?.conversation.parentConversationId;
   }
 
-  /** The newest message the model sees. Pictures sit in the chat but aren't part of the
-   * conversation, so they never count as "the last reply". */
+  /** The newest message of the exchange. Pictures sit in the chat but aren't part of the
+   * conversation, and a note like "stepped away to talk in private" doesn't end it either, so
+   * neither counts as "the last reply". */
   get lastTurn(): UiMessage | undefined {
-    return this.messages.findLast((m) => m.role !== "image");
+    return this.messages.findLast((m) => m.role !== "image" && m.role !== "system");
   }
 
   /** In a group whose last message is the user's own: nobody has answered yet, so offer the members. */
   get awaitingSpeaker(): boolean {
     return this.isGroup && !this.busy && this.lastTurn?.role === "user";
+  }
+
+  /** In a group: the members who haven't answered the user's latest message yet (any of them can
+   * still add a reply to it). */
+  get notYetAnswered(): Character[] {
+    if (!this.isGroup || !this.session) return [];
+    const since = this.messages.findLastIndex((m) => m.role === "user");
+    const answered = new Set(
+      this.messages.slice(since + 1).filter((m) => m.role === "character").map((m) => m.speakerCharacterId),
+    );
+    return this.session.characters.filter((c) => !answered.has(c.id));
   }
 
   /** Continue extends the last reply, so it needs one (and nothing already running). */

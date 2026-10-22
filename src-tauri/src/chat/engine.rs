@@ -194,6 +194,12 @@ fn speaker_cut(ctx: &ReplyContext, speaker: Option<&Character>) -> Option<Speake
     SpeakerCut::new(&me.name, &others)
 }
 
+/// The newest message that is part of the exchange. A note the app made in the story (the group's
+/// "stepped away to talk in private") doesn't end it: a reply can still be retried or continued.
+fn last_turn(messages: &[ChatMessage]) -> Option<&ChatMessage> {
+    messages.iter().rev().find(|m| m.role != MessageRole::System)
+}
+
 /// The nudge Continue appends as a trailing user turn (a system note), so the model extends rather
 /// than restarts.
 const CONTINUE_NUDGE: &str = "Continue your last message without repeating its original content.";
@@ -995,7 +1001,7 @@ present, keep it as its own final paragraph, still naming whose details they are
 
     async fn continue_inner(&self, conversation_id: Uuid, sink: Arc<dyn EventSink>, token: CancellationToken) -> Result<()> {
         let ctx = self.db().with(|c| load_reply_context(c, conversation_id))?;
-        let mut target = match ctx.messages.last() {
+        let mut target = match last_turn(&ctx.messages) {
             Some(m) if m.role == MessageRole::Character => m.clone(),
             _ => return Err(Error::Other("There is no reply to continue.".into())),
         };
@@ -1280,7 +1286,7 @@ present, keep it as its own final paragraph, still naming whose details they are
 
         // An empty box with an unanswered user message means "retry this" (typically right after
         // deleting the character's reply) - reuse that message instead of requiring it be retyped.
-        let awaiting_reply = ctx.messages.last().is_some_and(|m| m.role == MessageRole::User);
+        let awaiting_reply = last_turn(&ctx.messages).is_some_and(|m| m.role == MessageRole::User);
         let is_retry = text.trim().is_empty() && attachments.is_empty() && awaiting_reply;
         if !is_retry {
             if text.trim().is_empty() && attachments.is_empty() {
@@ -1337,6 +1343,7 @@ present, keep it as its own final paragraph, still naming whose details they are
             .iter()
             .rev()
             .take_while(|m| m.role != MessageRole::User)
+            .filter(|m| m.role == MessageRole::Character)
             .filter_map(|m| m.speaker_character_id)
             .collect();
         let mut queue = VecDeque::from(speakers);

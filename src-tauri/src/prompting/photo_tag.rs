@@ -6,15 +6,21 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-/// One line for the system instruction. Strict about *when* (a photo only when the story sends one,
-/// never as decoration) and explicit that the brackets are required: told only "describe it", a
-/// model writes the description into the story text where the app can't find it.
+/// One line for the system instruction. Photos are offered as ordinary behaviour - whenever a real
+/// person with a phone would send or take one - not as a rare exception: framed as "most replies
+/// send no photo, only when the story calls for it", models never sent one. Explicit that the
+/// brackets are required: told only "describe it", a model writes the description into the story
+/// text where the app can't find it.
 pub fn build_instruction(character_name: &str, user_name: &str) -> String {
+    let (c, u) = (character_name, user_name);
     format!(
-        "Most replies send no photo. Only when {character_name} actually sends {user_name} a photo in this reply (for example a selfie \
-or a picture over the phone, because the story calls for it), end the reply with one last line in exactly this form, square brackets \
-included: [photo: <what the photo shows, as a camera would see it: who is in it, their pose, expression and what they are \
-wearing (if anything), the place and the lighting>]. Write the description only inside the brackets, not in the story text. Never add the line when no photo is sent."
+        "{c} sends {u} photos whenever a real person would: a selfie to show how {c} looks or what {c} is wearing, a snapshot of \
+where {c} is, what {c} is doing or something {c} wants {u} to see - above all while they are apart and texting, and whenever {u} \
+asks for one. When they are together, {c} can take a picture of the moment or of the two of them. When {c} sends or takes a photo in \
+this reply, show it happening in the story and end the reply with one last line in exactly this form, square brackets included: \
+[photo: <what the photo shows, as a camera would see it: who is in it, their pose, expression and what they are wearing (if \
+anything), the place and the lighting>]. Write the description only inside the brackets, not in the story text. Leave the line out \
+when no photo is sent or taken."
     )
 }
 
@@ -41,9 +47,13 @@ mod tests {
     #[test]
     fn instruction_names_both_sides_and_the_format() {
         let line = build_instruction("Nova", "Alex");
-        assert!(line.starts_with("Most replies send no photo. Only when Nova actually sends Alex a photo"));
-        assert!(line.contains("square brackets included: [photo: <"));
-        assert!(line.ends_with("Never add the line when no photo is sent."));
+        assert!(line.starts_with("Nova sends Alex photos whenever a real person would: a selfie"), "{line}");
+        assert!(line.contains("while they are apart and texting, and whenever Alex asks for one"), "{line}");
+        assert!(line.contains("When they are together, Nova can take a picture"), "{line}");
+        assert!(line.contains("square brackets included: [photo: <"), "{line}");
+        assert!(line.ends_with("Leave the line out when no photo is sent or taken."), "{line}");
+        // Not framed as a rare exception any more: that wording never got a photo sent.
+        assert!(!line.contains("Most replies") && !line.contains("Only when"), "{line}");
     }
 
     #[test]

@@ -494,7 +494,8 @@ export const mockApi: Api = {
 
   async sendMessage(conversationId, text, attachments, onEvent) {
     const list = messages.get(conversationId)!;
-    const last = list.at(-1);
+    // A "stepped away" note doesn't end the exchange: an empty send still retries the user's message.
+    const last = list.findLast((m) => m.role !== "system" && m.role !== "image");
     if (!(text.trim() === "" && last?.role === "user")) {
       const user = message(conversationId, "user", text.trim(), {
         attachments: attachments.map((p) => ({ imagePath: p, mimeType: "image/png" })),

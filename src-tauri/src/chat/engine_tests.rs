@@ -1468,6 +1468,43 @@ async fn a_character_can_take_the_user_aside_and_speaks_first_there() {
 }
 
 #[tokio::test]
+async fn the_stepped_away_note_doesnt_stop_a_retry_or_a_continue() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Alice grabs your arm.\n[private]"), finish("STOP")]),
+        Script::Items(vec![chunk("Alice waves instead."), finish("STOP")]),
+        Script::Items(vec![chunk(" Then she sits."), finish("STOP")]),
+    ]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+    no_clock(&f, conv);
+
+    send(&f, conv, "Evening!").await.0.unwrap();
+    let reply = messages(&f, conv)[1].clone();
+    assert_eq!(messages(&f, conv).last().unwrap().role, MessageRole::System, "the note comes after the reply");
+
+    // Deleting the reply leaves the note last; an empty send still retries the user's message.
+    f.engine.delete_message(reply.id).unwrap();
+    send(&f, conv, "").await.0.unwrap();
+    let texts: Vec<(MessageRole, String)> = messages(&f, conv).iter().map(|m| (m.role, m.text.clone())).collect();
+    assert_eq!(texts.iter().filter(|(r, _)| *r == MessageRole::User).count(), 1, "no empty message was added: {texts:?}");
+    assert_eq!(texts.last().unwrap(), &(MessageRole::Character, "Alice waves instead.".to_string()));
+
+    // A note after a reply doesn't stop Continue either.
+    let note = messages(&f, conv).into_iter().find(|m| m.role == MessageRole::System).unwrap();
+    f.db.with(|c| {
+        let mut moved = note.clone();
+        moved.id = Uuid::new_v4();
+        moved.timestamp = chrono::Utc::now();
+        conversations::add_message(c, &moved)
+    })
+    .unwrap();
+    f.engine.continue_message(conv, Arc::new(VecSink::default())).await.unwrap();
+    let alices = messages(&f, conv).into_iter().rfind(|m| m.role == MessageRole::Character).unwrap();
+    assert_eq!(alices.text, "Alice waves instead. Then she sits.");
+}
+
+#[tokio::test]
 async fn a_group_can_keep_characters_from_taking_the_user_aside() {
     let f = fixture(vec![Script::Items(vec![chunk("Alice waves.\n[private]"), finish("STOP")])]);
     let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));

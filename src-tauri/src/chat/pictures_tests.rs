@@ -268,7 +268,7 @@ async fn a_photo_the_character_sends_is_announced_and_kept_out_of_the_text() {
     let (result, events) = send(&f, conv, "Send me a pic?").await;
     result.unwrap();
     let system = f.provider.requests()[0].system_instruction.clone().unwrap_or_default();
-    assert!(system.contains("Only when Nova actually sends User a photo"), "{system}");
+    assert!(system.contains("Nova sends User photos whenever a real person would"), "{system}");
     assert!(system.contains("square brackets included"), "{system}");
 
     let reply = messages(&f, conv).into_iter().find(|m| m.role == MessageRole::Character).unwrap();

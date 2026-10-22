@@ -84,8 +84,9 @@
             <p class="marker">
               <span>{message.text}</span>
               {#if chat.isGroup && message.speakerCharacterId}
-                <button class="ghost" onclick={() => chat.openBreakout(message.speakerCharacterId!)} disabled={chat.busy}>Open the talk</button>
+                <button class="ghost" onclick={() => chat.openBreakout(message.speakerCharacterId!)}>Open the talk</button>
               {/if}
+              <button class="ghost" onclick={() => chat.remove(message)} disabled={chat.busy} title="Remove this note" aria-label="Remove this note">✕</button>
             </p>
           {:else}
             <Message {message} latest={message.id === lastTurnId} />
