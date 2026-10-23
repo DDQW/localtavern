@@ -72,8 +72,14 @@ pub struct ImageGenSettings {
     /// Draw the photos characters send in the story (`[photo: ...]` tags) automatically.
     pub auto_photos: bool,
     /// Render the videos characters send in the story (`[video: ...]` tags) automatically.
-    #[serde(default)]
+    /// `bool` defaults to false, which would drop the instruction from settings saved before this
+    /// switch existed, so the model would never be asked. Missing means on, same as a new install.
+    #[serde(default = "default_true")]
     pub auto_videos: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for ImageGenSettings {
@@ -180,6 +186,13 @@ mod tests {
         let partial = load(&conn).unwrap();
         assert_eq!((partial.backend, partial.steps), (ImageBackend::ComfyUi, 12));
         assert_eq!(partial.comfy.url, "http://127.0.0.1:8188");
+
+        // Saved before story videos existed: the model is still asked. An explicit off stays off.
+        app_settings::set(&conn, SETTINGS_KEY, r#"{"autoPhotos":true}"#).unwrap();
+        let legacy = load(&conn).unwrap();
+        assert!(legacy.auto_photos && legacy.auto_videos);
+        app_settings::set(&conn, SETTINGS_KEY, r#"{"autoVideos":false}"#).unwrap();
+        assert!(!load(&conn).unwrap().auto_videos);
     }
 
     #[test]
