@@ -1,7 +1,9 @@
+pub mod audio;
 pub mod chat;
 pub mod commands;
 pub mod db;
 pub mod error;
+pub mod gpu;
 pub mod group_chats;
 pub mod holidays;
 pub mod image_commands;
@@ -52,7 +54,7 @@ fn resolve_data_dir(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Err
     Ok(app.path().app_local_data_dir()?)
 }
 
-fn build_state(data_dir: PathBuf) -> Result<AppState, Box<dyn std::error::Error>> {
+fn build_state(data_dir: PathBuf, gpu: gpu::GpuGate) -> Result<AppState, Box<dyn std::error::Error>> {
     let db = Db::new(db::open(&data_dir.join("localtavern.db"))?);
     let secrets = Arc::new(KeyringSecretStore);
     let client = http::build_client();
@@ -80,7 +82,7 @@ fn build_state(data_dir: PathBuf) -> Result<AppState, Box<dyn std::error::Error>
         Arc::new(MistralProvider::new(client.clone(), secrets.clone())),
         Arc::new(XaiSubscriptionProvider::new(client.clone(), xai.clone())),
         Arc::new(ChatGptSubscriptionProvider::new(client.clone(), chatgpt.clone())),
-        Arc::new(OllamaProvider::new(client.clone(), Arc::new(DbOllamaOptions(db.clone())))),
+        Arc::new(OllamaProvider::new(client.clone(), Arc::new(DbOllamaOptions(db.clone()))).with_gpu_gate(gpu.clone())),
         vast.clone(),
     ];
     if let Some(ondevice) = &ondevice {
@@ -95,7 +97,10 @@ fn build_state(data_dir: PathBuf) -> Result<AppState, Box<dyn std::error::Error>
     let images_dir = data_dir.join("images");
     let engine = ChatEngine::new(db.clone(), registry.clone(), images_dir.clone());
     engine.set_holiday_source(Arc::new(holidays::NagerHolidays::new(client.clone())));
-    Ok(AppState { db, engine, providers: registry, vast, secrets, sessions, sign_ins: Default::default(), images_dir, data_dir, ondevice, ondevice_download: Default::default() })
+    engine.set_gpu_gate(gpu);
+    let audio: Arc<dyn audio::AudioMaker> = Arc::new(audio::ElevenLabs::new(client.clone(), secrets.clone()));
+    engine.set_audio_maker(audio.clone());
+    Ok(AppState { db, engine, providers: registry, vast, secrets, audio, sessions, sign_ins: Default::default(), images_dir, data_dir, ondevice, ondevice_download: Default::default() })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -106,8 +111,10 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             let data_dir = resolve_data_dir(app)?;
-            app.manage(image_commands::ImageJobs::new(&data_dir));
-            app.manage(build_state(data_dir)?);
+            // Pictures hold it while they render; Ollama chat waits for them (see `gpu`).
+            let gpu = gpu::GpuGate::default();
+            app.manage(image_commands::ImageJobs::new(&data_dir, gpu.clone()));
+            app.manage(build_state(data_dir, gpu)?);
             image_commands::start_comfy_on_launch(app.handle());
             Ok(())
         })
@@ -182,6 +189,14 @@ pub fn run() {
             commands::open_group,
             commands::open_breakout,
             commands::pick_speaker,
+            commands::react_to_room,
+            commands::get_audio_settings,
+            commands::save_audio_settings,
+            commands::audio_has_key,
+            commands::set_audio_key,
+            commands::list_voices,
+            commands::make_clip,
+            commands::rejoin_group,
             commands::continue_message,
             commands::impersonate,
             commands::context_status,
@@ -209,6 +224,9 @@ pub fn run() {
             image_commands::get_image_settings,
             image_commands::save_image_settings,
             image_commands::image_backend_options,
+            image_commands::ondevice_image_status,
+            image_commands::download_ondevice_image_model,
+            image_commands::delete_ondevice_image_model,
             image_commands::describe_character_look,
             image_commands::draw_character_picture,
             image_commands::stop_character_picture,

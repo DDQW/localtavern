@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::db::{json, rows, time};
 use crate::error::Result;
 use crate::models::{
-    ChatMessage, Conversation, ConversationMode, LlmUsage, MessageAttachment, MessageRole, WorldState,
+    AudioClip, ChatMessage, Conversation, ConversationMode, LlmUsage, MessageAttachment, MessageRole, WorldState,
 };
 
 fn map_conversation(row: &Row) -> rusqlite::Result<Conversation> {
@@ -43,6 +43,7 @@ fn map_message(row: &Row) -> rusqlite::Result<ChatMessage> {
         alternates: rows::blob(row, "AlternatesJson")?,
         active_alternate_index: row.get("ActiveAlternateIndex")?,
         attachments: rows::blob(row, "AttachmentsJson")?,
+        clips: rows::opt_blob(row, "ClipsJson")?.unwrap_or_default(),
         detected_emotion: row.get("DetectedEmotion")?,
         clock: rows::opt_blob(row, "ClockJson")?,
         timestamp: rows::datetime(row, "Timestamp")?,
@@ -283,8 +284,8 @@ pub fn add_message(conn: &Connection, m: &ChatMessage) -> Result<()> {
         "INSERT INTO ChatMessages
             (Id, ConversationId, Role, SpeakerCharacterId, Text, ReasoningText, RawPromptText, AlternatesJson,
              ActiveAlternateIndex, AttachmentsJson, DetectedEmotion, Timestamp, PromptTokens, CompletionTokens, TotalTokens,
-             ClockJson)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16);",
+             ClockJson, ClipsJson)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17);",
         params![
             m.id.to_string(),
             m.conversation_id.to_string(),
@@ -302,10 +303,23 @@ pub fn add_message(conn: &Connection, m: &ChatMessage) -> Result<()> {
             m.usage.and_then(|u| u.completion_tokens),
             m.usage.and_then(|u| u.total_tokens),
             m.clock.as_ref().map(json::to_blob).transpose()?,
+            clips_blob(&m.clips)?,
         ],
     )?;
     save_prompts(&tx, m)?;
     tx.commit()?;
+    Ok(())
+}
+
+/// The clips as stored: nothing at all for a message without any.
+fn clips_blob(clips: &[AudioClip]) -> Result<Option<String>> {
+    Ok((!clips.is_empty()).then(|| json::to_blob(&clips)).transpose()?)
+}
+
+/// Rewrites only a message's clips - making one's audio can't undo an edit or swipe that landed
+/// meanwhile.
+pub fn set_clips(conn: &Connection, id: Uuid, clips: &[AudioClip]) -> Result<()> {
+    conn.execute("UPDATE ChatMessages SET ClipsJson = ?1 WHERE Id = ?2;", params![clips_blob(clips)?, id.to_string()])?;
     Ok(())
 }
 
@@ -315,8 +329,8 @@ pub fn update_message(conn: &Connection, m: &ChatMessage) -> Result<()> {
     tx.execute(
         "UPDATE ChatMessages SET
             Text = ?1, ReasoningText = ?2, RawPromptText = ?3, AlternatesJson = ?4, ActiveAlternateIndex = ?5,
-            AttachmentsJson = ?6, DetectedEmotion = ?7, ClockJson = ?8
-         WHERE Id = ?9;",
+            AttachmentsJson = ?6, DetectedEmotion = ?7, ClockJson = ?8, ClipsJson = ?9
+         WHERE Id = ?10;",
         params![
             m.effective_text(),
             m.reasoning_text,
@@ -326,6 +340,7 @@ pub fn update_message(conn: &Connection, m: &ChatMessage) -> Result<()> {
             json::to_blob(&m.attachments)?,
             m.detected_emotion,
             m.clock.as_ref().map(json::to_blob).transpose()?,
+            clips_blob(&m.clips)?,
             m.id.to_string(),
         ],
     )?;
@@ -527,6 +542,26 @@ mod tests {
         assert_eq!(get_prompt(&conn, m.id).unwrap().as_deref(), Some("p"));
         assert_eq!(loaded[0].attachments, m.attachments);
         assert_eq!(loaded[0].usage, m.usage);
+    }
+
+    #[test]
+    fn clips_are_stored_with_the_message_and_updated_on_their_own() {
+        use crate::models::ClipKind;
+        let conn = open_in_memory().unwrap();
+        let c = conversation(&conn);
+        let mut m = ChatMessage::new(c.id, MessageRole::Character, "A door slams.");
+        add_message(&conn, &m).unwrap();
+        assert!(get_message(&conn, m.id).unwrap().unwrap().clips.is_empty(), "none unless the reply has any");
+
+        m.clips = vec![AudioClip::new(ClipKind::Sound, "door slams", None), AudioClip::new(ClipKind::Voice, "Get out!", Some(Uuid::new_v4()))];
+        update_message(&conn, &m).unwrap();
+        assert_eq!(get_message(&conn, m.id).unwrap().unwrap().clips, m.clips);
+
+        m.clips[0].path = Some("door.mp3".into());
+        set_clips(&conn, m.id, &m.clips).unwrap();
+        let loaded = get_message(&conn, m.id).unwrap().unwrap();
+        assert_eq!(loaded.clips[0].path.as_deref(), Some("door.mp3"));
+        assert_eq!(loaded.text, "A door slams.");
     }
 
     #[test]

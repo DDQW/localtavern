@@ -1,5 +1,5 @@
 //! The tags a roleplay reply ends with - `[time-skip: ...]`, `[emotion: ...]`, `[meters: ...]`,
-//! `[photo: ...]`, `[next: ...]`, `[private]` -
+//! `[photo: ...]`, `[next: ...]`, `[private]`, `[back]` -
 //! peeled off together, in whatever order the model wrote them, so one missing or misplaced tag
 //! can't leave another in the visible text or hide it from its parser.
 
@@ -9,7 +9,7 @@ use chrono::Duration;
 use regex::Regex;
 
 use super::meter_tag::{self, MeterReading};
-use super::{breakout, emotion_tag, next_speaker_tag, photo_tag, time_skip_tag, video_tag};
+use super::{audio_tag, breakout, emotion_tag, next_speaker_tag, photo_tag, time_skip_tag, video_tag};
 
 /// One or more tags at the very end of a reply, each optionally wrapped in `*`, `_` or backticks.
 /// A `[...]` tag may hold parentheses (photo descriptions do, SD weights like `(red hair:1.2)` too);
@@ -21,7 +21,10 @@ static TAIL: LazyLock<Regex> = LazyLock::new(|| {
         photo_tag::USER_KEY,
         video_tag::KEY
     );
-    Regex::new(&format!(r"(?i)(?:[\s*_`]*(?:\[{keys}[^\[\]]*|\({keys}[^\])]*)[\])])+[\s*_`]*$")).unwrap()
+    // `[back]`, `[sound: ...]` and `[voice: ...]` only in square brackets: "(back in a minute)" and
+    // "(voice: low)" are just narration.
+    let bracket_only = format!(r"\s*back\b|\s*{}|\s*{}", audio_tag::SOUND_KEY, audio_tag::VOICE_KEY);
+    Regex::new(&format!(r"(?i)(?:[\s*_`]*(?:\[(?:{keys}|{bracket_only})[^\[\]]*|\({keys}[^\])]*)[\])])+[\s*_`]*$")).unwrap()
 });
 
 #[derive(Debug, Default, PartialEq)]
@@ -40,6 +43,12 @@ pub struct ReplyTags {
     pub next: Option<String>,
     /// The speaker takes the user aside into a private talk (group chats).
     pub private: bool,
+    /// The speaker ends their private talk and goes back to the group.
+    pub back: bool,
+    /// Sounds the reply asks for (`[sound: ...]`), as the model described them.
+    pub sounds: Vec<String>,
+    /// Lines the speaker says aloud (`[voice: ...]`).
+    pub voices: Vec<String>,
 }
 
 /// Splits the trailing tags off `text`, returning the text without them and what they said. A photo
@@ -58,6 +67,9 @@ pub fn peel(text: &str) -> (String, ReplyTags) {
                 video: video_tag::parse_tail(tail),
                 next: next_speaker_tag::parse_tail(tail),
                 private: breakout::parse_tail(tail),
+                back: breakout::parse_back_tail(tail),
+                sounds: audio_tag::parse_sounds(tail),
+                voices: audio_tag::parse_voices(tail),
             };
             (text[..found.start()].trim_end().to_string(), tags)
         }
@@ -200,6 +212,28 @@ mod tests {
         assert!(peel("Come. [private: about the letter]").1.private);
         assert!(!peel("Hi. [emotion: happy]").1.private);
         assert_eq!(peel("It was a private matter.").0, "It was a private matter.");
+    }
+
+    #[test]
+    fn peels_a_back_tag_but_not_a_sentence_ending_in_back() {
+        let (clean, tags) = peel("Mira sighs and stands.\n\n[emotion: tired]\n[back]");
+        assert_eq!(clean, "Mira sighs and stands.");
+        assert!(tags.back && !tags.private);
+        assert!(!peel("Hi. [emotion: happy]").1.back);
+        let text = "She waves. (back in a minute)";
+        assert_eq!(peel(text), (text.into(), ReplyTags::default()));
+    }
+
+    #[test]
+    fn peels_sound_and_voice_tags_alongside_the_others() {
+        let (clean, tags) = peel("The door bangs open. \"Run!\"\n\n[emotion: scared]\n[sound: heavy door slams, echo]\n[voice: Run!]");
+        assert_eq!(clean, "The door bangs open. \"Run!\"");
+        assert_eq!(tags.sounds, ["heavy door slams, echo"]);
+        assert_eq!(tags.voices, ["Run!"]);
+        assert_eq!(tags.emotion.as_deref(), Some("scared"));
+        let text = "She lowers her tone. (voice: low and husky)";
+        assert_eq!(peel(text), (text.into(), ReplyTags::default()), "narration in parentheses stays");
+        assert_eq!(peel("It was a sound: nothing.").0, "It was a sound: nothing.");
     }
 
     #[test]

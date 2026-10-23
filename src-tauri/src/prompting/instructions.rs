@@ -30,6 +30,8 @@ pub const PHOTO: &str = "photo";
 pub const PHOTO_INTIMATE: &str = "photoIntimate";
 pub const USER_PHOTO: &str = "userPhoto";
 pub const VIDEO: &str = "video";
+pub const SOUND: &str = "sound";
+pub const VOICE: &str = "voice";
 // Pictures the user sends
 pub const PICTURE_SHOWN: &str = "pictureShown";
 pub const PICTURE_SHOWN_ASSISTANT: &str = "pictureShownAssistant";
@@ -44,7 +46,8 @@ pub const PRIVATE_RULES: &str = "privateRules";
 pub const PRIVATE_MEMORY: &str = "privateMemory";
 pub const GROUP_NOTE: &str = "groupNote";
 pub const GROUP_EVENT: &str = "groupEvent";
-pub const STEPPED_AWAY: &str = "steppedAway";
+pub const BACK: &str = "back";
+pub const RETURNED: &str = "returned";
 pub const GROUP_SUMMARY: &str = "groupSummary";
 // Story clock and world
 pub const WORLD_NOW: &str = "worldNow";
@@ -89,6 +92,7 @@ const ROLES: &str = "Roleplay rules";
 const TAGS: &str = "Tags at the end of replies";
 const PHOTOS: &str = "Photos";
 const PICTURES: &str = "Pictures you send";
+const SOUNDS: &str = "Sounds and voices";
 const GROUPS: &str = "Group chats";
 const TALKS: &str = "Private talks";
 const WORLD: &str = "Story clock and world";
@@ -214,10 +218,34 @@ their pose, expression, the place and the lighting>]. If a character is in it, d
 or clothing; the picture keeps that character's look from their card. Leave this line out when {user} takes no photo.",
     },
     Instruction {
+        key: SOUND,
+        group: SOUNDS,
+        title: "Sound effects",
+        help: "Every roleplay reply, once an ElevenLabs key is saved and sound effects are on in Settings. Must keep the [sound: ...] line format.",
+        placeholders: &[],
+        default: "When a sound in this reply is worth hearing (a door slamming, glass breaking, thunder, footsteps on gravel, a phone \
+ringing), end the reply with one last line in exactly this form, square brackets included: [sound: <what it sounds like, in a few \
+words, such as: heavy wooden door slams, echo in a stone hall>]. The app shows it as a play button next to the reply. Use it for a \
+sound that stands out, not for every little noise, and leave the line out when nothing is worth hearing. Write only the sound, never \
+speech.",
+    },
+    Instruction {
+        key: VOICE,
+        group: SOUNDS,
+        title: "Spoken lines",
+        help: "Every roleplay reply, once an ElevenLabs key is saved and spoken lines are on in Settings. Must keep the [voice: ...] line format.",
+        placeholders: &["{char}", "{user}"],
+        default: "When the sound of {char}'s voice matters in this moment (a voice message or call to {user}, a shout across a room, a \
+whispered warning, a line sung or recited, an announcement), end the reply with one last line in exactly this form, square brackets \
+included: [voice: <the exact words {char} says aloud, nothing else>]. The app shows it as a play button, and {char}'s voice reads \
+those words. Use it only now and then, when hearing it adds something, not for ordinary conversation, and leave the line out \
+otherwise. Keep the words short.",
+    },
+    Instruction {
         key: VIDEO,
         group: PHOTOS,
         title: "Characters send videos",
-        help: "Every roleplay reply, while \"Draw the videos characters send\" is on in the picture settings. Needs a ComfyUI video workflow. Must keep the [video: ...] line format.",
+        help: "Every roleplay reply, while \"Draw the videos characters send\" is on in the picture settings. Uses a Wan workflow when those models are installed, otherwise a still. Must keep the [video: ...] line format.",
         placeholders: &["{char}", "{user}"],
         default: "{char} can also send {user} short videos whenever a real person would (a moving selfie, a clip of where {char} is, \
 something happening). When {char} sends or takes a video in this reply, show it happening in the story and end the reply with one \
@@ -301,7 +329,8 @@ through or write their replies: think only about what {char} says and does next.
         help: "Every reply in a private talk: who is there, and what the group-chat notes in its history are.",
         placeholders: &["{user}", "{char}", "{group}", "{others}"],
         default: "This is a private conversation between {user} and {char}, away from the group chat \"{group}\" with {others}. Nobody \
-else can hear it. Notes in the form [System note: In the group chat, ...] are what was said in the group chat itself, where {char} was \
+else can hear what is said between them, but when the scene keeps them within sight or earshot of the others, anything loud or \
+visible (a raised voice, a kiss, someone storming off) can be noticed, and the others may react to it in the group chat. Notes in the form [System note: In the group chat, ...] are what was said in the group chat itself, where {char} was \
 present; they are not part of this private conversation, so don't answer them here.",
     },
     Instruction {
@@ -325,17 +354,30 @@ remembers it, but the others don't know it, and {char} doesn't bring it up in fr
         key: GROUP_EVENT,
         group: TALKS,
         title: "A group note, seen from a private talk",
-        help: "How a note in the group chat (someone stepping away) appears in a private talk's history.",
+        help: "How a note in the group chat (something the group noticed) appears in a private talk's history.",
         placeholders: &["{text}"],
         default: "In the group chat: {text}",
     },
     Instruction {
-        key: STEPPED_AWAY,
+        key: BACK,
         group: TALKS,
-        title: "Stepped-away note",
-        help: "The note the group chat gets where a private talk happens (shown in the chat, and read by the model as a system note). Changing it affects new notes only.",
-        placeholders: &["{user}", "{char}"],
-        default: "{user} and {char} stepped away from the group to talk in private.",
+        title: "Going back to the group",
+        help: "Every new reply in a private talk. Must keep the [back] line.",
+        placeholders: &["{char}", "{user}"],
+        default: "{char} can end this private talk whenever that would come naturally: it has run its course, someone interrupts, or \
+{char} decides to go back to the others. Then show {char} wrapping up, and end the reply with one last line in exactly this form, square \
+brackets included: [back]. The app then takes {char} and {user} back to the group, where {char} goes on. Leave the line out while the \
+talk is still going on.",
+    },
+    Instruction {
+        key: RETURNED,
+        group: TALKS,
+        title: "Coming back from a private talk",
+        help: "A member's group reply when you send them back from a private talk. Follows the private-talk memory above.",
+        placeholders: &["{char}", "{user}"],
+        default: "{char} has just come back to the group from that private talk with {user}. Show {char} rejoining the others and go on \
+from there, in character, with everything {char} now knows from the talk: let it show in {char}'s mood, manner and words, but say only \
+what {char} would say in front of the others.",
     },
     Instruction {
         key: GROUP_SUMMARY,

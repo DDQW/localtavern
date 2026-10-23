@@ -2,7 +2,7 @@
 //! Talks to the same OpenAI-compatible endpoint as the API-key product, with the OAuth access token
 //! as the bearer.
 
-mod errors;
+pub(crate) mod errors;
 pub mod wire;
 
 use std::sync::Arc;

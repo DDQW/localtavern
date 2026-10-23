@@ -3,6 +3,7 @@
 
 pub mod appearance;
 pub mod assembler;
+pub mod audio_tag;
 pub mod breakout;
 pub mod context;
 pub mod defaults;

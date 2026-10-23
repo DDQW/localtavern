@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, errorText } from "#lib/api.js";
   import ImageGenSection from "#lib/components/ImageGenSection.svelte";
+  import SoundSection from "#lib/components/SoundSection.svelte";
   import InstructionsSection from "#lib/components/InstructionsSection.svelte";
   import OnDeviceSection from "#lib/components/OnDeviceSection.svelte";
   import type {
@@ -461,6 +462,8 @@
     {/each}
 
     <ImageGenSection />
+
+    <SoundSection />
 
     <InstructionsSection />
 

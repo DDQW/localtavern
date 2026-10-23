@@ -3,31 +3,37 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::chat::ImagePromptDraft;
-use crate::commands::AppState;
+use crate::commands::{AppState, DownloadProgress};
 use crate::error::{Error, Result};
 use crate::chat::images;
+use crate::gpu::{GpuGate, GpuHold};
 use crate::imagegen::launcher::ComfyLauncher;
+use crate::imagegen::ondevice::{ImageModelFile, OnDeviceImages};
 use crate::imagegen::prompts::{self, CharacterShot, ImageMode};
-use crate::imagegen::{self, BackendOptions, ImageGenSettings, ImageRequest};
+use crate::imagegen::{self, BackendOptions, ImageBackend, ImageGenSettings, ImageRequest};
 use crate::models::{Character, ChatMessage};
+use crate::providers::auth::AccessTokenSource;
 
 /// Pictures being rendered, by conversation, so Stop can reach them.
 pub struct ImageJobs {
     client: reqwest::Client,
     active: Mutex<HashMap<Uuid, CancellationToken>>,
     comfy: ComfyLauncher,
+    on_device: Arc<OnDeviceImages>,
+    gpu: GpuGate,
 }
 
 impl Default for ImageJobs {
     fn default() -> Self {
-        Self::new(&std::env::temp_dir())
+        Self::new(&std::env::temp_dir(), GpuGate::default())
     }
 }
 
@@ -44,18 +50,23 @@ impl Drop for JobGuard<'_> {
 }
 
 impl ImageJobs {
-    /// `data_dir` gets ComfyUI's console output when LocalTavern starts it.
-    pub fn new(data_dir: &Path) -> Self {
+    /// `data_dir` gets ComfyUI's console output when LocalTavern starts it, and the checkpoints for
+    /// drawing on the device (in `image-models`). Renders that unload Ollama hold `gpu`.
+    pub fn new(data_dir: &Path, gpu: GpuGate) -> Self {
         Self {
             client: imagegen::client(),
             active: Mutex::new(HashMap::new()),
             comfy: ComfyLauncher::new(data_dir.join("comfyui.log")),
+            on_device: Arc::new(OnDeviceImages::new(data_dir.join("image-models"))),
+            gpu,
         }
     }
 
-    /// Stops the ComfyUI we started, so it doesn't keep holding the graphics card after the app closes.
+    /// Stops the ComfyUI we started, so it doesn't keep holding the graphics card after the app
+    /// closes, and the on-device picture server.
     pub fn shutdown(&self) {
         self.comfy.stop();
+        tauri::async_runtime::block_on(self.on_device.stop());
     }
 
     fn claim(&self, conversation_id: Uuid) -> Result<(CancellationToken, JobGuard<'_>)> {
@@ -69,25 +80,99 @@ impl ImageJobs {
     }
 }
 
+/// The SuperGrok sign-in, for the Grok backend: the same session the Grok chat models use.
+fn grok_auth(state: &AppState) -> Result<&dyn AccessTokenSource> {
+    state
+        .sessions
+        .get(crate::providers::xai::PROVIDER_ID)
+        .map(|s| s.as_ref() as &dyn AccessTokenSource)
+        .ok_or_else(|| Error::Other("SuperGrok sign-in isn't available in this build.".into()))
+}
+
 /// Frees the graphics card for the image server when Settings ask for it (see `imagegen::ollama`).
-async fn make_room(state: &AppState, jobs: &ImageJobs, settings: &ImageGenSettings) {
-    if !settings.unload_ollama_first {
-        return;
+/// Grok draws in the cloud, so there it has nothing to free. On the phone it's memory rather than a
+/// graphics card, held by the on-device chat model. Ollama's room is kept until the returned hold
+/// is dropped: chat requests wait for it instead of loading the model back mid-render.
+async fn make_room(state: &AppState, jobs: &ImageJobs, settings: &ImageGenSettings) -> Option<GpuHold> {
+    if !settings.unload_ollama_first || settings.backend == ImageBackend::Grok {
+        return None;
     }
+    if settings.backend == ImageBackend::OnDevice {
+        if let Some(chat) = &state.ondevice {
+            chat.shutdown().await;
+        }
+        return None;
+    }
+    let hold = jobs.gpu.hold();
     let Ok(ollama) = state.db.with(crate::settings::load_ollama_options) else {
-        return;
+        return Some(hold);
     };
     let unloaded = imagegen::ollama::unload_all(&jobs.client, &ollama.base_url).await;
     if !unloaded.is_empty() {
         eprintln!("Unloaded {} from Ollama to make room for a picture", unloaded.join(", "));
     }
+    Some(hold)
 }
 
-/// After a picture (finished, failed or stopped): hands the graphics card back to Ollama.
-async fn give_back(jobs: &ImageJobs, settings: &ImageGenSettings) {
-    if settings.unload_ollama_first {
+/// After a picture (finished, failed or stopped): hands the graphics card back to Ollama. The
+/// on-device server is stopped right away when it shares memory with the chat model or the picture
+/// was stopped (it would keep drawing), and after a while otherwise.
+async fn give_back(jobs: &ImageJobs, settings: &ImageGenSettings, stopped: bool) {
+    if settings.backend == ImageBackend::OnDevice {
+        if settings.unload_ollama_first || stopped {
+            jobs.on_device.stop().await;
+        } else {
+            jobs.on_device.stop_when_idle();
+        }
+    } else if settings.unload_ollama_first {
         imagegen::release_vram(&jobs.client, settings).await;
     }
+}
+
+/// Starts the on-device picture server when that's the backend, points the settings at it and fits
+/// the request to its checkpoint. `None` when stopped while the checkpoint was loading.
+async fn start_on_device(
+    state: &AppState,
+    jobs: &ImageJobs,
+    mut settings: ImageGenSettings,
+    request: &mut ImageRequest,
+    cancel: &CancellationToken,
+) -> Result<Option<ImageGenSettings>> {
+    if settings.backend != ImageBackend::OnDevice {
+        return Ok(Some(settings));
+    }
+    imagegen::ondevice::tune(request, &jobs.on_device.model_path(&settings.on_device.model)?);
+    let threads = state.db.with(crate::settings::load_ondevice_options)?.threads;
+    let starting = jobs.on_device.ensure(&jobs.client, &settings.on_device.model, threads);
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Ok(None),
+        url = starting => {
+            settings.on_device.url = url?;
+            Ok(Some(settings))
+        }
+    }
+}
+
+/// Starts the right server, draws, and cleans up after. `None` when stopped.
+async fn render(
+    state: &AppState,
+    jobs: &ImageJobs,
+    settings: ImageGenSettings,
+    mut request: ImageRequest,
+    video: bool,
+    token: &CancellationToken,
+) -> Result<Option<imagegen::GeneratedImage>> {
+    jobs.comfy.ensure_ready(&jobs.client, &settings, token).await?;
+    // Released after `give_back`, once the image server has let go of the card.
+    let _room = make_room(state, jobs, &settings).await;
+    let Some(settings) = start_on_device(state, jobs, settings.clone(), &mut request, token).await? else {
+        give_back(jobs, &settings, true).await;
+        return Ok(None);
+    };
+    let rendered = imagegen::generate(&jobs.client, &settings, grok_auth(state)?, &request, video, token).await;
+    give_back(jobs, &settings, matches!(rendered, Ok(None))).await;
+    rendered
 }
 
 /// The render request for a reviewed draft, using the active backend's checkpoint and sampler.
@@ -127,10 +212,82 @@ pub async fn save_image_settings(
 /// Checkpoints, samplers and schedulers from the server in `settings` (not necessarily saved yet,
 /// so Settings can test an address before keeping it).
 #[tauri::command]
-pub async fn image_backend_options(jobs: State<'_, ImageJobs>, settings: ImageGenSettings) -> Result<BackendOptions> {
+pub async fn image_backend_options(
+    state: State<'_, AppState>,
+    jobs: State<'_, ImageJobs>,
+    settings: ImageGenSettings,
+) -> Result<BackendOptions> {
     let settings = settings.sanitized();
     jobs.comfy.ensure_ready(&jobs.client, &settings, &CancellationToken::new()).await?;
-    imagegen::options(&jobs.client, &settings).await
+    imagegen::options(&jobs.client, &settings, grok_auth(&state)?, &jobs.on_device).await
+}
+
+// ---- drawing on the device ----
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnDeviceImageStatus {
+    /// Whether this build carries the server (the Android app does).
+    pub available: bool,
+    pub models_dir: String,
+    pub files: Vec<ImageModelFile>,
+}
+
+#[tauri::command]
+pub fn ondevice_image_status(jobs: State<'_, ImageJobs>) -> OnDeviceImageStatus {
+    let dir = jobs.on_device.models_dir();
+    OnDeviceImageStatus {
+        available: jobs.on_device.available(),
+        models_dir: dir.to_string_lossy().into_owned(),
+        files: imagegen::ondevice::model_files(dir),
+    }
+}
+
+/// Downloads a checkpoint into the image models folder; returns its file name. Shares the chat
+/// models' download slot, so Cancel there stops it too.
+#[tauri::command]
+pub async fn download_ondevice_image_model(
+    state: State<'_, AppState>,
+    jobs: State<'_, ImageJobs>,
+    url: String,
+    on_progress: Channel<DownloadProgress>,
+) -> Result<String> {
+    use crate::providers::ondevice::download::{self, IMAGE_MODEL_TYPES};
+    let file_name = download::file_name_of_type(&url, IMAGE_MODEL_TYPES)?;
+    let cancel = CancellationToken::new();
+    {
+        let mut running = state.ondevice_download.lock().unwrap();
+        if running.is_some() {
+            return Err(Error::Other("A download is already running.".into()));
+        }
+        *running = Some(cancel.clone());
+    }
+    let client = crate::providers::http::build_client();
+    let dir = jobs.on_device.models_dir();
+    let mut result = download::download_of_type(&client, &url, IMAGE_MODEL_TYPES, dir, &cancel, |received, total| {
+        let _ = on_progress.send(DownloadProgress { file_name: file_name.clone(), received, total });
+    })
+    .await;
+    // The fast decoder comes along with the first checkpoint (it's 10 MB).
+    let taesd = imagegen::ondevice::TAESD_FILE;
+    if result.is_ok() && !dir.join(taesd).is_file() {
+        result = download::download_named(&client, imagegen::ondevice::TAESD_URL, taesd, dir, &cancel, |received, total| {
+            let _ = on_progress.send(DownloadProgress { file_name: taesd.to_string(), received, total });
+        })
+        .await;
+    }
+    state.ondevice_download.lock().unwrap().take();
+    Ok(result.map(|_| file_name)?)
+}
+
+#[tauri::command]
+pub async fn delete_ondevice_image_model(jobs: State<'_, ImageJobs>, file_name: String) -> Result<()> {
+    let dir = jobs.on_device.models_dir();
+    let Some(file) = imagegen::ondevice::model_files(dir).into_iter().find(|f| f.file_name == file_name) else {
+        return Ok(());
+    };
+    jobs.on_device.stop().await;
+    std::fs::remove_file(dir.join(&file.file_name)).map_err(|e| Error::Other(format!("Couldn't delete {}: {e}", file.file_name)))
 }
 
 /// Starts ComfyUI with the app when Settings name a launcher (see `imagegen::launcher`).
@@ -241,22 +398,12 @@ pub async fn generate_image(
         return Err(Error::Other("The picture prompt is empty.".into()));
     }
     let settings = state.db.with(imagegen::settings::load)?;
-    if draft.video.is_some() {
-        if settings.backend != imagegen::ImageBackend::ComfyUi {
-            return Err(Error::Other("Story videos need the ComfyUI backend in Settings → Pictures.".into()));
-        }
-        if settings.comfy_video_workflow.trim().is_empty() {
-            return Err(Error::Other(
-                "Paste a ComfyUI video workflow (Export API) under Settings → Pictures before characters can send videos.".into(),
-            ));
-        }
+    if draft.video.is_some() && settings.backend != ImageBackend::ComfyUi {
+        return Err(Error::Other("Story videos need the ComfyUI backend in Settings → Pictures.".into()));
     }
     let request = render_request(&settings, &draft);
     let (token, _guard) = jobs.claim(conversation_id)?;
-    jobs.comfy.ensure_ready(&jobs.client, &settings, &token).await?;
-    make_room(&state, &jobs, &settings).await;
-    let rendered = imagegen::generate(&jobs.client, &settings, &request, draft.video.is_some(), &token).await;
-    give_back(&jobs, &settings).await;
+    let rendered = render(&state, &jobs, settings, request, draft.video.is_some(), &token).await;
     let Some(image) = rendered? else {
         return Ok(None);
     };
@@ -363,15 +510,13 @@ pub async fn draw_character_picture(
     let settings = state.db.with(imagegen::settings::load)?;
     let request = character_request(&settings, &character, &shot, outfit_id)?;
     let (token, _guard) = jobs.claim(character.id)?;
-    jobs.comfy.ensure_ready(&jobs.client, &settings, &token).await?;
-    make_room(&state, &jobs, &settings).await;
-    let rendered = imagegen::generate(&jobs.client, &settings, &request, false, &token).await;
-    give_back(&jobs, &settings).await;
+    let seed = request.seed;
+    let rendered = render(&state, &jobs, settings, request, false, &token).await;
     let Some(image) = rendered? else {
         return Ok(None);
     };
     let path = images::store_bytes(&state.images_dir, &image.data, &image.mime_type)?;
-    Ok(Some(CharacterPicture { path: path.to_string_lossy().into_owned(), seed: request.seed }))
+    Ok(Some(CharacterPicture { path: path.to_string_lossy().into_owned(), seed }))
 }
 
 #[tauri::command]

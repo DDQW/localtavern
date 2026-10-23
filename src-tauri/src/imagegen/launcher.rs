@@ -29,7 +29,10 @@ pub struct ComfyLauncher {
 
 impl ComfyLauncher {
     pub fn new(log_path: PathBuf) -> Self {
-        Self { child: Mutex::new(None), log_path }
+        Self {
+            child: Mutex::new(None),
+            log_path,
+        }
     }
 
     /// Starts ComfyUI unless it already answers or our earlier start is still running. Doesn't wait.
@@ -45,7 +48,12 @@ impl ComfyLauncher {
 
     /// Makes sure ComfyUI answers before a picture is sent to it, starting it if needed. Returns
     /// early (Ok) when `cancel` fires; the render that follows sees the cancel too.
-    pub async fn ensure_ready(&self, client: &reqwest::Client, settings: &ImageGenSettings, cancel: &CancellationToken) -> Result<()> {
+    pub async fn ensure_ready(
+        &self,
+        client: &reqwest::Client,
+        settings: &ImageGenSettings,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
         let Some(launcher) = wanted(settings) else {
             return Ok(());
         };
@@ -118,10 +126,13 @@ impl ComfyLauncher {
         }
         let path = Path::new(launcher);
         if !path.is_file() {
-            return Err(Error::Other(format!("The ComfyUI launcher {launcher} doesn't exist (Settings → Pictures).")));
+            return Err(Error::Other(format!(
+                "The ComfyUI launcher {launcher} doesn't exist (Settings → Pictures)."
+            )));
         }
-        let log = File::create(&self.log_path)
-            .map_err(|e| Error::Other(format!("Couldn't create {}: {e}", self.log_path.display())))?;
+        let log = File::create(&self.log_path).map_err(|e| {
+            Error::Other(format!("Couldn't create {}: {e}", self.log_path.display()))
+        })?;
         let log_err = log.try_clone().map_err(|e| Error::Other(e.to_string()))?;
         let mut command = Command::new(path);
         command
@@ -137,7 +148,9 @@ impl ComfyLauncher {
             use std::os::windows::process::CommandExt;
             command.creation_flags(CREATE_NO_WINDOW);
         }
-        let child = command.spawn().map_err(|e| Error::Other(format!("Couldn't start ComfyUI with {launcher}: {e}")))?;
+        let child = command
+            .spawn()
+            .map_err(|e| Error::Other(format!("Couldn't start ComfyUI with {launcher}: {e}")))?;
         eprintln!("Started ComfyUI with {launcher} (pid {})", child.id());
         *slot = Some(child);
         Ok(())
@@ -161,14 +174,24 @@ fn wanted(settings: &ImageGenSettings) -> Option<&str> {
 }
 
 async fn responds(client: &reqwest::Client, url: &str) -> bool {
-    let answer = client.get(format!("{url}/system_stats")).timeout(Duration::from_secs(3)).send().await;
+    let answer = client
+        .get(format!("{url}/system_stats"))
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await;
     answer.is_ok_and(|r| r.status().is_success())
 }
 
 /// The last few lines of the server's output: usually the traceback that ended it.
 fn log_tail(path: &Path) -> String {
-    let text = std::fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+    let text = std::fs::read(path)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
     lines[lines.len().saturating_sub(8)..].join("\n")
 }
 
@@ -179,29 +202,53 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn comfy(url: &str, launcher: &str) -> ImageGenSettings {
-        let mut settings = ImageGenSettings { backend: ImageBackend::ComfyUi, comfy_launcher: launcher.into(), ..Default::default() };
+        let mut settings = ImageGenSettings {
+            backend: ImageBackend::ComfyUi,
+            comfy_launcher: launcher.into(),
+            ..Default::default()
+        };
         settings.comfy.url = url.into();
         settings
     }
 
     #[test]
     fn only_runs_for_comfyui_with_a_launcher() {
-        assert_eq!(wanted(&comfy("http://x", "  C:\\c\\run.bat ")), Some("C:\\c\\run.bat"));
+        assert_eq!(
+            wanted(&comfy("http://x", "  C:\\c\\run.bat ")),
+            Some("C:\\c\\run.bat")
+        );
         assert_eq!(wanted(&comfy("http://x", "  ")), None);
-        let a1111 = ImageGenSettings { comfy_launcher: "C:\\c\\run.bat".into(), ..Default::default() };
+        let a1111 = ImageGenSettings {
+            comfy_launcher: "C:\\c\\run.bat".into(),
+            ..Default::default()
+        };
         assert_eq!(wanted(&a1111), None);
     }
 
     #[tokio::test]
     async fn a_running_server_is_used_as_it_is() {
         let server = MockServer::start().await;
-        Mock::given(method("GET")).and(path("/system_stats")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/system_stats"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
         let dir = tempfile::tempdir().unwrap();
         let launcher = ComfyLauncher::new(dir.path().join("comfyui.log"));
         // The launcher doesn't exist, so trying to run it would fail.
         let settings = comfy(&server.uri(), "Z:\\nowhere\\run.bat");
-        launcher.ensure_ready(&reqwest::Client::new(), &settings, &CancellationToken::new()).await.unwrap();
-        launcher.start(&reqwest::Client::new(), &settings).await.unwrap();
+        launcher
+            .ensure_ready(
+                &reqwest::Client::new(),
+                &settings,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        launcher
+            .start(&reqwest::Client::new(), &settings)
+            .await
+            .unwrap();
         assert!(launcher.child.lock().unwrap().is_none());
     }
 
@@ -209,8 +256,18 @@ mod tests {
     async fn a_missing_launcher_is_reported() {
         let dir = tempfile::tempdir().unwrap();
         let launcher = ComfyLauncher::new(dir.path().join("comfyui.log"));
-        let settings = comfy("http://127.0.0.1:9", &dir.path().join("run.bat").to_string_lossy());
-        let err = launcher.ensure_ready(&reqwest::Client::new(), &settings, &CancellationToken::new()).await.unwrap_err();
+        let settings = comfy(
+            "http://127.0.0.1:9",
+            &dir.path().join("run.bat").to_string_lossy(),
+        );
+        let err = launcher
+            .ensure_ready(
+                &reqwest::Client::new(),
+                &settings,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("doesn't exist"), "{err}");
     }
 
@@ -219,12 +276,28 @@ mod tests {
     async fn a_start_that_fails_shows_the_end_of_its_output() {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("run.bat");
-        std::fs::write(&script, "@echo off\r\necho Booting\r\necho ModuleNotFoundError: torch 1>&2\r\nexit /b 3\r\n").unwrap();
+        std::fs::write(
+            &script,
+            "@echo off\r\necho Booting\r\necho ModuleNotFoundError: torch 1>&2\r\nexit /b 3\r\n",
+        )
+        .unwrap();
         let launcher = ComfyLauncher::new(dir.path().join("comfyui.log"));
         let settings = comfy("http://127.0.0.1:9", &script.to_string_lossy());
-        let err = launcher.ensure_ready(&reqwest::Client::new(), &settings, &CancellationToken::new()).await.unwrap_err();
+        let err = launcher
+            .ensure_ready(
+                &reqwest::Client::new(),
+                &settings,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
         let text = err.to_string();
-        assert!(text.contains("exit code 3") && text.contains("Booting") && text.contains("ModuleNotFoundError: torch"), "{text}");
+        assert!(
+            text.contains("exit code 3")
+                && text.contains("Booting")
+                && text.contains("ModuleNotFoundError: torch"),
+            "{text}"
+        );
     }
 
     #[cfg(windows)]
@@ -240,7 +313,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
         launcher.stop();
         assert!(launcher.child.lock().unwrap().is_none());
-        let tasks = Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"]).output().unwrap();
+        let tasks = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .unwrap();
         assert!(!String::from_utf8_lossy(&tasks.stdout).contains(&pid.to_string()));
     }
 }

@@ -17,7 +17,15 @@ pub fn build_client() -> reqwest::Client {
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(180))
         .user_agent(concat!("LocalTavern/", env!("CARGO_PKG_VERSION")));
-    // The platform verifier needs a JVM-side component on Android; the Mozilla roots do without.
+    with_tls_roots(builder)
+        .build()
+        .expect("reqwest client configuration is static and valid")
+}
+
+/// Every client that may talk HTTPS goes through this. The platform verifier needs a JVM-side
+/// component on Android, and without it an HTTPS request never completes; the Mozilla roots do
+/// without.
+pub fn with_tls_roots(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
     #[cfg(target_os = "android")]
     let builder = builder.tls_certs_only(
         webpki_root_certs::TLS_SERVER_ROOT_CERTS
@@ -25,8 +33,6 @@ pub fn build_client() -> reqwest::Client {
             .filter_map(|der| reqwest::Certificate::from_der(der).ok()),
     );
     builder
-        .build()
-        .expect("reqwest client configuration is static and valid")
 }
 
 /// Sends a request, mapping transport failures to `Network` errors named after the provider.

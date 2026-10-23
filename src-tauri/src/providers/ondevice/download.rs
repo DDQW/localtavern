@@ -16,16 +16,29 @@ use crate::providers::error::ProviderError;
 /// Progress is reported at most this often.
 const REPORT_EVERY: Duration = Duration::from_millis(500);
 
+/// What chat models come as.
+pub const CHAT_MODEL_TYPES: &[&str] = &["gguf"];
+/// What Stable Diffusion checkpoints come as (for drawing on the phone).
+pub const IMAGE_MODEL_TYPES: &[&str] = &["gguf", "safetensors"];
+
 /// The file name a download URL saves as: its last path segment, which must be a `.gguf`.
 pub fn file_name(url: &str) -> Result<String, ProviderError> {
+    file_name_of_type(url, CHAT_MODEL_TYPES)
+}
+
+/// The file name a download URL saves as: its last path segment, ending in one of `types`.
+pub fn file_name_of_type(url: &str, types: &[&str]) -> Result<String, ProviderError> {
     let parsed = reqwest::Url::parse(url.trim()).map_err(|_| ProviderError::invalid_request("That isn't a valid link."))?;
     let last = parsed.path_segments().and_then(|mut s| s.next_back()).unwrap_or_default();
     let name = percent_encoding::percent_decode_str(last).decode_utf8_lossy().into_owned();
-    let valid = name.to_ascii_lowercase().ends_with(".gguf") && !name.contains(['/', '\\']) && !name.starts_with('.');
+    let lower = name.to_ascii_lowercase();
+    let typed = types.iter().any(|t| lower.ends_with(&format!(".{t}")));
+    let valid = typed && !name.contains(['/', '\\']) && !name.starts_with('.');
     if !valid {
-        return Err(ProviderError::invalid_request(
-            "The link has to point straight at a .gguf file (on Hugging Face: the file's download link, with /resolve/ in it).",
-        ));
+        let wanted = types.iter().map(|t| format!(".{t}")).collect::<Vec<_>>().join(" or ");
+        return Err(ProviderError::invalid_request(format!(
+            "The link has to point straight at a {wanted} file (on Hugging Face: the file's download link, with /resolve/ in it)."
+        )));
     }
     Ok(name)
 }
@@ -36,9 +49,35 @@ pub async fn download(
     url: &str,
     dir: &Path,
     cancel: &CancellationToken,
+    progress: impl FnMut(u64, Option<u64>),
+) -> Result<PathBuf, ProviderError> {
+    download_of_type(client, url, CHAT_MODEL_TYPES, dir, cancel, progress).await
+}
+
+/// [`download`] for a file ending in one of `types`.
+pub async fn download_of_type(
+    client: &reqwest::Client,
+    url: &str,
+    types: &[&str],
+    dir: &Path,
+    cancel: &CancellationToken,
+    progress: impl FnMut(u64, Option<u64>),
+) -> Result<PathBuf, ProviderError> {
+    let name = file_name_of_type(url, types)?;
+    download_named(client, url, &name, dir, cancel, progress).await
+}
+
+/// [`download`] saving as `name` rather than the link's last segment (for links that end in a
+/// generic name, like Hugging Face's `diffusion_pytorch_model.safetensors`).
+pub async fn download_named(
+    client: &reqwest::Client,
+    url: &str,
+    name: &str,
+    dir: &Path,
+    cancel: &CancellationToken,
     mut progress: impl FnMut(u64, Option<u64>),
 ) -> Result<PathBuf, ProviderError> {
-    let name = file_name(url)?;
+    let name = name.to_string();
     let target = dir.join(&name);
     let part = dir.join(format!("{name}.part"));
     let io = |e: std::io::Error| ProviderError::unknown(format!("Couldn't save {name}: {e}"));
@@ -126,6 +165,10 @@ mod tests {
         assert!(file_name("https://huggingface.co/bartowski/X-GGUF").is_err());
         assert!(file_name("https://host/%2E%2E%2Fevil.gguf").is_err());
         assert!(file_name("not a link").is_err());
+        assert!(file_name("https://host/sd15.safetensors").is_err(), "chat models are GGUF only");
+        assert_eq!(file_name_of_type("https://host/sd15.safetensors", IMAGE_MODEL_TYPES).unwrap(), "sd15.safetensors");
+        let ckpt = file_name_of_type("https://host/sd15.ckpt", IMAGE_MODEL_TYPES).unwrap_err();
+        assert!(ckpt.message.contains(".gguf or .safetensors"), "{}", ckpt.message);
     }
 
     #[tokio::test]

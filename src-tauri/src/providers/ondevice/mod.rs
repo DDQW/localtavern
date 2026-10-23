@@ -103,9 +103,15 @@ pub struct Runtime {
 impl Runtime {
     /// The bundled server, or the one [`SERVER_ENV`] names. `None` when this build has neither.
     pub fn find() -> Option<Runtime> {
-        let binary = match std::env::var_os(SERVER_ENV).filter(|v| !v.is_empty()) {
+        Self::find_program(SERVER_ENV, SERVER_FILE)
+    }
+
+    /// A program bundled as `file` in the native library folder, or the one the environment
+    /// variable `env` names instead.
+    pub fn find_program(env: &str, file: &str) -> Option<Runtime> {
+        let binary = match std::env::var_os(env).filter(|v| !v.is_empty()) {
             Some(path) => PathBuf::from(path),
-            None => native_lib_dir()?.join(SERVER_FILE),
+            None => native_lib_dir()?.join(file),
         };
         let lib_dir = binary.parent()?.to_path_buf();
         binary.is_file().then_some(Runtime { binary, lib_dir })

@@ -3,8 +3,10 @@
 
 import { goto } from "$app/navigation";
 import { api, errorText } from "./api";
+import { fileUrl } from "./media";
 import type {
   ChatEvent,
+  AudioClip,
   ChatMessage,
   ChatSession,
   Character,
@@ -75,6 +77,16 @@ class ChatStore {
   private inFlight = new Set<Uuid>();
   /** A member took the user aside during the running reply: their private talk opens once it ends. */
   private takenAside: { breakoutId: Uuid; characterId: Uuid } | null = null;
+  /** The member ended the private talk during the running reply: the group opens once it ends. */
+  private leaving = false;
+  /** Group conversations that got news (something heard from a private talk, and the answers to it)
+   * while another room was open; cleared when the group is opened. */
+  unseenRooms = $state<Uuid[]>([]);
+  /** Play buttons whose audio is being made right now (their first press). */
+  makingClips = $state<Uuid[]>([]);
+  /** The play button that is sounding, if any. */
+  playingClip = $state<Uuid | null>(null);
+  private clipAudio: HTMLAudioElement | null = null;
   /** What a still-generating conversation looked like when it was left, kept up to date from its
    * events until it is opened again or finishes. */
   private parked = new Map<Uuid, { messages: UiMessage[]; approval: ToolApproval | null; error: string }>();
@@ -97,7 +109,7 @@ class ChatStore {
   }
 
   /** The newest message of the exchange. Pictures sit in the chat but aren't part of the
-   * conversation, and a note like "stepped away to talk in private" doesn't end it either, so
+   * conversation, and a note like what the group noticed of a private talk doesn't end it either, so
    * neither counts as "the last reply". */
   get lastTurn(): UiMessage | undefined {
     return this.messages.findLast((m) => m.role !== "image" && m.role !== "system");
@@ -134,8 +146,11 @@ class ChatStore {
     const resumed = this.parked.get(session.conversation.id);
     this.parked.delete(session.conversation.id);
 
+    this.stopClip();
     this.session = session;
     this.takenAside = null;
+    this.leaving = false;
+    this.unseenRooms = this.unseenRooms.filter((id) => id !== session.conversation.id);
     this.messages = resumed ? resumed.messages : session.messages.map((m) => toUi(m));
     this.error = resumed?.error ?? "";
     this.input = "";
@@ -371,6 +386,7 @@ class ChatStore {
         if (m) {
           m.text += event.text;
           if (event.reasoning) m.reasoningText = (m.reasoningText ?? "") + event.reasoning;
+          m.waitingForPicture = false;
         }
         break;
       }
@@ -383,6 +399,11 @@ class ChatStore {
       case "messageRemoved":
         parked.messages = parked.messages.filter((m) => m.id !== event.messageId);
         break;
+      case "waitingForPicture": {
+        const m = find(event.messageId);
+        if (m) m.waitingForPicture = true;
+        break;
+      }
       case "toolApproval":
         parked.approval = { requestId: event.requestId, command: event.command, elevate: event.elevate };
         break;
@@ -399,6 +420,11 @@ class ChatStore {
   /** Applies one engine event. A conversation that is no longer open only keeps its parked state
    * and its photos. */
   private handle(conversationId: Uuid, event: ChatEvent) {
+    // News for the group room, from a private talk's stream (which may have ended or been left).
+    if (event.type === "overheard") {
+      void this.overheard(event.conversationId, event.message, event.reactors);
+      return;
+    }
     if (this.conversationId !== conversationId) {
       if (event.type === "photoSent") void this.drawSentPhoto(conversationId, event.characterId, event.description, false);
       else if (event.type === "videoSent") void this.drawSentPhoto(conversationId, event.characterId, event.description, true);
@@ -430,6 +456,7 @@ class ChatStore {
         if (m) {
           m.text += event.text;
           if (event.reasoning) m.reasoningText = (m.reasoningText ?? "") + event.reasoning;
+          m.waitingForPicture = false;
         }
         break;
       }
@@ -452,6 +479,11 @@ class ChatStore {
         this.compacting = false;
         void this.refreshContext();
         break;
+      case "waitingForPicture": {
+        const m = this.find(event.messageId);
+        if (m) m.waitingForPicture = true;
+        break;
+      }
       case "titleChanged":
         if (this.session) this.session.conversation.title = event.title;
         break;
@@ -464,6 +496,9 @@ class ChatStore {
       case "breakoutStarted":
         this.takenAside = { breakoutId: event.breakoutId, characterId: event.characterId };
         break;
+      case "leavingTalk":
+        this.leaving = true;
+        break;
       case "error":
         this.error = event.message;
         break;
@@ -472,16 +507,95 @@ class ChatStore {
         break;
       case "finished": {
         this.approval = null;
-        for (const m of this.messages) m.streaming = false;
+        for (const m of this.messages) m.streaming = m.waitingForPicture = false;
         this.busy = false;
         this.compacting = false;
         void this.refreshContext();
         const aside = this.takenAside;
         this.takenAside = null;
         if (aside) void this.followAside(aside.breakoutId, aside.characterId);
+        const leaving = this.leaving;
+        this.leaving = false;
+        if (leaving) void this.returnToGroup();
         break;
       }
     }
+  }
+
+  /** The group could see or hear part of a private talk: shows the note there (or flags the group's
+   * tab when another room is open) and has the members who noticed answer it. */
+  private async overheard(groupId: Uuid, note: ChatMessage, reactors: Uuid[]) {
+    if (this.conversationId === groupId) this.replace(note);
+    else if (!this.unseenRooms.includes(groupId)) this.unseenRooms.push(groupId);
+    if (reactors.length === 0 || this.inFlight.has(groupId)) return;
+
+    const open = this.conversationId === groupId;
+    if (open) this.busy = true;
+    await this.stream(groupId, (onEvent) => api.reactToRoom(groupId, reactors, onEvent));
+    // The answers streamed unseen when the group wasn't open; it loads them when it is.
+  }
+
+  /** A play button: makes the audio the first time (that is when ElevenLabs charges for it), then plays
+   * it; pressing the one that is sounding stops it. */
+  async playClip(message: ChatMessage, clip: AudioClip) {
+    if (this.playingClip === clip.id) return this.stopClip();
+    this.stopClip();
+    let path = clip.path;
+    if (!path) {
+      if (this.makingClips.includes(clip.id)) return;
+      this.makingClips.push(clip.id);
+      try {
+        const made = await api.makeClip(message.id, clip.id);
+        const mine = this.messages.find((m) => m.id === message.id);
+        if (mine) mine.clips = made.clips;
+        path = made.clips.find((c) => c.id === clip.id)?.path ?? null;
+      } catch (e) {
+        this.error = errorText(e);
+        return;
+      } finally {
+        this.makingClips = this.makingClips.filter((id) => id !== clip.id);
+      }
+    }
+    if (!path) return;
+    const audio = new Audio(fileUrl(path));
+    const done = () => {
+      if (this.clipAudio !== audio) return;
+      this.clipAudio = null;
+      this.playingClip = null;
+    };
+    audio.onended = done;
+    audio.onerror = () => {
+      done();
+      this.error = "Couldn't play that sound.";
+    };
+    this.clipAudio = audio;
+    this.playingClip = clip.id;
+    try {
+      await audio.play();
+    } catch {
+      done();
+      this.error = "Couldn't play that sound.";
+    }
+  }
+
+  stopClip() {
+    this.clipAudio?.pause();
+    this.clipAudio = null;
+    this.playingClip = null;
+  }
+
+  /** Ends the open private talk: goes back to the group, where its member speaks up again, knowing
+   * what was said in the talk. */
+  async returnToGroup() {
+    const talk = this.session?.conversation;
+    if (!talk?.parentConversationId || !talk.characterId || this.busy) return;
+    const { parentConversationId: groupId, characterId } = talk;
+    if (!(await this.resume(groupId))) return;
+    await goto(`/chat/${groupId}`);
+    if (this.conversationId !== groupId) return;
+    this.error = "";
+    this.busy = true;
+    await this.stream(groupId, (onEvent) => api.rejoinGroup(groupId, characterId, onEvent));
   }
 
   /** A member took the user aside: opens their private talk, where they speak first. */
@@ -675,7 +789,7 @@ class ChatStore {
       if (message) this.showPicture(id, message);
     } catch (e) {
       if (this.conversationId === id) this.error = errorText(e);
-      if (draft.photo && !into) {
+      if ((draft.photo || draft.video) && !into) {
         await api
           .addFailedPhoto(id, draft)
           .then((message) => this.showPicture(id, message))

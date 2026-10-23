@@ -33,10 +33,19 @@ pub enum ChatEvent {
     /// A group member took the user aside (`[private]`): `breakout_id` is their private talk, which
     /// the UI opens (and has `character_id` speak first in).
     BreakoutStarted { conversation_id: Uuid, breakout_id: Uuid, character_id: Uuid },
+    /// A private talk's member ended it (`[back]`): the UI takes the user back to the group, where
+    /// `character_id` speaks up.
+    LeavingTalk { conversation_id: Uuid, character_id: Uuid },
+    /// The group could see or hear part of a private talk: `message` is the note now in the group
+    /// conversation `conversation_id`, and `reactors` are the members who would react to it (the UI
+    /// has them answer there). Comes through the private talk's stream, possibly after it finished.
+    Overheard { conversation_id: Uuid, message: ChatMessage, reactors: Vec<Uuid> },
     /// The request was getting too big for the model, so older messages are being summarized first.
     Compacting { conversation_id: Uuid },
     /// A compaction finished (or failed - an `Error` says so); the context meter is out of date.
     Compacted { conversation_id: Uuid },
+    /// The reply waits for a picture to finish rendering: both need the one graphics card.
+    WaitingForPicture { message_id: Uuid },
     /// The assistant wants to run a PowerShell command and needs the user's decision - answered
     /// through `ChatEngine::resolve_tool_approval` with this `request_id`.
     ToolApproval { request_id: Uuid, command: String, elevate: bool },

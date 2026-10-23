@@ -3,7 +3,7 @@
 //! gigabytes it holds go back to the phone.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -83,16 +83,53 @@ impl Server {
     /// Starts the server and waits until it has loaded the model and answers.
     pub async fn start(spec: ServerSpec, client: &reqwest::Client, ready_timeout: Duration) -> Result<Server, ProviderError> {
         let port = free_port()?;
-        let mut child = Command::new(&spec.binary)
-            .args(spec.args(port))
-            .env("LD_LIBRARY_PATH", &spec.lib_dir)
-            .current_dir(&spec.lib_dir)
+        let base_url = format!("http://127.0.0.1:{port}");
+        let launch = Launch {
+            binary: &spec.binary,
+            lib_dir: &spec.lib_dir,
+            args: spec.args(port),
+            ready_url: format!("{base_url}/health"),
+            what: "on-device model server",
+        };
+        let child = launch.run(client, ready_timeout).await?;
+        Ok(Server { spec, base_url, child })
+    }
+    /// Still running - it may have been killed for memory since the last reply.
+    pub fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    pub async fn stop(mut self) {
+        let _ = self.child.kill().await;
+    }
+}
+
+/// A bundled server program to start: llama-server here, sd-server for pictures drawn on the phone.
+pub struct Launch<'a> {
+    pub binary: &'a Path,
+    /// Where the program's own libraries (ggml backends, libc++) are.
+    pub lib_dir: &'a Path,
+    pub args: Vec<String>,
+    /// Answers with a success once the model is loaded.
+    pub ready_url: String,
+    /// What to call it in messages, e.g. "on-device model server".
+    pub what: &'static str,
+}
+
+impl Launch<'_> {
+    /// Starts the program and waits until `ready_url` answers. The child is killed when dropped.
+    pub async fn run(self, client: &reqwest::Client, ready_timeout: Duration) -> Result<Child, ProviderError> {
+        let what = self.what;
+        let mut child = Command::new(self.binary)
+            .args(&self.args)
+            .env("LD_LIBRARY_PATH", self.lib_dir)
+            .current_dir(self.lib_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| ProviderError::network(format!("Couldn't start the on-device model server: {e}")))?;
+            .map_err(|e| ProviderError::network(format!("Couldn't start the {what}: {e}")))?;
 
         let log = Arc::new(Mutex::new(VecDeque::with_capacity(LOG_LINES)));
         if let Some(stderr) = child.stderr.take() {
@@ -109,38 +146,25 @@ impl Server {
             });
         }
 
-        let base_url = format!("http://127.0.0.1:{port}");
         let started = Instant::now();
         loop {
             if let Ok(Some(status)) = child.try_wait() {
-                return Err(ProviderError::network(format!(
-                    "The on-device model server stopped while loading ({status}).{}",
-                    explain(&log)
-                )));
+                return Err(ProviderError::network(format!("The {what} stopped while loading ({status}).{}", explain(&log))));
             }
-            let health = client.get(format!("{base_url}/health")).timeout(Duration::from_secs(2)).send().await;
+            let health = client.get(&self.ready_url).timeout(Duration::from_secs(2)).send().await;
             if health.is_ok_and(|r| r.status().is_success()) {
-                return Ok(Server { spec, base_url, child });
+                return Ok(child);
             }
             if started.elapsed() > ready_timeout {
                 let _ = child.kill().await;
                 return Err(ProviderError::network(format!(
-                    "The on-device model didn't finish loading within {} seconds.{}",
+                    "The {what} didn't finish loading within {} seconds.{}",
                     ready_timeout.as_secs(),
                     explain(&log)
                 )));
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-    }
-
-    /// Still running - it may have been killed for memory since the last reply.
-    pub fn is_alive(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
-    }
-
-    pub async fn stop(mut self) {
-        let _ = self.child.kill().await;
     }
 }
 
@@ -155,7 +179,7 @@ fn explain(log: &Mutex<VecDeque<String>>) -> String {
     }
 }
 
-fn free_port() -> Result<u16, ProviderError> {
+pub fn free_port() -> Result<u16, ProviderError> {
     std::net::TcpListener::bind(("127.0.0.1", 0))
         .and_then(|l| l.local_addr())
         .map(|a| a.port())

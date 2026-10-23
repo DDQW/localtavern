@@ -1,6 +1,7 @@
 //! ComfyUI: queue a workflow (`POST /prompt`), wait for it in `/history`, fetch the picture from
-//! `/view`. The built-in workflow is plain checkpoint text-to-image; a custom one (exported with
-//! "Export (API)") can use the same `%placeholder%` names SillyTavern uses.
+//! `/view`. The built-in still workflow is plain checkpoint text-to-image; the built-in video
+//! workflow is Wan text-to-video. A custom one (exported with "Export (API)") can use the same
+//! `%placeholder%` names SillyTavern uses.
 
 use std::time::Duration;
 
@@ -27,9 +28,32 @@ pub const DEFAULT_WORKFLOW: &str = r#"{
   "9": { "class_type": "SaveImage", "inputs": { "filename_prefix": "LocalTavern", "images": ["8", 0] } }
 }"#;
 
+/// Built-in story clip: ComfyUI's native Wan 2.1 text-to-video graph, saved as WebM so the chat
+/// can play it. `%unet%` `%clip%` `%vae%` are filled from the models ComfyUI actually has.
+/// 832×480 and 33 frames match the official 1.3B example, so a shared graphics card has a chance.
+pub const DEFAULT_VIDEO_WORKFLOW: &str = r#"{
+  "37": { "class_type": "UNETLoader", "inputs": { "unet_name": "%unet%", "weight_dtype": "default" } },
+  "38": { "class_type": "CLIPLoader", "inputs": { "clip_name": "%clip%", "type": "wan" } },
+  "39": { "class_type": "VAELoader", "inputs": { "vae_name": "%vae%" } },
+  "48": { "class_type": "ModelSamplingSD3", "inputs": { "shift": 8, "model": ["37", 0] } },
+  "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "%prompt%, dynamic motion, the subject is moving", "clip": ["38", 0] } },
+  "7": { "class_type": "CLIPTextEncode", "inputs": { "text": "%negative_prompt%, static, blurry, watermark, text, subtitle, motionless", "clip": ["38", 0] } },
+  "40": { "class_type": "EmptyHunyuanLatentVideo", "inputs": { "width": 832, "height": 480, "length": 33, "batch_size": 1 } },
+  "3": { "class_type": "KSampler", "inputs": {
+    "seed": "%seed%", "steps": 20, "cfg": 6, "sampler_name": "uni_pc", "scheduler": "simple",
+    "denoise": 1, "model": ["48", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["40", 0] } },
+  "8": { "class_type": "VAEDecode", "inputs": { "samples": ["3", 0], "vae": ["39", 0] } },
+  "47": { "class_type": "SaveWEBM", "inputs": { "images": ["8", 0], "filename_prefix": "LocalTavern", "codec": "vp9", "fps": 16, "crf": 32 } }
+}"#;
+
 /// Fills a workflow's placeholders. A string that is exactly a numeric placeholder (`"%seed%"`)
 /// becomes a JSON number; placeholders inside longer strings are replaced as text.
 pub fn fill_workflow(workflow: &str, request: &ImageRequest) -> Result<Value> {
+    fill_workflow_with(workflow, request, &[])
+}
+
+/// `extra` are more `%name%` → text replacements, such as the video model filenames.
+pub fn fill_workflow_with(workflow: &str, request: &ImageRequest, extra: &[(&str, &str)]) -> Result<Value> {
     let mut value: Value = serde_json::from_str(workflow.trim())
         .map_err(|e| Error::Other(format!("The ComfyUI workflow isn't valid JSON: {e}")))?;
     let Some(nodes) = value.as_object() else {
@@ -49,13 +73,16 @@ pub fn fill_workflow(workflow: &str, request: &ImageRequest) -> Result<Value> {
         ("%width%", json!(request.width)),
         ("%height%", json!(request.height)),
     ];
-    let texts: [(&str, &str); 5] = [
-        ("%negative_prompt%", &request.negative_prompt),
-        ("%prompt%", &request.prompt),
-        ("%model%", &request.model),
-        ("%sampler%", &request.sampler),
-        ("%scheduler%", &request.scheduler),
-    ];
+    // `%negative_prompt%` stays ahead of `%prompt%` so the shorter name can't eat its tail.
+    let mut texts: Vec<(&str, &str)> = Vec::with_capacity(5 + extra.len());
+    texts.extend_from_slice(extra);
+    texts.extend_from_slice(&[
+        ("%negative_prompt%", request.negative_prompt.as_str()),
+        ("%prompt%", request.prompt.as_str()),
+        ("%model%", request.model.as_str()),
+        ("%sampler%", request.sampler.as_str()),
+        ("%scheduler%", request.scheduler.as_str()),
+    ]);
 
     fn walk(value: &mut Value, numbers: &[(&str, Value)], texts: &[(&str, &str)]) {
         match value {
@@ -185,8 +212,118 @@ fn execution_error(entry: &Value) -> Option<String> {
     Some(message)
 }
 
-pub async fn generate(client: &reqwest::Client, url: &str, custom_workflow: &str, request: &ImageRequest) -> Result<GeneratedImage> {
-    let template = if custom_workflow.trim().is_empty() { DEFAULT_WORKFLOW } else { custom_workflow };
+/// The diffusion model, text encoder and VAE the built-in video workflow should load.
+struct VideoAssets {
+    unet: String,
+    clip: String,
+    vae: String,
+}
+
+/// Highest score wins; a tie goes to the shorter name, then lexicographic, so the pick is stable.
+fn rank_pick<'a>(names: &'a [String], rank: impl Fn(&str) -> i32) -> Option<&'a str> {
+    names
+        .iter()
+        .filter_map(|name| {
+            let score = rank(name);
+            (score > 0).then_some((score, name.as_str()))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0).then(b.1.len().cmp(&a.1.len())).then(b.1.cmp(a.1)))
+        .map(|(_, name)| name)
+}
+
+/// Prefer a small Wan text-to-video model. Image-to-video and still checkpoints score zero.
+fn unet_rank(name: &str) -> i32 {
+    let n = name.to_ascii_lowercase();
+    if n.contains("i2v") && !n.contains("t2v") {
+        return 0;
+    }
+    let mut score = if n.contains("t2v") || n.contains("text2video") || n.contains("text_to_video") {
+        100
+    } else if n.contains("wan") {
+        40
+    } else {
+        return 0;
+    };
+    if n.contains("1.3b") || n.contains("1_3b") || n.contains("1-3b") {
+        score += 20;
+    }
+    if n.contains("fp8") {
+        score += 5;
+    }
+    score
+}
+
+fn clip_rank(name: &str) -> i32 {
+    let n = name.to_ascii_lowercase();
+    let mut score = if n.contains("umt5") {
+        100
+    } else if n.contains("wan") {
+        40
+    } else if n.contains("t5") {
+        20
+    } else {
+        return 0;
+    };
+    if n.contains("fp8") {
+        score += 5;
+    }
+    score
+}
+
+fn vae_rank(name: &str) -> i32 {
+    let n = name.to_ascii_lowercase();
+    if n == "pixel_space" || n.starts_with("tae") {
+        return 0;
+    }
+    if n.contains("wan") { 100 } else { 0 }
+}
+
+/// Combo choices for one node. A missing node (older ComfyUI) is an empty list, not a failure.
+async fn node_choices(client: &reqwest::Client, url: &str, node: &str, input: &str) -> Result<Vec<String>> {
+    match get_json(client, url, &format!("/object_info/{node}")).await {
+        Ok(info) => Ok(combo_choices(&info, node, input)),
+        Err(e) if e.to_string().contains("404") => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
+/// `Ok(None)` means ComfyUI has no Wan stack. A story clip then uses the still workflow instead of
+/// failing: a photo checkpoint cannot make a video, and the shot should still show up.
+async fn video_assets(client: &reqwest::Client, url: &str) -> Result<Option<VideoAssets>> {
+    let unets = node_choices(client, url, "UNETLoader", "unet_name").await?;
+    let clips = node_choices(client, url, "CLIPLoader", "clip_name").await?;
+    let vaes = node_choices(client, url, "VAELoader", "vae_name").await?;
+    let unet = rank_pick(&unets, unet_rank);
+    let clip = rank_pick(&clips, clip_rank);
+    let vae = rank_pick(&vaes, vae_rank);
+    match (unet, clip, vae) {
+        (Some(unet), Some(clip), Some(vae)) => Ok(Some(VideoAssets { unet: unet.to_string(), clip: clip.to_string(), vae: vae.to_string() })),
+        _ => Ok(None),
+    }
+}
+
+pub async fn generate(
+    client: &reqwest::Client,
+    url: &str,
+    custom_workflow: &str,
+    request: &ImageRequest,
+    video: bool,
+) -> Result<GeneratedImage> {
+    // A pasted workflow always wins. Otherwise a clip uses Wan when those models are installed,
+    // and the ordinary checkpoint workflow when they are not (a photo model cannot make a video).
+    let pasted = !custom_workflow.trim().is_empty();
+    let assets = if video && (!pasted || custom_workflow.contains("%unet%")) {
+        video_assets(client, url).await?
+    } else {
+        None
+    };
+    let template = if pasted {
+        custom_workflow
+    } else if video && assets.is_some() {
+        DEFAULT_VIDEO_WORKFLOW
+    } else {
+        DEFAULT_WORKFLOW
+    };
     let mut request = request.clone();
     if request.model.is_empty() && template.contains("%model%") {
         // Nothing picked yet: use the first checkpoint ComfyUI knows about.
@@ -194,7 +331,11 @@ pub async fn generate(client: &reqwest::Client, url: &str, custom_workflow: &str
             Error::Other(format!("{SERVER} has no checkpoints - put one in ComfyUI's models/checkpoints folder."))
         })?;
     }
-    let workflow = fill_workflow(template, &request)?;
+    let extra: Vec<(&str, &str)> = match &assets {
+        Some(assets) => vec![("%unet%", assets.unet.as_str()), ("%clip%", assets.clip.as_str()), ("%vae%", assets.vae.as_str())],
+        None => Vec::new(),
+    };
+    let workflow = fill_workflow_with(template, &request, &extra)?;
 
     let response = client
         .post(format!("{url}/prompt"))
@@ -385,7 +526,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let image = generate(&super::super::client(), &server.uri(), "", &request()).await.unwrap();
+        let image = generate(&super::super::client(), &server.uri(), "", &request(), false).await.unwrap();
         assert_eq!(image.data, PNG);
         assert_eq!(image.mime_type, "image/png");
     }
@@ -420,7 +561,7 @@ mod tests {
             }})))
             .mount(&server)
             .await;
-        let error = generate(&super::super::client(), &server.uri(), "", &request()).await.unwrap_err().to_string();
+        let error = generate(&super::super::client(), &server.uri(), "", &request(), false).await.unwrap_err().to_string();
         assert_eq!(error, "ComfyUI failed: CUDA out of memory");
     }
 
@@ -445,10 +586,107 @@ mod tests {
             })
             .mount(&server)
             .await;
-        let error = generate(&super::super::client(), &server.uri(), "", &ImageRequest { model: String::new(), ..request() })
+        let error = generate(&super::super::client(), &server.uri(), "", &ImageRequest { model: String::new(), ..request() }, false)
             .await
             .unwrap_err()
             .to_string();
+        assert!(error.contains("stop here"), "{error}");
+    }
+
+    #[test]
+    fn the_default_video_workflow_fills_wan_model_names() {
+        let w = fill_workflow_with(
+            DEFAULT_VIDEO_WORKFLOW,
+            &request(),
+            &[
+                ("%unet%", "wan2.1_t2v_1.3B_fp16.safetensors"),
+                ("%clip%", "umt5_xxl_fp8_e4m3fn_scaled.safetensors"),
+                ("%vae%", "wan_2.1_vae.safetensors"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(w["37"]["inputs"]["unet_name"], "wan2.1_t2v_1.3B_fp16.safetensors");
+        assert_eq!(w["38"]["inputs"]["clip_name"], "umt5_xxl_fp8_e4m3fn_scaled.safetensors");
+        assert_eq!(w["38"]["inputs"]["type"], "wan");
+        assert_eq!(w["39"]["inputs"]["vae_name"], "wan_2.1_vae.safetensors");
+        assert_eq!(w["3"]["inputs"]["seed"], 42);
+        assert_eq!(w["40"]["inputs"]["width"], 832);
+        assert_eq!(w["40"]["inputs"]["length"], 33);
+        assert_eq!(w["47"]["class_type"], "SaveWEBM");
+        assert!(w["6"]["inputs"]["text"].as_str().unwrap().contains("a \"quoted\" cat"));
+    }
+
+    #[test]
+    fn prefers_a_small_wan_text_to_video_model() {
+        let names = vec![
+            "wan2.1_i2v_480p_14B_fp16.safetensors".into(),
+            "wan2.1_t2v_14B_fp16.safetensors".into(),
+            "wan2.1_t2v_1.3B_fp16.safetensors".into(),
+            "sdxl.safetensors".into(),
+        ];
+        assert_eq!(rank_pick(&names, unet_rank), Some("wan2.1_t2v_1.3B_fp16.safetensors"));
+        let clips = vec!["clip_l.safetensors".into(), "umt5_xxl_fp16.safetensors".into(), "umt5_xxl_fp8_e4m3fn_scaled.safetensors".into()];
+        assert_eq!(rank_pick(&clips, clip_rank), Some("umt5_xxl_fp8_e4m3fn_scaled.safetensors"));
+        let vaes = vec!["pixel_space".into(), "ae.safetensors".into(), "wan_2.1_vae.safetensors".into()];
+        assert_eq!(rank_pick(&vaes, vae_rank), Some("wan_2.1_vae.safetensors"));
+    }
+
+    #[tokio::test]
+    async fn the_built_in_video_workflow_uses_installed_wan_models() {
+        let server = MockServer::start().await;
+        Mock::given(path("/object_info/UNETLoader"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"UNETLoader": {"input": {"required": {
+                "unet_name": [["wan2.1_i2v_14B.safetensors", "wan2.1_t2v_1.3B_fp16.safetensors"], {}]
+            }}}})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/object_info/CLIPLoader"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"CLIPLoader": {"input": {"required": {
+                "clip_name": [["clip_l.safetensors", "umt5_xxl_fp8_e4m3fn_scaled.safetensors"], {}]
+            }}}})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/object_info/VAELoader"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"VAELoader": {"input": {"required": {
+                "vae_name": [["pixel_space", "wan_2.1_vae.safetensors"], {}]
+            }}}})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/prompt"))
+            .respond_with(|req: &Request| {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                assert_eq!(body["prompt"]["37"]["inputs"]["unet_name"], "wan2.1_t2v_1.3B_fp16.safetensors");
+                assert_eq!(body["prompt"]["38"]["inputs"]["clip_name"], "umt5_xxl_fp8_e4m3fn_scaled.safetensors");
+                assert_eq!(body["prompt"]["39"]["inputs"]["vae_name"], "wan_2.1_vae.safetensors");
+                assert_eq!(body["prompt"]["47"]["class_type"], "SaveWEBM");
+                ResponseTemplate::new(400).set_body_json(json!({"error": {"message": "stop here"}}))
+            })
+            .mount(&server)
+            .await;
+        let error = generate(&super::super::client(), &server.uri(), "", &request(), true).await.unwrap_err().to_string();
+        assert!(error.contains("stop here"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_clip_without_wan_models_is_drawn_as_a_still() {
+        let server = MockServer::start().await;
+        for node in ["UNETLoader", "CLIPLoader", "VAELoader"] {
+            Mock::given(path(format!("/object_info/{node}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(path("/prompt"))
+            .respond_with(|req: &Request| {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                assert_eq!(body["prompt"]["4"]["class_type"], "CheckpointLoaderSimple");
+                assert_eq!(body["prompt"]["4"]["inputs"]["ckpt_name"], "sdxl.safetensors");
+                assert_eq!(body["prompt"]["9"]["class_type"], "SaveImage");
+                ResponseTemplate::new(400).set_body_json(json!({"error": {"message": "stop here"}}))
+            })
+            .mount(&server)
+            .await;
+        let error = generate(&super::super::client(), &server.uri(), "", &request(), true).await.unwrap_err().to_string();
         assert!(error.contains("stop here"), "{error}");
     }
 }

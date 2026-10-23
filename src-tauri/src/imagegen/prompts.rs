@@ -103,16 +103,31 @@ pub fn clean_model_prompt(raw: &str) -> String {
     if let Some(end) = text.rfind("</think>") {
         text = text[end + "</think>".len()..].trim();
     }
-    let mut lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let mut lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     if lines.len() > 1 {
         let first = lines[0].to_ascii_lowercase();
-        if first.ends_with(':') || first.starts_with("sure") || first.starts_with("here") || first.starts_with("okay") {
+        if first.ends_with(':')
+            || first.starts_with("sure")
+            || first.starts_with("here")
+            || first.starts_with("okay")
+        {
             lines.remove(0);
         }
     }
     let joined = lines.join(" ");
-    let unquoted = joined.trim_matches(|c| matches!(c, '"' | '“' | '”' | '`' | '\'')).trim();
-    unquoted.strip_prefix("Prompt:").or_else(|| unquoted.strip_prefix("prompt:")).unwrap_or(unquoted).trim().to_string()
+    let unquoted = joined
+        .trim_matches(|c| matches!(c, '"' | '“' | '”' | '`' | '\''))
+        .trim();
+    unquoted
+        .strip_prefix("Prompt:")
+        .or_else(|| unquoted.strip_prefix("prompt:"))
+        .unwrap_or(unquoted)
+        .trim()
+        .to_string()
 }
 
 /// The prompt the server gets: global prefix, then the character's own prefix, then the
@@ -145,7 +160,12 @@ pub fn character_visual_identity(character: &Character) -> (String, bool) {
     let appearance = character
         .appearance
         .as_ref()
-        .map(|a| with_character_name(&appearance::render(a, AppearanceSubject::Character), character.name.trim()))
+        .map(|a| {
+            with_character_name(
+                &appearance::render(a, AppearanceSubject::Character),
+                character.name.trim(),
+            )
+        })
         .unwrap_or_default();
     visual_identity(
         &character.picture_style.base_look,
@@ -186,18 +206,55 @@ fn looks_like_appearance_override(part: &str) -> bool {
     let lower = part.to_ascii_lowercase();
     // Phrases first (substring), then single words on token boundaries so "fairly rainy" survives.
     const PHRASES: &[&str] = &[
-        "middle eastern", "black woman", "black man", "white woman", "white man", "dark-skinned",
-        "dark skinned", "light-skinned", "light skinned", "years old", "year old", "year-old",
-        "middle-aged", "middle aged",
+        "middle eastern",
+        "black woman",
+        "black man",
+        "white woman",
+        "white man",
+        "dark-skinned",
+        "dark skinned",
+        "light-skinned",
+        "light skinned",
+        "years old",
+        "year old",
+        "year-old",
+        "middle-aged",
+        "middle aged",
     ];
     if PHRASES.iter().any(|p| lower.contains(p)) {
         return true;
     }
     const WORDS: &[&str] = &[
-        "blonde", "blond", "brunette", "redhead", "ginger", "hair", "eyes", "skin", "skinned",
-        "freckles", "tan", "olive", "pale", "fair", "ebony", "caucasian", "european", "african",
-        "asian", "latina", "latino", "hispanic", "korean", "japanese", "chinese", "indian", "arab",
-        "teen", "teenage", "elderly",
+        "blonde",
+        "blond",
+        "brunette",
+        "redhead",
+        "ginger",
+        "hair",
+        "eyes",
+        "skin",
+        "skinned",
+        "freckles",
+        "tan",
+        "olive",
+        "pale",
+        "fair",
+        "ebony",
+        "caucasian",
+        "european",
+        "african",
+        "asian",
+        "latina",
+        "latino",
+        "hispanic",
+        "korean",
+        "japanese",
+        "chinese",
+        "indian",
+        "arab",
+        "teen",
+        "teenage",
+        "elderly",
     ];
     lower
         .split(|c: char| !c.is_alphanumeric() && c != '-')
@@ -209,7 +266,13 @@ fn looks_like_appearance_override(part: &str) -> bool {
 /// appearance overrides and the look/outfit are placed at the end (where image models weight them
 /// more). Doubling the look around a conflicting shot was getting ignored. Prose fallbacks stay
 /// once, before the shot.
-pub fn story_photo_prompt(prefix: &str, look: &str, outfit: &str, shot: &str, lock_look: bool) -> String {
+pub fn story_photo_prompt(
+    prefix: &str,
+    look: &str,
+    outfit: &str,
+    shot: &str,
+    lock_look: bool,
+) -> String {
     let look = look.trim();
     let outfit = outfit.trim();
     if lock_look {
@@ -270,17 +333,31 @@ pub fn mood_tags(emotion: &str) -> String {
         "flirty" | "desire" => "flirty, sultry look, playful smile",
         "pain" | "hurt" => "pained expression, wincing",
         "proud" | "pride" => "proud, confident smile, chin up",
-        _ => return if key.is_empty() { String::new() } else { format!("{key} expression") },
+        _ => {
+            return if key.is_empty() {
+                String::new()
+            } else {
+                format!("{key} expression")
+            }
+        }
     };
     tags.to_string()
 }
 
 /// The prompt for one picture of a character's set: prefix, permanent look, clothing, then the
 /// shot itself. Moods are upper-body portraits on a plain background so a set reads as a set.
-pub fn character_picture_prompt(prefix: &str, base_look: &str, clothing: &str, shot: &CharacterShot) -> String {
+pub fn character_picture_prompt(
+    prefix: &str,
+    base_look: &str,
+    clothing: &str,
+    shot: &CharacterShot,
+) -> String {
     let shot_text = match shot {
         CharacterShot::Mood { emotion } => {
-            format!("upper body portrait, looking at viewer, {}, simple background", mood_tags(emotion))
+            format!(
+                "upper body portrait, looking at viewer, {}, simple background",
+                mood_tags(emotion)
+            )
         }
         CharacterShot::Action { action } => format!("full body, {}", action.trim()),
     };
@@ -329,9 +406,21 @@ mod tests {
 
     #[test]
     fn mood_tags_cover_the_suggested_emotions_and_any_other_name() {
-        for emotion in ["neutral", "happy", "sad", "angry", "surprised", "scared", "disgusted", "love"] {
+        for emotion in [
+            "neutral",
+            "happy",
+            "sad",
+            "angry",
+            "surprised",
+            "scared",
+            "disgusted",
+            "love",
+        ] {
             let tags = mood_tags(emotion);
-            assert!(!tags.is_empty() && !tags.ends_with(" expression") || emotion == "neutral", "{emotion}: {tags}");
+            assert!(
+                !tags.is_empty() && !tags.ends_with(" expression") || emotion == "neutral",
+                "{emotion}: {tags}"
+            );
         }
         assert_eq!(mood_tags(" Happy "), "happy, smiling");
         assert_eq!(mood_tags("Bored"), "bored expression");
@@ -340,34 +429,61 @@ mod tests {
 
     #[test]
     fn character_pictures_put_the_look_and_clothing_before_the_shot() {
-        let mood = CharacterShot::Mood { emotion: "happy".into() };
+        let mood = CharacterShot::Mood {
+            emotion: "happy".into(),
+        };
         assert_eq!(
             character_picture_prompt("best quality", "1girl, silver hair", "navy flight jacket", &mood),
             "best quality, 1girl, silver hair, navy flight jacket, upper body portrait, looking at viewer, happy, smiling, simple background"
         );
-        let action = CharacterShot::Action { action: " reading by the fire ".into() };
-        assert_eq!(character_picture_prompt("", "1girl", "", &action), "1girl, full body, reading by the fire");
+        let action = CharacterShot::Action {
+            action: " reading by the fire ".into(),
+        };
+        assert_eq!(
+            character_picture_prompt("", "1girl", "", &action),
+            "1girl, full body, reading by the fire"
+        );
         assert_eq!(character_picture_size(&mood, 832, 1216), (1024, 1024));
         assert_eq!(character_picture_size(&action, 832, 1216), (832, 1216));
     }
 
     #[test]
     fn shots_use_a_tagged_json_shape() {
-        let shot: CharacterShot = serde_json::from_str(r#"{"kind":"mood","emotion":"sad"}"#).unwrap();
-        assert_eq!(shot, CharacterShot::Mood { emotion: "sad".into() });
-        let shot: CharacterShot = serde_json::from_str(r#"{"kind":"action","action":"waving"}"#).unwrap();
-        assert_eq!(shot, CharacterShot::Action { action: "waving".into() });
+        let shot: CharacterShot =
+            serde_json::from_str(r#"{"kind":"mood","emotion":"sad"}"#).unwrap();
+        assert_eq!(
+            shot,
+            CharacterShot::Mood {
+                emotion: "sad".into()
+            }
+        );
+        let shot: CharacterShot =
+            serde_json::from_str(r#"{"kind":"action","action":"waving"}"#).unwrap();
+        assert_eq!(
+            shot,
+            CharacterShot::Action {
+                action: "waving".into()
+            }
+        );
     }
 
     #[test]
     fn parses_look_and_outfit_lines() {
         assert_eq!(
-            parse_look("Sure!
+            parse_look(
+                "Sure!
 LOOK: 1girl, silver hair, blue eyes
-Outfit: \"navy flight jacket, boots\""),
-            ("1girl, silver hair, blue eyes".to_string(), "navy flight jacket, boots".to_string())
+Outfit: \"navy flight jacket, boots\""
+            ),
+            (
+                "1girl, silver hair, blue eyes".to_string(),
+                "navy flight jacket, boots".to_string()
+            )
         );
-        assert_eq!(parse_look("<think>x</think>tall man, beard"), ("tall man, beard".to_string(), String::new()));
+        assert_eq!(
+            parse_look("<think>x</think>tall man, beard"),
+            ("tall man, beard".to_string(), String::new())
+        );
     }
 
     #[test]
@@ -375,7 +491,10 @@ Outfit: \"navy flight jacket, boots\""),
         let tags = instruction(ImageMode::Character, PromptStyle::Tags, "Alice");
         assert!(tags.starts_with("[System note:") && tags.ends_with(']'));
         assert!(tags.contains("Alice as they look right now"));
-        assert!(tags.contains("as the story describes it"), "clothing follows the story rather than being assumed: {tags}");
+        assert!(
+            tags.contains("as the story describes it"),
+            "clothing follows the story rather than being assumed: {tags}"
+        );
         assert!(tags.contains("starting with \"full body portrait\""));
 
         let face = instruction(ImageMode::Face, PromptStyle::Natural, "Bob");
@@ -383,7 +502,8 @@ Outfit: \"navy flight jacket, boots\""),
         assert!(face.contains("two to four plain sentences"));
         assert!(!face.contains("comma-separated"));
 
-        assert!(instruction(ImageMode::Persona, PromptStyle::Tags, "Me").contains("Me (the user's character)"));
+        assert!(instruction(ImageMode::Persona, PromptStyle::Tags, "Me")
+            .contains("Me (the user's character)"));
         assert!(instruction(ImageMode::Scene, PromptStyle::Tags, "").contains("current scene"));
         assert!(instruction(ImageMode::LastMessage, PromptStyle::Tags, "").contains("last message"));
     }
@@ -400,15 +520,32 @@ Outfit: \"navy flight jacket, boots\""),
 
     #[test]
     fn cleans_common_model_chatter() {
-        assert_eq!(clean_model_prompt("Sure! Here is the list:\n\"full body portrait, red hair, green eyes\""), "full body portrait, red hair, green eyes");
-        assert_eq!(clean_model_prompt("<think>hmm</think>\n  close-up portrait, freckles  "), "close-up portrait, freckles");
-        assert_eq!(clean_model_prompt("Prompt: scenery, forest,\nnight"), "scenery, forest, night");
-        assert_eq!(clean_model_prompt("A woman stands in the rain."), "A woman stands in the rain.");
+        assert_eq!(
+            clean_model_prompt(
+                "Sure! Here is the list:\n\"full body portrait, red hair, green eyes\""
+            ),
+            "full body portrait, red hair, green eyes"
+        );
+        assert_eq!(
+            clean_model_prompt("<think>hmm</think>\n  close-up portrait, freckles  "),
+            "close-up portrait, freckles"
+        );
+        assert_eq!(
+            clean_model_prompt("Prompt: scenery, forest,\nnight"),
+            "scenery, forest, night"
+        );
+        assert_eq!(
+            clean_model_prompt("A woman stands in the rain."),
+            "A woman stands in the rain."
+        );
     }
 
     #[test]
     fn combines_prefixes_without_empty_parts_or_double_commas() {
-        assert_eq!(combine("best quality,", "<lora:a:1>", "red hair"), "best quality, <lora:a:1>, red hair");
+        assert_eq!(
+            combine("best quality,", "<lora:a:1>", "red hair"),
+            "best quality, <lora:a:1>, red hair"
+        );
         assert_eq!(combine("", "  ", "red hair"), "red hair");
         assert_eq!(combine("masterpiece", "", ""), "masterpiece");
     }
@@ -416,35 +553,71 @@ Outfit: \"navy flight jacket, boots\""),
     #[test]
     fn a_story_photo_puts_locked_look_last_and_scrubs_overrides_from_the_shot() {
         assert_eq!(
-            story_photo_prompt("best quality", "1girl, dark skin, black hair", "navy jacket", "winking, blonde, blue eyes, cafe", true),
+            story_photo_prompt(
+                "best quality",
+                "1girl, dark skin, black hair",
+                "navy jacket",
+                "winking, blonde, blue eyes, cafe",
+                true
+            ),
             "best quality, winking, cafe, 1girl, dark skin, black hair, navy jacket"
         );
         assert_eq!(
-            story_photo_prompt("best quality", "an African woman with dark skin and black hair", "", "winking, cafe", false),
+            story_photo_prompt(
+                "best quality",
+                "an African woman with dark skin and black hair",
+                "",
+                "winking, cafe",
+                false
+            ),
             "best quality, an African woman with dark skin and black hair, winking, cafe"
         );
-        assert_eq!(story_photo_prompt("best quality", "", "", "winking", false), "best quality, winking");
-        assert_eq!(story_photo_prompt("best quality", "1girl", "", "a sunset", true), "best quality, a sunset, 1girl");
+        assert_eq!(
+            story_photo_prompt("best quality", "", "", "winking", false),
+            "best quality, winking"
+        );
+        assert_eq!(
+            story_photo_prompt("best quality", "1girl", "", "a sunset", true),
+            "best quality, a sunset, 1girl"
+        );
     }
 
     #[test]
     fn scrub_appearance_overrides_keeps_pose_and_place() {
-        assert_eq!(scrub_appearance_overrides("winking, blonde, cafe at night, blue eyes"), "winking, cafe at night");
-        assert_eq!(scrub_appearance_overrides("sitting on a bench, rainy street"), "sitting on a bench, rainy street");
+        assert_eq!(
+            scrub_appearance_overrides("winking, blonde, cafe at night, blue eyes"),
+            "winking, cafe at night"
+        );
+        assert_eq!(
+            scrub_appearance_overrides("sitting on a bench, rainy street"),
+            "sitting on a bench, rainy street"
+        );
     }
 
     #[test]
     fn merge_prompt_parts_skips_blanks() {
-        assert_eq!(merge_prompt_parts(&["best quality", "", "score_9"]), "best quality, score_9");
+        assert_eq!(
+            merge_prompt_parts(&["best quality", "", "score_9"]),
+            "best quality, score_9"
+        );
         assert_eq!(merge_prompt_parts(&["blurry", "blonde"]), "blurry, blonde");
         assert_eq!(merge_prompt_parts(&["", " "]), "");
     }
 
     #[test]
     fn visual_identity_prefers_base_look_then_appearance_then_description() {
-        assert_eq!(visual_identity("1girl, dark skin", "fair skin woman", "Asian man"), ("1girl, dark skin".into(), true));
-        assert_eq!(visual_identity("", "a Black woman, dark skin", "ignored"), ("a Black woman, dark skin".into(), false));
-        assert_eq!(visual_identity("", "", "Korean woman, black hair"), ("Korean woman, black hair".into(), false));
+        assert_eq!(
+            visual_identity("1girl, dark skin", "fair skin woman", "Asian man"),
+            ("1girl, dark skin".into(), true)
+        );
+        assert_eq!(
+            visual_identity("", "a Black woman, dark skin", "ignored"),
+            ("a Black woman, dark skin".into(), false)
+        );
+        assert_eq!(
+            visual_identity("", "", "Korean woman, black hair"),
+            ("Korean woman, black hair".into(), false)
+        );
         assert_eq!(visual_identity(" ", "", ""), (String::new(), false));
     }
 }

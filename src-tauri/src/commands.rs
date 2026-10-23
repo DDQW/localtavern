@@ -44,6 +44,8 @@ pub struct AppState {
     /// Also in `providers`; kept here so the app can stop the instance on exit.
     pub vast: Arc<crate::providers::vastai::VastAiProvider>,
     pub secrets: Arc<KeyringSecretStore>,
+    /// Sound effects and voices (ElevenLabs); also in the engine.
+    pub audio: Arc<dyn crate::audio::AudioMaker>,
     /// OAuth sessions of the subscription-login providers, by provider id.
     pub sessions: HashMap<String, Arc<OAuthSession>>,
     /// Browser sign-ins in flight (so Cancel can stop the wait), by provider id.
@@ -182,6 +184,74 @@ pub async fn pick_speaker(
 ) -> Result<()> {
     let engine = state.engine.clone();
     engine.pick_speaker(conversation_id, character_id, Arc::new(ChannelSink(on_event))).await
+}
+
+/// Has these members of a group conversation answer something that just happened around them.
+#[tauri::command]
+pub async fn react_to_room(
+    state: State<'_, AppState>,
+    conversation_id: Uuid,
+    character_ids: Vec<Uuid>,
+    on_event: Channel<ChatEvent>,
+) -> Result<()> {
+    let engine = state.engine.clone();
+    engine.react(conversation_id, character_ids, Arc::new(ChannelSink(on_event))).await
+}
+
+#[tauri::command]
+pub fn get_audio_settings(state: State<'_, AppState>) -> Result<crate::audio::settings::AudioSettings> {
+    state.db.with(crate::audio::settings::load)
+}
+
+#[tauri::command]
+pub fn save_audio_settings(
+    state: State<'_, AppState>,
+    settings: crate::audio::settings::AudioSettings,
+) -> Result<crate::audio::settings::AudioSettings> {
+    state.db.with(|c| crate::audio::settings::save(c, settings))
+}
+
+/// Whether an ElevenLabs API key is saved.
+#[tauri::command]
+pub fn audio_has_key(state: State<'_, AppState>) -> bool {
+    state.audio.has_key()
+}
+
+/// Saves the ElevenLabs API key (an empty one removes it). Returns whether a key is saved now.
+#[tauri::command]
+pub fn set_audio_key(state: State<'_, AppState>, key: String) -> Result<bool> {
+    let key = key.trim();
+    if key.is_empty() {
+        state.secrets.delete_api_key(crate::audio::PROVIDER_ID)?;
+    } else {
+        state.secrets.save_api_key(crate::audio::PROVIDER_ID, key)?;
+    }
+    Ok(state.audio.has_key())
+}
+
+/// The voices of the ElevenLabs account, to pick from in Settings.
+#[tauri::command]
+pub async fn list_voices(state: State<'_, AppState>) -> Result<Vec<crate::audio::Voice>> {
+    state.audio.voices().await
+}
+
+/// Makes the audio of a message's play button (the first time it is pressed) and returns the message.
+#[tauri::command]
+pub async fn make_clip(state: State<'_, AppState>, message_id: Uuid, clip_id: Uuid) -> Result<ChatMessage> {
+    let engine = state.engine.clone();
+    engine.make_clip(message_id, clip_id).await
+}
+
+/// Sends a member back from their private talk: they speak up in the group, knowing what was said.
+#[tauri::command]
+pub async fn rejoin_group(
+    state: State<'_, AppState>,
+    conversation_id: Uuid,
+    character_id: Uuid,
+    on_event: Channel<ChatEvent>,
+) -> Result<()> {
+    let engine = state.engine.clone();
+    engine.rejoin(conversation_id, character_id, Arc::new(ChannelSink(on_event))).await
 }
 
 #[tauri::command]

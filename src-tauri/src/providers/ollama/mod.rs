@@ -16,6 +16,7 @@ pub use wire::{OllamaOptionsSource, OllamaRequestOptions};
 use super::error::ProviderError;
 use super::http::ensure_success;
 use super::{ChunkStream, LlmProvider};
+use crate::gpu::GpuGate;
 use crate::llm::LlmRequest;
 
 pub const PROVIDER_ID: &str = "ollama";
@@ -23,11 +24,18 @@ pub const PROVIDER_ID: &str = "ollama";
 pub struct OllamaProvider {
     client: reqwest::Client,
     options: Arc<dyn OllamaOptionsSource>,
+    gpu: GpuGate,
 }
 
 impl OllamaProvider {
     pub fn new(client: reqwest::Client, options: Arc<dyn OllamaOptionsSource>) -> Self {
-        Self { client, options }
+        Self { client, options, gpu: GpuGate::default() }
+    }
+
+    /// Replies wait while a picture holds `gpu` (see `crate::gpu`).
+    pub fn with_gpu_gate(mut self, gpu: GpuGate) -> Self {
+        self.gpu = gpu;
+        self
     }
 
     /// Sends a request; an unreachable server becomes the friendly "is it running?" error.
@@ -67,6 +75,7 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn stream_completion(&self, request: LlmRequest) -> Result<ChunkStream, ProviderError> {
+        self.gpu.free().await;
         let options = self.options.current();
         let base_url = options.base_url.trim_end_matches('/').to_string();
         let mut body = wire::to_ollama_request(&request, Some(options.context_size));

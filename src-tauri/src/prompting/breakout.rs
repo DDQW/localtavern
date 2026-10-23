@@ -28,9 +28,22 @@ pub fn parse_tail(tail: &str) -> bool {
     PRIVATE.is_match(tail)
 }
 
-/// What the group chat shows (and its model reads, as a system note) where a private talk happened.
-pub fn marker_text(ins: &Instructions, user: &str, character: &str) -> String {
-    ins.render(instructions::STEPPED_AWAY, &[("user", user), ("char", character)])
+/// One line for a private talk's reply instruction: the member may end the talk and go back to the group.
+pub fn back_tag_instruction(ins: &Instructions, character: &str, user: &str) -> String {
+    ins.render(instructions::BACK, &[("char", character), ("user", user)])
+}
+
+/// `[back]` (in square brackets only: "(back in a minute)" is just a sentence).
+static BACK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\[\s*back\b[^\[\]]*\]").unwrap());
+
+/// Whether the trailing tags peeled off a reply say the member is going back to the group.
+pub fn parse_back_tail(tail: &str) -> bool {
+    BACK.is_match(tail)
+}
+
+/// One line for the group reply of a member who is back from their private talk with the user.
+pub fn return_instruction(ins: &Instructions, character: &str, user: &str) -> String {
+    ins.render(instructions::RETURNED, &[("char", character), ("user", user)])
 }
 
 /// The system-instruction rules for a private talk: who is there, and what the group notes are.
@@ -150,6 +163,17 @@ mod tests {
     }
 
     #[test]
+    fn the_back_tag_needs_square_brackets() {
+        assert!(parse_back_tail("[back]"));
+        assert!(parse_back_tail("**[Back: she's done talking]**"));
+        assert!(parse_back_tail("[emotion: shy] [back]"));
+        assert!(!parse_back_tail("(back in a minute)"));
+        assert!(!parse_back_tail("[backpack: red]"));
+        let aside = back_tag_instruction(&Instructions::default(), "Mira", "Alex");
+        assert!(aside.contains("square brackets included: [back]."), "{aside}");
+    }
+
+    #[test]
     fn group_messages_are_merged_in_time_order_as_notes() {
         let group = [at(MessageRole::User, "Hi all", 0), at(MessageRole::Character, "Hey!", 1), at(MessageRole::System, "Alex and Mira stepped away.", 2), at(MessageRole::Character, "Back so soon?", 10)];
         let own = [at(MessageRole::User, "So, the letter?", 3), at(MessageRole::Character, "Not here.", 4)];
@@ -199,6 +223,7 @@ mod tests {
         assert!(aside.contains("keep the private part itself for later"), "{aside}");
         assert!(aside.contains("square brackets included: [private]."), "{aside}");
         assert!(!aside.contains("Most replies") && !aside.contains("Only when"), "not framed as a rare exception: {aside}");
-        assert_eq!(marker_text(instructions::defaults(), "Alex", "Mira"), "Alex and Mira stepped away from the group to talk in private.");
+        let back = return_instruction(instructions::defaults(), "Mira", "Alex");
+        assert!(back.starts_with("Mira has just come back to the group from that private talk with Alex."), "{back}");
     }
 }

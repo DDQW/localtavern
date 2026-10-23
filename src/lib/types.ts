@@ -24,6 +24,33 @@ export interface LlmUsage {
   totalTokens: number | null;
 }
 
+/** A sound effect or a spoken line a reply carries, shown as a play button. */
+export interface AudioClip {
+  id: Uuid;
+  kind: "sound" | "voice";
+  /** A sound: what it sounds like. A voice: the words spoken. */
+  text: string;
+  characterId: Uuid | null;
+  /** The audio file; null until the button is first pressed. */
+  path: string | null;
+}
+
+/** Sound effects and voices (ElevenLabs); the API key is kept in the credential store, not here. */
+export interface AudioSettings {
+  sounds: boolean;
+  voices: boolean;
+  defaultVoiceId: string;
+  characterVoices: Record<Uuid, string>;
+  speechModel: string;
+  soundSeconds: number;
+}
+
+export interface Voice {
+  id: string;
+  name: string;
+  category: string;
+}
+
 export interface ChatMessage {
   id: Uuid;
   conversationId: Uuid;
@@ -37,6 +64,8 @@ export interface ChatMessage {
   alternates: MessageAlternate[];
   activeAlternateIndex: number;
   attachments: MessageAttachment[];
+  /** Sounds and spoken lines, as play buttons. */
+  clips: AudioClip[];
   detectedEmotion: string | null;
   /** The story clock before this reply and what it did to it (roleplay replies). */
   clock?: ClockSnapshot | null;
@@ -47,6 +76,8 @@ export interface ChatMessage {
 /** A message as the UI holds it: the stored message plus transient view state. */
 export interface UiMessage extends ChatMessage {
   streaming: boolean;
+  /** The reply hasn't started: it waits for a picture to finish rendering on the same graphics card. */
+  waitingForPicture?: boolean;
   editing: boolean;
   editBuffer: string;
 }
@@ -484,6 +515,19 @@ export interface OnDeviceStatus {
   options: OnDeviceOptions;
 }
 
+/** A Stable Diffusion checkpoint in the phone's image models folder. */
+export interface ImageModelFile {
+  fileName: string;
+  sizeBytes: number;
+}
+
+export interface OnDeviceImageStatus {
+  /** Whether this build can draw on the device (the Android app can). */
+  available: boolean;
+  modelsDir: string;
+  files: ImageModelFile[];
+}
+
 export interface DownloadProgress {
   fileName: string;
   received: number;
@@ -509,8 +553,15 @@ export type ChatEvent =
   | { type: "videoSent"; conversationId: Uuid; messageId: Uuid; characterId: Uuid | null; description: string }
   /** A group member took the user aside: open their private talk and let them speak first. */
   | { type: "breakoutStarted"; conversationId: Uuid; breakoutId: Uuid; characterId: Uuid }
+  /** The private talk's member ended it: go back to the group, where they speak up. */
+  | { type: "leavingTalk"; conversationId: Uuid; characterId: Uuid }
+  /** The group could see or hear part of a private talk: `message` is the note now in the group
+   * conversation, and `reactors` are the members who answer it there (see `reactToRoom`). */
+  | { type: "overheard"; conversationId: Uuid; message: ChatMessage; reactors: Uuid[] }
   | { type: "compacting"; conversationId: Uuid }
   | { type: "compacted"; conversationId: Uuid }
+  /** The reply waits for a picture to finish rendering: both need the one graphics card. */
+  | { type: "waitingForPicture"; messageId: Uuid }
   | { type: "toolApproval"; requestId: Uuid; command: string; elevate: boolean }
   | { type: "error"; message: string; kind: ErrorKind | null }
   | { type: "finished" };
@@ -603,7 +654,7 @@ export interface GroupSetting {
 
 // ---- picture generation ----
 
-export type ImageBackend = "a1111" | "comfyUi";
+export type ImageBackend = "a1111" | "comfyUi" | "grok" | "onDevice";
 export type PromptStyle = "tags" | "natural";
 /** What to draw: SillyTavern's modes. */
 export type ImageMode = "character" | "face" | "persona" | "scene" | "lastMessage";
@@ -639,6 +690,10 @@ export interface ImageGenSettings {
   backend: ImageBackend;
   a1111: ImageBackendConfig;
   comfy: ImageBackendConfig;
+  /** Grok Imagine through the SuperGrok sign-in; only url (xAI's API) and model apply. */
+  grok: ImageBackendConfig;
+  /** stable-diffusion.cpp on the phone; model is a file name in the image models folder, url unused. */
+  onDevice: ImageBackendConfig;
   /** ComfyUI workflow in API format with %prompt%-style placeholders; empty = built-in. */
   comfyWorkflow: string;
   /** What starts ComfyUI (its run_*.bat), run hidden when LocalTavern starts; empty = started by hand. */
@@ -657,7 +712,7 @@ export interface ImageGenSettings {
   unloadOllamaFirst: boolean;
   /** Draw the photos characters send in the story automatically. */
   autoPhotos: boolean;
-  /** ComfyUI API workflow for story videos (`[video: ...]`). */
+  /** ComfyUI API workflow for story videos (`[video: ...]`). Empty uses the built-in Wan workflow. */
   comfyVideoWorkflow: string;
   /** Render the videos characters send in the story automatically. */
   autoVideos: boolean;

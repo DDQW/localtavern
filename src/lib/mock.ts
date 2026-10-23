@@ -6,6 +6,8 @@ import type { Api, EventHandler } from "./api";
 import type {
   InstructionInfo,
   Instructions,
+  AudioSettings,
+  Voice,
   Character,
   ChatMessage,
   ChatSession,
@@ -176,6 +178,7 @@ const models: Record<string, string[]> = {
 };
 
 const GB = 1_000_000_000;
+const imageModelFiles: { fileName: string; sizeBytes: number }[] = [];
 let ondeviceOptions: OnDeviceOptions = {
   contextSize: 8192,
   threads: 4,
@@ -206,6 +209,7 @@ function message(conversationId: Uuid, role: ChatMessage["role"], text: string, 
     alternates: role === "character" ? [{ text, reasoningText: extra.reasoningText ?? null }] : [],
     activeAlternateIndex: 0,
     attachments: [],
+    clips: [],
     detectedEmotion: null,
     timestamp: now(),
     usage: null,
@@ -347,6 +351,46 @@ function breakoutFor(parentId: Uuid, characterId: Uuid): Conversation {
     worldState: parent.worldState,
     parentConversationId: parentId,
   });
+}
+
+let audioSettings: AudioSettings = {
+  sounds: true,
+  voices: true,
+  defaultVoiceId: "",
+  characterVoices: {},
+  speechModel: "eleven_multilingual_v2",
+  soundSeconds: 0,
+};
+let audioKey = false;
+const MOCK_VOICES: Voice[] = [
+  { id: "rachel", name: "Rachel", category: "premade" },
+  { id: "adam", name: "Adam", category: "premade" },
+  { id: "mine", name: "My clone", category: "cloned" },
+];
+
+/** A short sine beep as a WAV data URL, standing in for generated audio. */
+function beepDataUrl(frequency: number): string {
+  const rate = 8000;
+  const samples = Math.floor(rate * 0.35);
+  const bytes = new Uint8Array(44 + samples);
+  const view = new DataView(bytes.buffer);
+  const text = (at: number, s: string) => [...s].forEach((ch, i) => view.setUint8(at + i, ch.charCodeAt(0)));
+  text(0, "RIFF");
+  view.setUint32(4, 36 + samples, true);
+  text(8, "WAVEfmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true);
+  view.setUint32(28, rate, true);
+  view.setUint16(32, 1, true);
+  view.setUint16(34, 8, true);
+  text(36, "data");
+  view.setUint32(40, samples, true);
+  for (let i = 0; i < samples; i++) view.setUint8(44 + i, 128 + Math.round(90 * Math.sin((2 * Math.PI * frequency * i) / rate)));
+  let binary = "";
+  bytes.forEach((b) => (binary += String.fromCharCode(b)));
+  return `data:audio/wav;base64,${btoa(binary)}`;
 }
 
 const running = new Map<Uuid, boolean>();
@@ -497,7 +541,7 @@ export const mockApi: Api = {
 
   async sendMessage(conversationId, text, attachments, onEvent) {
     const list = messages.get(conversationId)!;
-    // A "stepped away" note doesn't end the exchange: an empty send still retries the user's message.
+    // A note the app made doesn't end the exchange: an empty send still retries the user's message.
     const last = list.findLast((m) => m.role !== "system" && m.role !== "image");
     if (!(text.trim() === "" && last?.role === "user")) {
       const user = message(conversationId, "user", text.trim(), {
@@ -516,20 +560,30 @@ export const mockApi: Api = {
     // A stand-in for a member's [private] tag: asking to talk "alone" in a group gets you taken aside.
     if (c.groupChatId && /\b(alone|private)\b/i.test(text)) {
       const characterId = groups.find((g) => g.id === c.groupChatId)!.characterIds[0];
-      const name = characters.find((ch) => ch.id === characterId)!.name;
       const aside = message(conversationId, "character", "", { speakerCharacterId: characterId });
       list.push(aside);
       onEvent({ type: "messageAdded", message: structuredClone(aside) });
       await stream(conversationId, aside, onEvent, "*She catches your eye and tilts her head toward the corridor.*", false);
-      const user = personas.find((p) => p.id === c.personaId)?.name || "User";
-      const marker = message(conversationId, "system", `${user} and ${name} stepped away from the group to talk in private.`, { speakerCharacterId: characterId });
-      list.push(marker);
-      onEvent({ type: "messageAdded", message: structuredClone(marker) });
+      // The others get their say before the talk opens.
+      const other = groups.find((g) => g.id === c.groupChatId)!.characterIds.find((id) => id !== characterId);
+      if (other) {
+        const reaction = message(conversationId, "character", "", { speakerCharacterId: other });
+        list.push(reaction);
+        onEvent({ type: "messageAdded", message: structuredClone(reaction) });
+        await stream(conversationId, reaction, onEvent, "*raises an eyebrow* Don't take too long, you two.", false);
+      }
       onEvent({ type: "breakoutStarted", conversationId, breakoutId: breakoutFor(conversationId, characterId).id, characterId });
       onEvent({ type: "finished" });
       return;
     }
     const reply = message(conversationId, "character", "", { speakerCharacterId: c.characterId });
+    // A stand-in for [sound: ...] / [voice: ...] tags: mentioning a door or thunder gets play buttons.
+    if (c.mode === "roleplay" && /\b(door|thunder|storm|shout|yell)\b/i.test(text)) {
+      reply.clips = [
+        { id: uid(), kind: "sound", text: "heavy wooden door slams, echo in a stone hall", characterId: null, path: null },
+        { id: uid(), kind: "voice", text: "Get out, now!", characterId: c.characterId, path: null },
+      ];
+    }
     list.push(reply);
     onEvent({ type: "messageAdded", message: structuredClone(reply) });
     const command = /^\/ps(!?) (.+)/s.exec(text.trim());
@@ -574,7 +628,22 @@ export const mockApi: Api = {
         description: `selfie of a young woman, silver hair, winking, neon cafe at night${/\bfail\b/i.test(text) ? ", fail" : ""}`,
       });
     }
+    // A stand-in for a member's [back] tag: telling them to "go back" ends a private talk.
+    if (c.parentConversationId && c.characterId && /\bgo back\b/i.test(text)) {
+      onEvent({ type: "leavingTalk", conversationId, characterId: c.characterId });
+    }
     onEvent({ type: "finished" });
+    // A stand-in for the engine's "who noticed?" check: a loud private talk is heard in the group,
+    // and another member reacts to it.
+    if (c.parentConversationId && c.characterId && /\b(shout|yell|kiss|loud)/i.test(text)) {
+      const heard = message(c.parentConversationId, "system", "Voices rose from the corner, and then there was a quick, startled laugh.", {
+        speakerCharacterId: c.characterId,
+      });
+      messages.get(c.parentConversationId)!.push(heard);
+      const group = groups.find((g) => g.id === conversations.find((x) => x.id === c.parentConversationId)?.groupChatId);
+      const reactor = group?.characterIds.find((id) => id !== c.characterId);
+      onEvent({ type: "overheard", conversationId: c.parentConversationId, message: structuredClone(heard), reactors: reactor ? [reactor] : [] });
+    }
   },
   async swipeNext(conversationId, messageId, onEvent) {
     const target = messages.get(conversationId)!.find((m) => m.id === messageId)!;
@@ -594,6 +663,52 @@ export const mockApi: Api = {
     messages.get(conversationId)!.push(reply);
     onEvent({ type: "messageAdded", message: structuredClone(reply) });
     await stream(conversationId, reply, onEvent, "*leans in* Happy to weigh in — here's my take.", false);
+    onEvent({ type: "finished" });
+  },
+  async reactToRoom(conversationId, characterIds, onEvent) {
+    for (const characterId of characterIds) {
+      const reply = message(conversationId, "character", "", { speakerCharacterId: characterId });
+      messages.get(conversationId)!.push(reply);
+      onEvent({ type: "messageAdded", message: structuredClone(reply) });
+      await stream(conversationId, reply, onEvent, "*glances over* Everything all right back there?", false);
+    }
+    onEvent({ type: "finished" });
+  },
+  async getAudioSettings() {
+    return structuredClone(audioSettings);
+  },
+  async saveAudioSettings(settings) {
+    audioSettings = structuredClone(settings);
+    return structuredClone(audioSettings);
+  },
+  async audioHasKey() {
+    return audioKey;
+  },
+  async setAudioKey(key) {
+    audioKey = key.trim().length > 0;
+    return audioKey;
+  },
+  async listVoices() {
+    if (!audioKey) throw "Add your ElevenLabs API key in Settings first.";
+    return MOCK_VOICES;
+  },
+  async makeClip(messageId, clipId) {
+    await sleep(600);
+    for (const list of messages.values()) {
+      const target = list.find((m) => m.id === messageId);
+      const clip = target?.clips.find((c) => c.id === clipId);
+      if (target && clip) {
+        clip.path ??= beepDataUrl(clip.kind === "voice" ? 440 : 220);
+        return structuredClone(target);
+      }
+    }
+    throw "Message not found.";
+  },
+  async rejoinGroup(conversationId, characterId, onEvent) {
+    const reply = message(conversationId, "character", "", { speakerCharacterId: characterId });
+    messages.get(conversationId)!.push(reply);
+    onEvent({ type: "messageAdded", message: structuredClone(reply) });
+    await stream(conversationId, reply, onEvent, "*rejoins the group, still a little pensive* Sorry about that. Where were we?", false);
     onEvent({ type: "finished" });
   },
   async continueMessage(conversationId, onEvent) {
@@ -814,6 +929,22 @@ You are the character. (Mock prompt for message ${messageId}.)
     return fileName;
   },
   async cancelOndeviceDownload() {},
+  async ondeviceImageStatus() {
+    return { available: true, modelsDir: "/data/user/0/me.woelki.localtavern/image-models", files: structuredClone(imageModelFiles) };
+  },
+  async deleteOndeviceImageModel(fileName) {
+    const i = imageModelFiles.findIndex((f) => f.fileName === fileName);
+    if (i >= 0) imageModelFiles.splice(i, 1);
+  },
+  async downloadOndeviceImageModel(url, onProgress) {
+    const fileName = decodeURIComponent(new URL(url).pathname.split("/").pop() ?? "model.gguf");
+    for (let received = 0; received <= 2 * GB; received += GB / 2) {
+      onProgress({ fileName, received, total: 2 * GB });
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    imageModelFiles.push({ fileName, sizeBytes: 2 * GB });
+    return fileName;
+  },
 
   async storeImage(path) {
     return path;
@@ -1060,6 +1191,9 @@ You are the character. (Mock prompt for message ${messageId}.)
   },
   async imageBackendOptions(settings) {
     await sleep(400);
+    if (settings.backend === "onDevice")
+      return { models: imageModelFiles.map((f) => f.fileName), samplers: ["euler_a", "euler", "dpm++2m", "lcm"], schedulers: ["discrete", "karras", "lcm"] };
+    if (settings.backend === "grok") return { models: ["grok-imagine-image-2.0", "grok-imagine-image-quality", "grok-imagine-image"], samplers: [], schedulers: [] };
     const url = settings.backend === "a1111" ? settings.a1111.url : settings.comfy.url;
     if (!url.includes("127.0.0.1") && !url.includes("localhost")) throw `Couldn't reach the server at ${url} - is it running?`;
     return settings.backend === "a1111"
@@ -1242,6 +1376,8 @@ let imageSettings: ImageGenSettings = {
   backend: "a1111",
   a1111: { url: "http://127.0.0.1:7860", model: "", sampler: "Euler a", scheduler: "" },
   comfy: { url: "http://127.0.0.1:8188", model: "", sampler: "euler", scheduler: "normal" },
+  grok: { url: "https://api.x.ai/v1", model: "", sampler: "", scheduler: "" },
+  onDevice: { url: "", model: "", sampler: "euler_a", scheduler: "discrete" },
   comfyWorkflow: "",
   comfyVideoWorkflow: "",
   comfyLauncher: "",

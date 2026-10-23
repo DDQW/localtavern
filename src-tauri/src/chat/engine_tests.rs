@@ -11,6 +11,8 @@ use uuid::Uuid;
 
 use super::engine::ChatEngine;
 use super::events::{ChatEvent, EventSink, VecSink};
+use super::next_voice;
+use super::overheard;
 use crate::db::{open_in_memory, Db};
 use crate::error::Result;
 use crate::llm::{LlmRequest, LlmRole};
@@ -1406,19 +1408,15 @@ async fn a_private_talk_hears_the_group_but_the_group_and_other_talks_never_hear
     assert!(system.contains("This is a private conversation between User and Alice, away from the group chat \"The Crew\" with Bob."), "{system}");
     assert!(!system.contains("[private]"), "a private talk can't start another: {system}");
 
-    // The group notes where the talk happened - once.
-    let group_messages = messages(&f, conv);
-    let marker = group_messages.last().unwrap();
-    assert_eq!(marker.role, MessageRole::System);
-    assert_eq!(marker.text, "User and Alice stepped away from the group to talk in private.");
-    assert_eq!(marker.speaker_character_id, Some(alice.id));
+    // The group isn't told anything: the story says how they got away from the others.
+    assert!(messages(&f, conv).iter().all(|m| m.role != MessageRole::System));
 
     let bobs = f.engine.open_breakout(conv, bob.id).unwrap();
     assert_ne!(bobs.conversation.id, talk.conversation.id);
     send(&f, bobs.conversation.id, "And you?").await.0.unwrap();
     let bob_private = request_text(&f.provider.requests()[2]);
     assert!(!bob_private.contains("burned") && !bob_private.contains("letter"), "{bob_private}");
-    assert!(bob_private.contains("[System note: In the group chat: User and Alice stepped away"), "the group saw them leave: {bob_private}");
+    assert!(bob_private.contains("[System note: In the group chat, Alice: Hi, you two.]"), "{bob_private}");
 
     // Back in the group: Bob remembers only his own talk, Alice only hers.
     send(&f, conv, "So, everyone").await.0.unwrap();
@@ -1426,7 +1424,7 @@ async fn a_private_talk_hears_the_group_but_the_group_and_other_talks_never_hear
     assert!(!bob_group.contains("burned") && !bob_group.contains("letter"), "{bob_group}");
     assert!(bob_group.contains("Bob and User have talked in private") && bob_group.contains("Bob: Just tired."), "{bob_group}");
     let group_history = &f.provider.requests()[3].history;
-    assert!(group_history.iter().any(|m| m.role == LlmRole::User && m.text == "[System note: User and Alice stepped away from the group to talk in private.]"));
+    assert!(group_history.iter().all(|m| !m.text.contains("stepped away")), "no note about the talk in the group");
 
     send(&f, conv, "Alice?").await.0.unwrap();
     let alice_group = request_text(&f.provider.requests()[4]);
@@ -1439,6 +1437,7 @@ async fn a_private_talk_hears_the_group_but_the_group_and_other_talks_never_hear
 async fn a_character_can_take_the_user_aside_and_speaks_first_there() {
     let f = fixture(vec![
         Script::Items(vec![chunk("Alice grabs your arm.\n[private]\n[next: Bob]"), finish("STOP")]),
+        Script::Items(vec![chunk("Bob blinks. \"Don't be long.\"\n[private]"), finish("STOP")]),
         Script::Items(vec![chunk("So. About last night."), finish("STOP")]),
     ]);
     let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
@@ -1449,8 +1448,22 @@ async fn a_character_can_take_the_user_aside_and_speaks_first_there() {
     let (result, events) = send(&f, conv, "Evening!").await;
     result.unwrap();
 
-    assert_eq!(f.provider.requests().len(), 1, "taking the user aside ends the round");
+    assert_eq!(f.provider.requests().len(), 2, "the others still react before the talk opens");
     assert!(f.provider.requests()[0].system_instruction.clone().unwrap().contains("square brackets included: [private]."));
+    assert!(
+        !f.provider.requests()[1].system_instruction.clone().unwrap().contains("square brackets included: [private]."),
+        "once the user is taken aside nobody else takes them anywhere"
+    );
+    let group_messages = messages(&f, conv);
+    assert_eq!(group_messages[1].text, "Alice grabs your arm.");
+    assert_eq!(group_messages[2].text, "Bob blinks. \"Don't be long.\"", "the stray tag is still hidden");
+    assert!(group_messages.iter().all(|m| m.role != MessageRole::System), "the group is told nothing");
+
+    let (reaction, started) = (
+        events.iter().rposition(|e| matches!(e, ChatEvent::MessageUpdated { message } if message.speaker_character_id == Some(bob.id))),
+        events.iter().position(|e| matches!(e, ChatEvent::BreakoutStarted { .. })),
+    );
+    assert!(reaction.unwrap() < started.expect("the UI is told to open the talk"), "the talk opens after the last reaction");
     let breakout_id = events
         .iter()
         .find_map(|e| match e {
@@ -1460,23 +1473,45 @@ async fn a_character_can_take_the_user_aside_and_speaks_first_there() {
             }
             _ => None,
         })
-        .expect("the UI is told to open the talk");
-    let group_messages = messages(&f, conv);
-    assert_eq!(group_messages[1].text, "Alice grabs your arm.");
-    assert_eq!(group_messages.last().unwrap().role, MessageRole::System, "the group notes the two left");
-    assert!(events.iter().any(|e| matches!(e, ChatEvent::MessageAdded { message } if message.role == MessageRole::System)));
+        .unwrap();
 
     pick(&f, breakout_id, alice.id).await;
     let talk = messages(&f, breakout_id);
     assert_eq!(talk.len(), 1);
     assert_eq!(talk[0].text, "So. About last night.");
-    assert_eq!(messages(&f, conv).len(), group_messages.len(), "no second note for the same talk");
+    assert_eq!(messages(&f, conv).len(), group_messages.len());
 }
 
 #[tokio::test]
-async fn the_stepped_away_note_doesnt_stop_a_retry_or_a_continue() {
+async fn a_member_sent_back_from_a_private_talk_speaks_up_in_the_group_knowing_what_was_said() {
     let f = fixture(vec![
-        Script::Items(vec![chunk("Alice grabs your arm.\n[private]"), finish("STOP")]),
+        Script::Items(vec![chunk("Alice smiles."), finish("STOP")]),
+        Script::Items(vec![chunk("I burned it."), finish("STOP")]),
+        Script::Items(vec![chunk("Alice rejoins the others, jaw set."), finish("STOP")]),
+    ]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+    send(&f, conv, "Evening, both").await.0.unwrap();
+    let talk = f.engine.open_breakout(conv, alice.id).unwrap().conversation.id;
+    send(&f, talk, "The letter?").await.0.unwrap();
+
+    let sink = Arc::new(VecSink::default());
+    f.engine.rejoin(conv, alice.id, sink.clone()).await.unwrap();
+
+    let reply = messages(&f, conv).pop().unwrap();
+    assert_eq!((reply.role, reply.speaker_character_id, reply.text.as_str()), (MessageRole::Character, Some(alice.id), "Alice rejoins the others, jaw set."));
+    let system = f.provider.requests()[2].system_instruction.clone().unwrap();
+    assert!(system.contains("Alice: I burned it."), "she knows what was said: {system}");
+    assert!(system.contains("Alice has just come back to the group from that private talk with User."), "{system}");
+    assert!(!system.contains("[private]"), "nobody takes the user aside from here: {system}");
+    assert!(!sink.events().iter().any(|e| matches!(e, ChatEvent::BreakoutStarted { .. })));
+}
+
+#[tokio::test]
+async fn a_note_in_the_group_doesnt_stop_a_retry_or_a_continue() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Alice grabs your arm."), finish("STOP")]),
         Script::Items(vec![chunk("Alice waves instead."), finish("STOP")]),
         Script::Items(vec![chunk(" Then she sits."), finish("STOP")]),
     ]);
@@ -1487,6 +1522,12 @@ async fn the_stepped_away_note_doesnt_stop_a_retry_or_a_continue() {
 
     send(&f, conv, "Evening!").await.0.unwrap();
     let reply = messages(&f, conv)[1].clone();
+    f.db.with(|c| {
+        let mut note = ChatMessage::new(conv, MessageRole::System, "Their voices carried across the room.");
+        note.speaker_character_id = Some(alice.id);
+        conversations::add_message(c, &note)
+    })
+    .unwrap();
     assert_eq!(messages(&f, conv).last().unwrap().role, MessageRole::System, "the note comes after the reply");
 
     // Deleting the reply leaves the note last; an empty send still retries the user's message.
@@ -1511,6 +1552,198 @@ async fn the_stepped_away_note_doesnt_stop_a_retry_or_a_continue() {
 }
 
 #[tokio::test]
+async fn members_who_were_not_named_still_react_to_every_post_when_it_makes_sense() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Alice laughs."), finish("STOP")]),    // 1st post: Alice, no [next] tag
+        Script::Items(vec![chunk("Cara"), finish("STOP")]),             // who speaks next?
+        Script::Items(vec![chunk("Cara gasps."), finish("STOP")]),
+        Script::Items(vec![chunk("NONE"), finish("STOP")]),             // Bob has nothing to add
+        Script::Items(vec![chunk("Alice shrugs."), finish("STOP")]),    // 2nd post
+        Script::Items(vec![chunk("**Bob**"), finish("STOP")]),
+        Script::Items(vec![chunk("Bob frowns."), finish("STOP")]),
+        Script::Items(vec![chunk("none"), finish("STOP")]),
+    ]);
+    f.engine.set_extraction(true);
+    let members: Vec<Character> = ["Alice", "Bob", "Cara"].iter().map(|n| add_character(&f.db, n, None, &[])).collect();
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &members.iter().collect::<Vec<_>>());
+    joint(&f, &group);
+    let conv = ready_group(&f, &group);
+    no_clock(&f, conv);
+    let (alice, bob, cara) = (members[0].id, members[1].id, members[2].id);
+
+    send(&f, conv, "Guess what happened").await.0.unwrap();
+    assert_eq!(speakers(&f, conv), [Some(alice), Some(cara)]);
+    let ask = request_text(&f.provider.requests()[1]);
+    assert!(ask.trim_start().starts_with(next_voice::ASK), "{ask}");
+    assert!(ask.contains("react right now: Bob, Cara.") && ask.contains("Alice: Alice laughs."), "{ask}");
+    assert!(request_text(&f.provider.requests()[3]).contains("react right now: Bob."), "only those who haven't answered");
+
+    send(&f, conv, "And then?").await.0.unwrap();
+    assert_eq!(speakers(&f, conv), [Some(alice), Some(cara), Some(alice), Some(bob)], "again on the second post");
+    assert_eq!(f.provider.requests().len(), 8);
+}
+
+#[tokio::test]
+async fn nobody_is_asked_about_reacting_without_joint_replies_or_background_requests() {
+    let f = fixture(vec![Script::Items(vec![chunk("Alice laughs."), finish("STOP")])]);
+    f.engine.set_extraction(true);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+    send(&f, conv, "Hi").await.0.unwrap();
+    assert_eq!(f.provider.requests().len(), 1, "the group answers one message with one voice unless it is set to more");
+
+    let f = fixture(vec![Script::Items(vec![chunk("Alice laughs."), finish("STOP")])]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob]);
+    joint(&f, &group);
+    let conv = ready_group(&f, &group);
+    send(&f, conv, "Hi").await.0.unwrap();
+    assert_eq!(f.provider.requests().len(), 1, "no extra request with background requests off");
+}
+
+// ---- sounds and voices (play buttons) ----
+
+/// Stands in for ElevenLabs: answers with the request itself as the "audio" and counts the calls.
+struct FakeAudio {
+    key: bool,
+    made: Mutex<Vec<String>>,
+}
+
+impl FakeAudio {
+    fn new(key: bool) -> Arc<Self> {
+        Arc::new(Self { key, made: Mutex::new(vec![]) })
+    }
+}
+
+#[async_trait]
+impl crate::audio::AudioMaker for FakeAudio {
+    fn has_key(&self) -> bool {
+        self.key
+    }
+
+    async fn sound(&self, prompt: &str, seconds: Option<u32>) -> Result<Vec<u8>> {
+        self.made.lock().unwrap().push(format!("sound {prompt} {seconds:?}"));
+        Ok(format!("sound:{prompt}").into_bytes())
+    }
+
+    async fn speech(&self, voice_id: &str, model: &str, text: &str) -> Result<Vec<u8>> {
+        self.made.lock().unwrap().push(format!("voice {voice_id} {model} {text}"));
+        Ok(format!("voice:{text}").into_bytes())
+    }
+
+    async fn voices(&self) -> Result<Vec<crate::audio::Voice>> {
+        Ok(vec![])
+    }
+}
+
+fn audio_fixture(key: bool, default_voice: &str, reply: &str) -> (Fixture, Arc<FakeAudio>, Uuid, Character) {
+    let f = fixture(vec![Script::Items(vec![chunk(reply), finish("STOP")])]);
+    let audio = FakeAudio::new(key);
+    f.engine.set_audio_maker(audio.clone());
+    f.db.with(|c| {
+        crate::audio::settings::save(c, crate::audio::settings::AudioSettings { default_voice_id: default_voice.into(), ..Default::default() })
+    })
+    .unwrap();
+    let nova = add_character(&f.db, "Nova", None, &[]);
+    let conv = f.engine.open_character(nova.id, false).unwrap().conversation.id;
+    f.engine.set_model(conv, "fake", "fake-model").unwrap();
+    no_clock(&f, conv);
+    (f, audio, conv, nova)
+}
+
+#[tokio::test]
+async fn a_reply_with_sound_and_voice_tags_gets_play_buttons_and_the_tags_are_offered() {
+    let (f, audio, conv, nova) =
+        audio_fixture(true, "voice_1", "The door slams. \"Out!\"\n[sound: heavy door slams, echo]\n[voice: Out!]");
+    send(&f, conv, "Hello").await.0.unwrap();
+
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap();
+    assert!(system.contains("[sound: <what it sounds like"), "{system}");
+    assert!(system.contains("[voice: <the exact words Nova says aloud"), "{system}");
+    let reply = messages(&f, conv).pop().unwrap();
+    assert_eq!(reply.text, "The door slams. \"Out!\"", "the tags are hidden");
+    let clips: Vec<_> = reply.clips.iter().map(|c| (c.kind, c.text.as_str(), c.character_id, c.path.is_none())).collect();
+    assert_eq!(
+        clips,
+        [(crate::models::ClipKind::Sound, "heavy door slams, echo", None, true), (crate::models::ClipKind::Voice, "Out!", Some(nova.id), true)]
+    );
+    assert!(audio.made.lock().unwrap().is_empty(), "nothing is made, or paid for, until a button is pressed");
+}
+
+#[tokio::test]
+async fn pressing_play_makes_the_audio_once_and_keeps_it() {
+    let (f, audio, conv, _) = audio_fixture(true, "voice_1", "Boom.\n[sound: thunder]\n[voice: Get down!]");
+    send(&f, conv, "Hello").await.0.unwrap();
+    let reply = messages(&f, conv).pop().unwrap();
+
+    let message = f.engine.make_clip(reply.id, reply.clips[0].id).await.unwrap();
+    let path = message.clips[0].path.clone().expect("the sound's file");
+    assert_eq!(std::fs::read(&path).unwrap(), b"sound:thunder");
+    assert!(path.ends_with(".mp3"));
+    assert_eq!(messages(&f, conv).pop().unwrap().clips[0].path.as_deref(), Some(path.as_str()), "kept with the message");
+
+    f.engine.make_clip(reply.id, reply.clips[0].id).await.unwrap();
+    assert_eq!(audio.made.lock().unwrap().len(), 1, "pressed again: played from the file, not made again");
+
+    let spoken = f.engine.make_clip(reply.id, reply.clips[1].id).await.unwrap();
+    assert_eq!(std::fs::read(spoken.clips[1].path.as_ref().unwrap()).unwrap(), b"voice:Get down!");
+    assert_eq!(audio.made.lock().unwrap().as_slice(), ["sound thunder Some(0)", "voice voice_1 eleven_multilingual_v2 Get down!"]);
+    assert!(f.engine.make_clip(reply.id, Uuid::new_v4()).await.is_err());
+}
+
+#[tokio::test]
+async fn without_a_key_or_a_voice_the_tags_are_neither_offered_nor_kept() {
+    let (f, _audio, conv, _) = audio_fixture(false, "voice_1", "Boom.\n[sound: thunder]\n[voice: Get down!]");
+    send(&f, conv, "Hello").await.0.unwrap();
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap();
+    assert!(!system.contains("[sound:") && !system.contains("[voice:"), "no key: nothing is offered");
+    let reply = messages(&f, conv).pop().unwrap();
+    assert_eq!(reply.text, "Boom.", "a tag the model wrote anyway is still hidden");
+    assert!(reply.clips.is_empty());
+
+    // A key but no voice: sounds only.
+    let (f, _audio, conv, _) = audio_fixture(true, "", "Boom.\n[sound: thunder]\n[voice: Get down!]");
+    send(&f, conv, "Hello").await.0.unwrap();
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap();
+    assert!(system.contains("[sound:") && !system.contains("[voice:"), "{system}");
+    let clips = messages(&f, conv).pop().unwrap().clips;
+    assert_eq!(clips.len(), 1);
+    assert_eq!(clips[0].text, "thunder");
+}
+
+#[tokio::test]
+async fn a_member_can_end_a_private_talk_with_a_back_tag() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Alice smiles."), finish("STOP")]),
+        Script::Items(vec![chunk("\"Enough. Let's rejoin the others.\"\n[back]"), finish("STOP")]),
+        Script::Items(vec![chunk("Alice grins.\n[back]"), finish("STOP")]),
+    ]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+    send(&f, conv, "Evening, both").await.0.unwrap();
+    let talk = f.engine.open_breakout(conv, alice.id).unwrap().conversation.id;
+
+    let (result, events) = send(&f, talk, "So?").await;
+    result.unwrap();
+
+    assert!(f.provider.requests()[1].system_instruction.clone().unwrap().contains("square brackets included: [back]."));
+    assert!(!f.provider.requests()[0].system_instruction.clone().unwrap().contains("[back]"), "only private talks can be left");
+    assert_eq!(messages(&f, talk)[1].text, "\"Enough. Let's rejoin the others.\"", "the tag is hidden");
+    let leaving: Vec<_> = events.iter().filter_map(|e| match e {
+        ChatEvent::LeavingTalk { conversation_id, character_id } => Some((*conversation_id, *character_id)),
+        _ => None,
+    }).collect();
+    assert_eq!(leaving, [(talk, alice.id)]);
+
+    // In the group the tag means nothing: it is hidden, and nobody leaves.
+    let (_, events) = send(&f, conv, "Hello again").await;
+    assert!(!events.iter().any(|e| matches!(e, ChatEvent::LeavingTalk { .. })));
+    assert_eq!(messages(&f, conv).last().unwrap().text, "Alice grins.");
+}
+
+#[tokio::test]
 async fn a_group_can_keep_characters_from_taking_the_user_aside() {
     let f = fixture(vec![Script::Items(vec![chunk("Alice waves.\n[private]"), finish("STOP")])]);
     let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
@@ -1523,6 +1756,104 @@ async fn a_group_can_keep_characters_from_taking_the_user_aside() {
     assert!(!events.iter().any(|e| matches!(e, ChatEvent::BreakoutStarted { .. })));
     assert_eq!(messages(&f, conv)[1].text, "Alice waves.", "the tag is still hidden");
     assert!(!f.provider.requests()[0].system_instruction.clone().unwrap().contains("[private]"));
+}
+
+#[tokio::test]
+async fn what_a_private_talk_gives_away_is_noted_in_the_group_and_those_who_notice_react() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Alice smiles."), finish("STOP")]),                                          // group: Alice
+        Script::Items(vec![chunk("\"You did WHAT?\" Alice hisses, loud enough to carry."), finish("STOP")]), // Alice in private
+        Script::Items(vec![chunk("NOTICED: Alice's voice carried across the room.\nREACT: Bob"), finish("STOP")]),
+        Script::Items(vec![chunk("Bob looks over. \"Everything alright?\""), finish("STOP")]),                // Bob, in the group
+        Script::Items(vec![chunk("\"Fine,\" Alice whispers."), finish("STOP")]),                              // Alice in private
+        Script::Items(vec![chunk("NOTICED: NONE\nREACT: NONE"), finish("STOP")]),
+    ]);
+    f.engine.set_extraction(true);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+    no_clock(&f, conv);
+    send(&f, conv, "Evening, both").await.0.unwrap();
+
+    let talk = f.engine.open_breakout(conv, alice.id).unwrap().conversation.id;
+    let sink = Arc::new(VecSink::default());
+    f.engine.send_message(talk, "I burned the letter.".into(), vec![], sink.clone()).await.unwrap();
+    let heard = || {
+        sink.events().into_iter().find_map(|e| match e {
+            ChatEvent::Overheard { conversation_id, message, reactors } => Some((conversation_id, message, reactors)),
+            _ => None,
+        })
+    };
+    wait_until("the group to notice", || heard().is_some()).await;
+
+    let (group_id, note, reactors) = heard().unwrap();
+    assert_eq!((group_id, reactors.clone()), (conv, vec![bob.id]));
+    assert_eq!((note.role, note.text.as_str(), note.speaker_character_id), (MessageRole::System, "Alice's voice carried across the room.", Some(alice.id)));
+    assert_eq!(messages(&f, conv).last().unwrap().id, note.id, "it is in the group chat, after what was said there");
+
+    let ask = request_text(&f.provider.requests()[2]);
+    assert!(ask.trim_start().starts_with(overheard::ASK), "{ask}");
+    for needle in ["Alice: Alice smiles.", "User: I burned the letter.", "Alice: \"You did WHAT?\"", "The rest of the group (Bob)"] {
+        assert!(ask.contains(needle), "{needle}: {ask}");
+    }
+
+    // The UI has those who noticed answer in the group.
+    let reaction_sink = Arc::new(VecSink::default());
+    f.engine.react(conv, reactors, reaction_sink.clone()).await.unwrap();
+    let group_messages = messages(&f, conv);
+    let reply = group_messages.last().unwrap();
+    assert_eq!((reply.role, reply.speaker_character_id, reply.text.as_str()), (MessageRole::Character, Some(bob.id), "Bob looks over. \"Everything alright?\""));
+    let reaction = &f.provider.requests()[3];
+    assert!(reaction.history.iter().any(|m| m.role == LlmRole::User && m.text == "[System note: Alice's voice carried across the room.]"), "Bob reads what happened");
+    assert!(!reaction.system_instruction.clone().unwrap().contains("[private]"), "nobody takes the user aside from a reaction");
+
+    // Back in the talk: nothing more is noticed.
+    f.engine.send_message(talk, "Sorry.".into(), vec![], Arc::new(VecSink::default())).await.unwrap();
+    wait_until("the second check", || f.provider.requests().len() == 6).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let notes: Vec<_> = messages(&f, conv).into_iter().filter(|m| m.role == MessageRole::System).map(|m| m.text).collect();
+    assert_eq!(notes, ["Alice's voice carried across the room."]);
+}
+
+#[tokio::test]
+async fn a_private_talk_nobody_could_notice_leaves_the_group_alone() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Alice smiles."), finish("STOP")]),
+        Script::Items(vec![chunk("\"Not by text,\" Alice types. \"Call me.\""), finish("STOP")]),
+        Script::Items(vec![chunk("NOTICED: NONE\nREACT: Bob"), finish("STOP")]),
+    ]);
+    f.engine.set_extraction(true);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+    no_clock(&f, conv);
+    send(&f, conv, "Evening, both").await.0.unwrap();
+
+    let talk = f.engine.open_breakout(conv, alice.id).unwrap().conversation.id;
+    let sink = Arc::new(VecSink::default());
+    f.engine.send_message(talk, "Can we talk by text?".into(), vec![], sink.clone()).await.unwrap();
+    wait_until("the check", || f.provider.requests().len() == 3).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert!(!sink.events().iter().any(|e| matches!(e, ChatEvent::Overheard { .. })));
+    assert_eq!(messages(&f, conv).iter().filter(|m| m.role == MessageRole::System).count(), 0, "nothing is noted in the group");
+}
+
+#[tokio::test]
+async fn a_private_talk_is_not_checked_when_background_requests_are_off() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Alice smiles."), finish("STOP")]),
+        Script::Items(vec![chunk("\"Shh,\" Alice says."), finish("STOP")]),
+    ]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+    send(&f, conv, "Evening, both").await.0.unwrap();
+
+    let talk = f.engine.open_breakout(conv, alice.id).unwrap().conversation.id;
+    send(&f, talk, "Psst.").await.0.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(f.provider.requests().len(), 2, "no extra request");
 }
 
 #[tokio::test]

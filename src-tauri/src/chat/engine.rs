@@ -18,21 +18,25 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::authoring;
+use crate::audio::{settings as audio_settings, AudioMaker};
 use super::compaction::{self, ContextStatus, Names};
 use super::events::{ChatEvent, EventSink};
 use super::extraction::{Exchange, Extractor, StoryExchange};
 use super::images;
 use super::meters;
+use super::next_voice;
+use super::overheard;
 use super::reply::{append_instruction, check_blocked, format_prompt, match_emotion, user_message};
 use super::session::{self, build_session, load_reply_context, ChatSession, ReplyContext};
 use crate::db::Db;
 use crate::error::{Error, Result};
+use crate::gpu::GpuGate;
 use crate::group_chats::strategy_for;
 use crate::holidays::{self, Country, DatedHoliday, HolidaySource, SchoolBreak};
 use crate::llm::{LlmGenerationConfig, LlmMessage, LlmRequest, LlmRole};
 use crate::models::{
     Character, ChatMessage, ClockSnapshot, Conversation, ConversationMode, ConversationSummary, GroupChat, LlmUsage, MessageAttachment, MessageRole, Persona,
-    PromptBlockType, PromptPreset, Schedule, StoryCharacter, WorldInfoEntry, WorldState,
+    AudioClip, ClipKind, PromptBlockType, PromptPreset, Schedule, StoryCharacter, WorldInfoEntry, WorldState,
 };
 use crate::powershell::exec::{CommandRunner, ExecError, ExecutionResult, Pwsh};
 use crate::powershell::filter::ToolCallFilter;
@@ -41,7 +45,7 @@ use crate::prompting::powershell_tool::{self, PowerShellToolCallRequest, ToolRes
 use crate::prompting::group_reply::SpeakerCut;
 use crate::prompting::reply_tags::{self, ReplyTags};
 use crate::prompting::{
-    self, breakout, emotion_tag, instructions, next_speaker_tag, photo_tag, roles, video_tag, world_state,
+    self, audio_tag, breakout, emotion_tag, instructions, next_speaker_tag, photo_tag, roles, video_tag, world_state,
     KeywordWorldInfoScanner,
     PromptAssemblyContext,
 };
@@ -79,6 +83,12 @@ struct Inner {
     /// User messages whose pictures are being described right now, so a group round's several
     /// replies don't each start the same description.
     describing: Mutex<std::collections::HashSet<Uuid>>,
+    /// Held by a picture while it renders; Ollama replies wait for it (see `crate::gpu`).
+    gpu: Mutex<GpuGate>,
+    /// Makes the sounds and voices of play buttons; `None` (tests, by default) means there are none.
+    audio: Mutex<Option<Arc<dyn AudioMaker>>>,
+    /// Clips whose audio is being made right now, so a second press doesn't pay for it twice.
+    making: Mutex<std::collections::HashSet<Uuid>>,
 }
 
 /// The user's answer to a tool-call approval request.
@@ -88,6 +98,32 @@ pub struct ToolDecision {
     pub allow: bool,
     /// With `allow`: also remember this pattern so matching commands run without asking next time.
     pub always_pattern: Option<String>,
+}
+
+/// How many of the newest group and private-talk messages the "who noticed" and "who speaks next"
+/// questions read.
+const SCENE_CONTEXT: usize = 8;
+
+/// The newest lines of a group conversation, one per line, for a question to the model: who said
+/// it, or `(note)` for something the app noted in the story.
+fn group_transcript(messages: &[ChatMessage], cast: &[Character], user: &str) -> String {
+    let lines: Vec<String> = messages
+        .iter()
+        .filter_map(|m| {
+            let text = m.effective_text().trim();
+            let who = match m.role {
+                _ if text.is_empty() => return None,
+                MessageRole::System => return Some(format!("(note) {text}")),
+                MessageRole::User => user,
+                MessageRole::Character => {
+                    m.speaker_character_id.and_then(|id| cast.iter().find(|c| c.id == id)).map_or("Someone", |c| c.name.as_str())
+                }
+                _ => return None,
+            };
+            Some(format!("{who}: {text}"))
+        })
+        .collect();
+    lines[lines.len().saturating_sub(SCENE_CONTEXT)..].join("\n")
 }
 
 /// Most tool round trips one turn may take before the assistant is cut off.
@@ -101,10 +137,12 @@ struct Replied {
     next: Option<Uuid>,
     /// In a group: the speaker took the user aside into a private talk.
     private: bool,
+    /// In a private talk: the speaker ends it and goes back to the group.
+    back: bool,
 }
 
 impl Replied {
-    const STOPPED: Self = Self { completed: false, next: None, private: false };
+    const STOPPED: Self = Self { completed: false, next: None, private: false, back: false };
 }
 
 /// What one model turn came to.
@@ -183,6 +221,21 @@ struct AssembleOptions<'a> {
     next_speakers: &'a [&'a str],
     /// A group reply may take the user aside into a private talk (`[private]` tag).
     offer_private: bool,
+    /// A group reply by a member who is back from their private talk with the user.
+    returning: bool,
+    /// A private talk's reply may end the talk and go back to the group (`[back]` tag).
+    offer_back: bool,
+}
+
+/// What a group voice is answering, which decides what its reply may do.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Occasion {
+    /// A message of the user's: the reply may take the user aside.
+    Message,
+    /// Something that happened around the group: nobody takes the user aside.
+    Reaction,
+    /// A member is back from a private talk with the user.
+    Return,
 }
 
 /// In a group roleplay: what keeps `speaker`'s reply to their own part (the other members' and the
@@ -195,8 +248,15 @@ fn speaker_cut(ctx: &ReplyContext, speaker: Option<&Character>) -> Option<Speake
     SpeakerCut::new(&me.name, &others)
 }
 
-/// The newest message that is part of the exchange. A note the app made in the story (the group's
-/// "stepped away to talk in private") doesn't end it: a reply can still be retried or continued.
+/// A private talk's reply ended the talk (`[back]`): tells the UI to take the user back to the group.
+fn leave_talk(conversation_id: Uuid, character_id: Option<Uuid>, replied: &Replied, sink: &Arc<dyn EventSink>) {
+    if let (true, Some(character_id)) = (replied.back, character_id) {
+        sink.emit(ChatEvent::LeavingTalk { conversation_id, character_id });
+    }
+}
+
+/// The newest message that is part of the exchange. A note the app made in the story (what the
+/// group noticed of a private talk) doesn't end it: a reply can still be retried or continued.
 fn last_turn(messages: &[ChatMessage]) -> Option<&ChatMessage> {
     messages.iter().rev().find(|m| m.role != MessageRole::System)
 }
@@ -323,6 +383,9 @@ impl ChatEngine {
                 holiday_fetches: Mutex::new(Default::default()),
                 cast_tasks: Mutex::new(HashMap::new()),
                 describing: Mutex::new(Default::default()),
+                gpu: Mutex::new(GpuGate::default()),
+                audio: Mutex::new(None),
+                making: Mutex::new(Default::default()),
             }) }
     }
 
@@ -337,6 +400,16 @@ impl ChatEngine {
 
     pub fn set_holiday_source(&self, source: Arc<dyn HolidaySource>) {
         *self.inner.holidays.lock().unwrap() = Some(source);
+    }
+
+    /// Where the sounds and voices of play buttons come from.
+    pub fn set_audio_maker(&self, maker: Arc<dyn AudioMaker>) {
+        *self.inner.audio.lock().unwrap() = Some(maker);
+    }
+
+    /// The gate Ollama waits on, so a reply held up by a picture can say so.
+    pub fn set_gpu_gate(&self, gpu: GpuGate) {
+        *self.inner.gpu.lock().unwrap() = gpu;
     }
 
     pub fn provider_ids(&self) -> Vec<String> {
@@ -876,12 +949,48 @@ present, keep it as its own final paragraph, still naming whose details they are
                 return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
             }
             match &ctx.group {
-                Some(group) => engine.group_round(conversation_id, group, &ctx.messages, vec![character_id], &inner_sink, &token).await,
+                Some(group) => engine.group_round(conversation_id, group, &ctx.messages, vec![character_id], Occasion::Message, &inner_sink, &token).await,
                 None => {
-                    engine.mark_breakout(&ctx)?;
-                    engine.generate_new(conversation_id, Some(character_id), &[], &inner_sink, &token).await.map(|_| ())
+                    let replied = engine.generate_new(conversation_id, Some(character_id), &[], Occasion::Message, &inner_sink, &token).await?;
+                    leave_talk(conversation_id, Some(character_id), &replied, &inner_sink);
+                    Ok(())
                 }
             }
+        })
+        .await
+    }
+
+    /// Group chats: has these members answer, one after another, something that just happened around
+    /// them (see [`ChatEvent::Overheard`]) instead of a message of the user's. Nobody takes the user
+    /// aside from here: the user is busy with someone else.
+    pub async fn react(&self, conversation_id: Uuid, character_ids: Vec<Uuid>, sink: Arc<dyn EventSink>) -> Result<()> {
+        self.group_turns(conversation_id, character_ids, Occasion::Reaction, sink).await
+    }
+
+    /// Group chats: has a member come back from their private talk with the user and speak up in the
+    /// group, knowing everything said in the talk.
+    pub async fn rejoin(&self, conversation_id: Uuid, character_id: Uuid, sink: Arc<dyn EventSink>) -> Result<()> {
+        self.group_turns(conversation_id, vec![character_id], Occasion::Return, sink).await
+    }
+
+    async fn group_turns(&self, conversation_id: Uuid, character_ids: Vec<Uuid>, occasion: Occasion, sink: Arc<dyn EventSink>) -> Result<()> {
+        let engine = self.clone();
+        let inner_sink = sink.clone();
+        self.run_guarded(conversation_id, sink, move |token| async move {
+            let ctx = engine.db().with(|c| load_reply_context(c, conversation_id))?;
+            let Some(group) = &ctx.group else {
+                return Err(Error::Other("This isn't a group chat.".into()));
+            };
+            if ctx.conversation.model.trim().is_empty() {
+                return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
+            }
+            let mut speakers: Vec<Uuid> = Vec::new();
+            for id in character_ids.into_iter().filter(|id| ctx.characters.iter().any(|c| c.id == *id)) {
+                if !speakers.contains(&id) {
+                    speakers.push(id);
+                }
+            }
+            engine.group_round(conversation_id, group, &ctx.messages, speakers, occasion, &inner_sink, &token).await
         })
         .await
     }
@@ -926,40 +1035,10 @@ present, keep it as its own final paragraph, still naming whose details they are
         Ok(conversation.id)
     }
 
-    /// Notes in the group conversation that the user and a private talk's character stepped away,
-    /// unless that is already the group's latest message. Returns the note when one was added.
-    fn mark_breakout(&self, ctx: &ReplyContext) -> Result<Option<ChatMessage>> {
-        let (Some(breakout), Some(character)) = (&ctx.breakout, ctx.characters.first()) else {
-            return Ok(None);
-        };
-        self.add_breakout_marker(breakout.parent.id, character, ctx.persona.as_ref())
-    }
-
-    fn add_breakout_marker(&self, group_conversation_id: Uuid, character: &Character, persona: Option<&Persona>) -> Result<Option<ChatMessage>> {
-        self.db().with(|c| {
-            let last = session::chat_history(c, group_conversation_id)?.pop();
-            if last.is_some_and(|m| m.role == MessageRole::System && m.speaker_character_id == Some(character.id)) {
-                return Ok(None);
-            }
-            let ins = instructions::load(c)?;
-            let text = breakout::marker_text(&ins, roles::user_name(persona), &character.name);
-            let mut marker = ChatMessage::new(group_conversation_id, MessageRole::System, text);
-            marker.speaker_character_id = Some(character.id);
-            conversations::add_message(c, &marker)?;
-            Ok(Some(marker))
-        })
-    }
-
-    /// A group reply took the user aside: notes it in the group and tells the UI which private
-    /// talk to open.
+    /// A group reply took the user aside (and the rest of the round has answered): tells the UI which
+    /// private talk to open. The group isn't told: the story says how they got away from the others.
     fn start_breakout(&self, group_conversation_id: Uuid, character_id: Uuid, sink: &Arc<dyn EventSink>) -> Result<()> {
         let breakout_id = self.db().with(|c| self.breakout_for(c, group_conversation_id, character_id))?;
-        let ctx = self.db().with(|c| load_reply_context(c, group_conversation_id))?;
-        if let Some(character) = ctx.characters.iter().find(|c| c.id == character_id) {
-            if let Some(marker) = self.add_breakout_marker(group_conversation_id, character, ctx.persona.as_ref())? {
-                sink.emit(ChatEvent::MessageAdded { message: marker });
-            }
-        }
         sink.emit(ChatEvent::BreakoutStarted { conversation_id: group_conversation_id, breakout_id, character_id });
         Ok(())
     }
@@ -1298,7 +1377,6 @@ present, keep it as its own final paragraph, still naming whose details they are
             if text.trim().is_empty() && attachments.is_empty() {
                 return Err(Error::Other("Nothing to send.".into()));
             }
-            self.mark_breakout(&ctx)?;
             let mut user = ChatMessage::new(conversation_id, MessageRole::User, text.trim());
             user.attachments = attachments
                 .iter()
@@ -1324,23 +1402,29 @@ present, keep it as its own final paragraph, still naming whose details they are
             let latest_user_text =
                 history.iter().rev().find(|m| m.role == MessageRole::User).map(|m| m.text.clone()).unwrap_or_default();
             let speakers = strategy_for(group.activation_mode).select_next_speakers(group, &ctx.characters, &history, &latest_user_text);
-            return self.group_round(conversation_id, group, &history, speakers, &sink, &token).await;
+            return self.group_round(conversation_id, group, &history, speakers, Occasion::Message, &sink, &token).await;
         }
 
         let speaker_id = (ctx.characters.len() == 1).then(|| ctx.characters[0].id);
-        self.generate_new(conversation_id, speaker_id, &[], &sink, &token).await.map(|_| ())
+        let replied = self.generate_new(conversation_id, speaker_id, &[], Occasion::Message, &sink, &token).await?;
+        leave_talk(conversation_id, ctx.breakout.is_some().then_some(speaker_id).flatten(), &replied, &sink);
+        Ok(())
     }
 
     /// Has `speakers` answer the user's latest message, one after another. With joint replies on,
     /// each reply may hand the message on to a member who hasn't answered it yet (the model decides,
     /// with a `[next: ...]` tag), and that member answers right after - so nobody answers one message
-    /// twice that way. A stop or failure ends the round, not just that voice.
+    /// twice that way. A stop or failure ends the round, not just that voice. A voice that takes the
+    /// user aside (when `occasion` and the group allow it) doesn't cut the round short: the others
+    /// still react, and the private talk opens once all of them have.
+    #[allow(clippy::too_many_arguments)]
     async fn group_round(
         &self,
         conversation_id: Uuid,
         group: &GroupChat,
         history: &[ChatMessage],
         speakers: Vec<Uuid>,
+        occasion: Occasion,
         sink: &Arc<dyn EventSink>,
         token: &CancellationToken,
     ) -> Result<()> {
@@ -1353,6 +1437,7 @@ present, keep it as its own final paragraph, still naming whose details they are
             .filter_map(|m| m.speaker_character_id)
             .collect();
         let mut queue = VecDeque::from(speakers);
+        let mut aside = None;
         while let Some(speaker) = queue.pop_front() {
             let candidates: Vec<Uuid> = if group.joint_replies {
                 let free = |id: &Uuid| *id != speaker && !answered.contains(id) && !queue.contains(id);
@@ -1360,20 +1445,62 @@ present, keep it as its own final paragraph, still naming whose details they are
             } else {
                 Vec::new()
             };
-            let replied = self.generate_new(conversation_id, Some(speaker), &candidates, sink, token).await?;
+            // Once the user is being taken aside, nobody else takes them anywhere.
+            let turn = if aside.is_some() { Occasion::Reaction } else { occasion };
+            let replied = self.generate_new(conversation_id, Some(speaker), &candidates, turn, sink, token).await?;
             if !replied.completed {
-                break;
+                return Ok(());
             }
             answered.push(speaker);
             if replied.private {
-                // The user is taken aside: the rest of the group waits.
-                return self.start_breakout(conversation_id, speaker, sink);
+                aside = Some(speaker);
             }
             if let Some(next) = replied.next {
                 queue.push_front(next);
+            } else if occasion == Occasion::Message && queue.is_empty() {
+                // The reply named nobody, but someone may still have something to say to it.
+                if let Some(next) = self.who_speaks_next(conversation_id, &candidates, token).await {
+                    queue.push_front(next);
+                }
             }
         }
-        Ok(())
+        match aside {
+            Some(speaker) => self.start_breakout(conversation_id, speaker, sink),
+            None => Ok(()),
+        }
+    }
+
+    /// After a group reply that named nobody to follow it: asks the model whether one of `candidates`
+    /// (members who haven't answered the user's latest message) would react to what was just said.
+    /// Best-effort: a failed request, a stop or no answer means nobody does.
+    async fn who_speaks_next(&self, conversation_id: Uuid, candidates: &[Uuid], token: &CancellationToken) -> Option<Uuid> {
+        if candidates.is_empty() || !self.inner.extraction.load(Ordering::Relaxed) {
+            return None;
+        }
+        let ctx = self.db().with(|c| load_reply_context(c, conversation_id)).ok()?;
+        let named: Vec<(Uuid, &str)> =
+            candidates.iter().filter_map(|id| ctx.characters.iter().find(|c| c.id == *id)).map(|c| (c.id, c.name.as_str())).collect();
+        let names: Vec<&str> = named.iter().map(|(_, name)| *name).collect();
+        let user = roles::user_name(ctx.persona.as_ref());
+        let transcript = group_transcript(&ctx.messages, &ctx.characters, user);
+        let extractor = Extractor {
+            db: self.db(),
+            providers: &self.inner.providers,
+            provider_id: &ctx.conversation.provider_id,
+            model: &ctx.conversation.model,
+        };
+        let answer = tokio::select! {
+            biased;
+            _ = token.cancelled() => return None,
+            answer = extractor.ask(next_voice::prompt(user, &names, &transcript)) => answer,
+        };
+        match answer {
+            Ok(answer) => next_voice::parse(&answer, &names).map(|i| named[i].0),
+            Err(error) => {
+                report("next speaker check", Err(error));
+                None
+            }
+        }
     }
 
     // ------------------------------------------------------------------ generation
@@ -1514,6 +1641,9 @@ present, keep it as its own final paragraph, still naming whose details they are
                 if let Some(talk) = ctx.private_talks.iter().find(|t| t.character_id == me.id) {
                     if let Some(memory) = breakout::private_memory(&ins, &me.name, user, talk.summary.as_deref(), &talk.messages) {
                         append_instruction(&mut request, &memory);
+                        if options.returning {
+                            append_instruction(&mut request, &breakout::return_instruction(&ins, &me.name, user));
+                        }
                     }
                 }
             }
@@ -1535,6 +1665,10 @@ present, keep it as its own final paragraph, still naming whose details they are
             let user = roles::user_name(ctx.persona.as_ref());
             append_instruction(&mut request, &breakout::private_tag_instruction(&ins, &character.name, user));
         }
+        if let Some(character) = options.speaker.filter(|_| options.reply_tags && options.offer_back) {
+            let user = roles::user_name(ctx.persona.as_ref());
+            append_instruction(&mut request, &breakout::back_tag_instruction(&ins, &character.name, user));
+        }
         if let Some(character) = options.speaker {
             if options.reply_tags
                 && conversation.mode == ConversationMode::Roleplay
@@ -1554,6 +1688,16 @@ present, keep it as its own final paragraph, still naming whose details they are
             {
                 let user = roles::user_name(ctx.persona.as_ref());
                 append_instruction(&mut request, &video_tag::build_instruction(&ins, &character.name, user));
+            }
+            if options.reply_tags && conversation.mode == ConversationMode::Roleplay {
+                let (sounds, voices) = self.audio_on_offer(Some(character.id))?;
+                let user = roles::user_name(ctx.persona.as_ref());
+                if sounds {
+                    append_instruction(&mut request, &audio_tag::sound_instruction(&ins, &character.name, user));
+                }
+                if voices {
+                    append_instruction(&mut request, &audio_tag::voice_instruction(&ins, &character.name, user));
+                }
             }
         }
         // The picture rides on the user's turn, but the system notes after it come last and the model
@@ -1591,6 +1735,10 @@ present, keep it as its own final paragraph, still naming whose details they are
             Ok(p) => p,
             Err(e) => return StreamResult::failed(e),
         };
+        // Ollama waits for a picture holding the graphics card; the reply shows why it hasn't started.
+        if provider_id == crate::providers::ollama::PROVIDER_ID && self.inner.gpu.lock().unwrap().is_held() {
+            sink.emit(ChatEvent::WaitingForPicture { message_id });
+        }
 
         let started = tokio::select! {
             biased;
@@ -1718,6 +1866,78 @@ present, keep it as its own final paragraph, still naming whose details they are
         Ok((clean, tags, None))
     }
 
+    /// Whether replies may carry sound effects and spoken lines for `speaker`: an ElevenLabs key is
+    /// saved, the setting is on, and (for a voice) the speaker has a voice to speak with.
+    fn audio_on_offer(&self, speaker: Option<Uuid>) -> Result<(bool, bool)> {
+        if !self.inner.audio.lock().unwrap().as_ref().is_some_and(|maker| maker.has_key()) {
+            return Ok((false, false));
+        }
+        let settings = self.db().with(audio_settings::load)?;
+        Ok((settings.sounds, settings.voices && settings.voice_for(speaker).is_some()))
+    }
+
+    /// The play buttons a reply's tags ask for, when Settings allow them.
+    fn clips_to_offer(&self, tags: &ReplyTags, speaker: Option<Uuid>) -> Result<Vec<AudioClip>> {
+        if tags.sounds.is_empty() && tags.voices.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (sounds, voices) = self.audio_on_offer(speaker)?;
+        let sounds = tags.sounds.iter().filter(|_| sounds).map(|text| AudioClip::new(ClipKind::Sound, text, None));
+        let voices = tags.voices.iter().filter(|_| voices).map(|text| AudioClip::new(ClipKind::Voice, text, speaker));
+        Ok(sounds.chain(voices).collect())
+    }
+
+    /// Makes the audio of a message's clip (a sound effect, or a line in the speaker's voice) the
+    /// first time its play button is pressed, and keeps it. Returns the message with the clip's file.
+    pub async fn make_clip(&self, message_id: Uuid, clip_id: Uuid) -> Result<ChatMessage> {
+        let maker = self.inner.audio.lock().unwrap().clone().ok_or_else(|| Error::Other("Sounds aren't set up.".into()))?;
+        let (message, settings) = self.db().with(|c| {
+            let message = conversations::get_message(c, message_id)?.ok_or_else(|| Error::Other("Message not found.".into()))?;
+            Ok((message, audio_settings::load(c)?))
+        })?;
+        let clip = message.clips.iter().find(|c| c.id == clip_id).cloned().ok_or_else(|| Error::Other("That sound is gone.".into()))?;
+        if clip.path.as_deref().is_some_and(|path| std::path::Path::new(path).is_file()) {
+            return Ok(message);
+        }
+
+        if !self.inner.making.lock().unwrap().insert(clip_id) {
+            return Err(Error::Other("That sound is already being made.".into()));
+        }
+        struct Making<'a>(&'a Mutex<std::collections::HashSet<Uuid>>, Uuid);
+        impl Drop for Making<'_> {
+            fn drop(&mut self) {
+                self.0.lock().unwrap().remove(&self.1);
+            }
+        }
+        let _making = Making(&self.inner.making, clip_id);
+
+        let audio = match clip.kind {
+            ClipKind::Sound => maker.sound(&clip.text, Some(settings.sound_seconds)).await?,
+            ClipKind::Voice => {
+                let voice = settings
+                    .voice_for(clip.character_id)
+                    .ok_or_else(|| Error::Other("This character has no voice yet - pick one in Settings.".into()))?;
+                maker.speech(voice, &settings.speech_model, &clip.text).await?
+            }
+        };
+        let dir = self.inner.images_dir.join("audio");
+        std::fs::create_dir_all(&dir).map_err(|e| Error::Other(e.to_string()))?;
+        let path = dir.join(format!("{}.mp3", Uuid::new_v4()));
+        std::fs::write(&path, audio).map_err(|e| Error::Other(e.to_string()))?;
+
+        // Reload before writing: the message may have been edited or regenerated meanwhile.
+        self.db().with(|c| {
+            let mut message = conversations::get_message(c, message_id)?.ok_or_else(|| Error::Other("Message not found.".into()))?;
+            let Some(found) = message.clips.iter_mut().find(|c| c.id == clip_id) else {
+                let _ = std::fs::remove_file(&path);
+                return Err(Error::Other("That sound is gone.".into()));
+            };
+            found.path = Some(path.to_string_lossy().into_owned());
+            conversations::set_clips(c, message_id, &message.clips)?;
+            Ok(message)
+        })
+    }
+
     /// The photos a reply's tags ask the app to draw, when Settings ask for that: one the user's
     /// character took in their message (with the look of whichever character it names), and one
     /// the speaker sent. Each is (whose look to use, description).
@@ -1751,12 +1971,14 @@ present, keep it as its own final paragraph, still naming whose details they are
     /// Generates one character's reply. In Assistant chats with the PowerShell tool on, a reply may
     /// end in a tool call: the command is run (after the user's approval) and its result fed back
     /// for another turn, each turn its own bubble, up to [`MAX_TOOL_ITERATIONS`] round trips.
-    /// `next_speakers` are the group members the reply may hand the user's message on to.
+    /// `next_speakers` are the group members the reply may hand the user's message on to; `occasion`
+    /// says what the reply answers.
     async fn generate_new(
         &self,
         conversation_id: Uuid,
         speaker_id: Option<Uuid>,
         next_speakers: &[Uuid],
+        occasion: Occasion,
         sink: &Arc<dyn EventSink>,
         token: &CancellationToken,
     ) -> Result<Replied> {
@@ -1766,12 +1988,12 @@ present, keep it as its own final paragraph, still naming whose details they are
         })?;
 
         for round_trips in 0.. {
-            match self.generate_turn(conversation_id, speaker_id, next_speakers, sink, token, tools).await? {
+            match self.generate_turn(conversation_id, speaker_id, next_speakers, occasion, sink, token, tools).await? {
                 Turn::Done(replied) => return Ok(replied),
                 Turn::ToolCall(call) => {
                     if round_trips >= MAX_TOOL_ITERATIONS {
                         self.append_tool_message(conversation_id, "Tool call limit reached for this turn.", sink)?;
-                        return Ok(Replied { completed: true, next: None, private: false });
+                        return Ok(Replied { completed: true, next: None, private: false, back: false });
                     }
                     if !self.run_tool_call(conversation_id, call, sink, token).await? {
                         return Ok(Replied::STOPPED);
@@ -1782,11 +2004,13 @@ present, keep it as its own final paragraph, still naming whose details they are
         unreachable!("the loop only ends by returning")
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn generate_turn(
         &self,
         conversation_id: Uuid,
         speaker_id: Option<Uuid>,
         next_speakers: &[Uuid],
+        occasion: Occasion,
         sink: &Arc<dyn EventSink>,
         token: &CancellationToken,
         tools: bool,
@@ -1796,7 +2020,9 @@ present, keep it as its own final paragraph, still naming whose details they are
         let others: Vec<(Uuid, &str)> =
             ctx.characters.iter().filter(|c| next_speakers.contains(&c.id)).map(|c| (c.id, c.name.as_str())).collect();
         let other_names: Vec<&str> = others.iter().map(|(_, name)| *name).collect();
-        let offer_private = speaker.is_some() && ctx.group.as_ref().is_some_and(|g| g.private_talks);
+        let offer_private = occasion == Occasion::Message && speaker.is_some() && ctx.group.as_ref().is_some_and(|g| g.private_talks);
+
+        let offer_back = speaker.is_some() && ctx.breakout.is_some();
 
         let mut message = ChatMessage::new(conversation_id, MessageRole::Character, "");
         message.speaker_character_id = speaker_id;
@@ -1811,6 +2037,8 @@ present, keep it as its own final paragraph, still naming whose details they are
                 tools,
                 next_speakers: &other_names,
                 offer_private,
+                returning: occasion == Occasion::Return,
+                offer_back,
                 ..Default::default()
             },
         )?;
@@ -1826,13 +2054,16 @@ present, keep it as its own final paragraph, still naming whose details they are
         let mut videos = Vec::new();
         let mut next = None;
         let mut private = false;
+        let mut back = false;
         if succeeded {
             message.usage = usage;
             let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, true, sink)?;
             photos = self.photos_to_draw(&ctx, &tags, speaker_id)?;
             videos = self.videos_to_draw(&tags, speaker_id)?;
+            message.clips = self.clips_to_offer(&tags, speaker_id)?;
             next = tags.next.as_deref().and_then(|name| next_speaker_tag::resolve(name, &others));
             private = offer_private && tags.private;
+            back = offer_back && tags.back;
             message.text = match &cut {
                 Some(cut) => cut.apply(&clean),
                 None => clean,
@@ -1875,12 +2106,13 @@ present, keep it as its own final paragraph, still naming whose details they are
             StreamEnd::ToolCall(call) => Ok(Turn::ToolCall(call)),
             StreamEnd::Completed => {
                 self.spawn_enrichment(&ctx, last_user_text(&ctx.messages), message.text.clone(), message.id, sink.clone());
+                self.spawn_overheard(&ctx, sink.clone());
                 // Only the conversation's very first exchange gets auto-titled.
                 if ctx.conversation.mode == ConversationMode::Assistant && ctx.messages.len() == 1 {
                     let user_text = ctx.messages.last().map(|m| m.text.clone()).unwrap_or_default();
                     self.spawn_title(&ctx.conversation, user_text, message.text.clone(), sink.clone());
                 }
-                Ok(Turn::Done(Replied { completed: true, next, private }))
+                Ok(Turn::Done(Replied { completed: true, next, private, back }))
             }
         }
     }
@@ -2039,6 +2271,7 @@ present, keep it as its own final paragraph, still naming whose details they are
             let (clean, tags, clock) = self.apply_reply_tags(&ctx, text, moves_clock, &sink)?;
             photos = self.photos_to_draw(&ctx, &tags, target.speaker_character_id)?;
             videos = self.videos_to_draw(&tags, target.speaker_character_id)?;
+            target.clips = self.clips_to_offer(&tags, target.speaker_character_id)?;
             let clean = match &cut {
                 Some(cut) => cut.apply(&clean),
                 None => clean,
@@ -2115,6 +2348,72 @@ present, keep it as its own final paragraph, still naming whose details they are
             }
             _ => {}
         }
+    }
+
+    /// After a new reply in a private talk: finds out what the rest of the group could see or hear of
+    /// it (a talk in the same room is not a phone call), notes that in the group chat and tells the UI
+    /// who reacts. Best-effort and detached: a failed request just means nobody noticed.
+    fn spawn_overheard(&self, ctx: &ReplyContext, sink: Arc<dyn EventSink>) {
+        if ctx.breakout.is_none() || !self.inner.extraction.load(Ordering::Relaxed) {
+            return;
+        }
+        let engine = self.clone();
+        let talk_id = ctx.conversation.id;
+        tokio::spawn(async move {
+            report("overheard check", engine.check_overheard(talk_id, &sink).await);
+        });
+    }
+
+    async fn check_overheard(&self, talk_id: Uuid, sink: &Arc<dyn EventSink>) -> Result<()> {
+        // The talk as it stands now, with the reply just written.
+        let ctx = self.db().with(|c| load_reply_context(c, talk_id))?;
+        let (Some(breakout), Some(me)) = (&ctx.breakout, ctx.characters.first()) else { return Ok(()) };
+        let others: Vec<&Character> = breakout.group_cast.iter().filter(|c| c.id != me.id).collect();
+        if others.is_empty() {
+            return Ok(());
+        }
+
+        let user = roles::user_name(ctx.persona.as_ref());
+        let asked = ctx.messages.iter().rposition(|m| m.role == MessageRole::User);
+        let latest = &ctx.messages[asked.map_or(0, |i| i + 1)..];
+        let reply_text =
+            latest.iter().filter(|m| m.role == MessageRole::Character).map(|m| m.effective_text().trim()).collect::<Vec<_>>().join("\n");
+        if reply_text.is_empty() {
+            return Ok(());
+        }
+        let user_text = asked.map_or("(says nothing yet)", |i| ctx.messages[i].effective_text().trim());
+
+        let said = |m: &ChatMessage, who: &str| format!("{who}: {}", m.effective_text().trim());
+        let talk = ctx.messages[..asked.unwrap_or(0)]
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User | MessageRole::Character) && !m.effective_text().trim().is_empty())
+            .map(|m| said(m, if m.role == MessageRole::User { user } else { me.name.as_str() }))
+            .collect::<Vec<_>>();
+        let talk = talk[talk.len().saturating_sub(SCENE_CONTEXT)..].join("\n");
+
+        let mut group = group_transcript(&breakout.group_messages, &breakout.group_cast, user);
+        if let Some(summary) = &breakout.group_summary {
+            group = format!("(earlier, in short) {summary}\n{group}");
+        }
+
+        let names: Vec<&str> = others.iter().map(|c| c.name.as_str()).collect();
+        let scene = overheard::Scene { user, talker: &me.name, others: &names, group: &group, talk: &talk, user_text, reply_text: &reply_text };
+        let extractor = Extractor {
+            db: self.db(),
+            providers: &self.inner.providers,
+            provider_id: &ctx.conversation.provider_id,
+            model: &ctx.conversation.model,
+        };
+        let answer = extractor.ask(overheard::prompt(&scene)).await?;
+        let Some(heard) = overheard::parse(&answer, &names) else { return Ok(()) };
+
+        // The note belongs to the talk's member (the group chat offers to open their talk from it).
+        let mut note = ChatMessage::new(breakout.parent.id, MessageRole::System, heard.note);
+        note.speaker_character_id = Some(me.id);
+        self.db().with(|c| conversations::add_message(c, &note))?;
+        let reactors = heard.reactors.into_iter().map(|i| others[i].id).collect();
+        sink.emit(ChatEvent::Overheard { conversation_id: breakout.parent.id, message: note, reactors });
+        Ok(())
     }
 
     /// Reads the exchange for what it did to each character's arousal and climax meters, and applies

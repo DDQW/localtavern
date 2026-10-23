@@ -19,6 +19,9 @@
   <nav class="room" aria-label="Group chat and private talks">
     <button class="tab" class:on={current === room.groupConversationId} onclick={() => open(room.groupConversationId)} title="The group chat">
       <span aria-hidden="true">👥</span> {room.title}
+      {#if chat.unseenRooms.includes(room.groupConversationId)}
+        <span class="news" role="img" aria-label="something happened in the group" title="The group noticed something"></span>
+      {/if}
     </button>
     {#each room.talks as talk (talk.conversationId)}
       {@const who = member(talk.characterId)}
@@ -80,6 +83,18 @@
     background: var(--accent);
     border-color: var(--accent);
     color: var(--accent-text);
+  }
+
+  .news {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px var(--bg, transparent);
+  }
+
+  .tab.on .news {
+    background: var(--accent-text);
   }
 
   .lock {

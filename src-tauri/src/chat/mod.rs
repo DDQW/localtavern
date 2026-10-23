@@ -8,6 +8,8 @@ pub mod events;
 mod extraction;
 pub mod images;
 pub mod meters;
+mod next_voice;
+mod overheard;
 pub mod presets;
 pub mod reply;
 pub mod session;

@@ -17,6 +17,10 @@ pub enum ImageBackend {
     #[default]
     A1111,
     ComfyUi,
+    /// Grok Imagine on xAI's servers, paid for by the SuperGrok sign-in (see `imagegen::grok`).
+    Grok,
+    /// stable-diffusion.cpp running on the phone itself (see `imagegen::ondevice`).
+    OnDevice,
 }
 
 /// Whether the chat model writes the picture prompt as tags (SD 1.5 / SDXL / Pony / Illustrious)
@@ -45,11 +49,16 @@ pub struct ImageGenSettings {
     pub backend: ImageBackend,
     pub a1111: BackendConfig,
     pub comfy: BackendConfig,
+    /// Only `url` (xAI's API) and `model` apply; Grok has no samplers or schedulers.
+    pub grok: BackendConfig,
+    /// `model` is a checkpoint's file name in the image models folder; `url` is unused (the server
+    /// gets a free port each time it starts).
+    pub on_device: BackendConfig,
     /// A ComfyUI workflow in API format with `%prompt%`-style placeholders; empty uses the built-in
     /// text-to-image workflow.
     pub comfy_workflow: String,
-    /// ComfyUI API workflow for story videos (`[video: ...]`). Required for video; empty means videos
-    /// cannot be rendered yet. Same `%prompt%` placeholders as the still workflow.
+    /// ComfyUI API workflow for story videos (`[video: ...]`). Empty uses the built-in Wan
+    /// text-to-video workflow. Same `%prompt%` placeholders as the still workflow.
     #[serde(default)]
     pub comfy_video_workflow: String,
     /// What starts ComfyUI (its `run_*.bat`, say); run hidden when LocalTavern starts. Empty: the
@@ -93,6 +102,8 @@ impl Default for ImageGenSettings {
                 scheduler: "normal".into(),
                 ..Default::default()
             },
+            grok: BackendConfig { url: "https://api.x.ai/v1".into(), ..Default::default() },
+            on_device: BackendConfig { sampler: "euler_a".into(), scheduler: "discrete".into(), ..Default::default() },
             comfy_workflow: String::new(),
             comfy_video_workflow: String::new(),
             comfy_launcher: String::new(),
@@ -118,6 +129,8 @@ impl ImageGenSettings {
         match self.backend {
             ImageBackend::A1111 => &self.a1111,
             ImageBackend::ComfyUi => &self.comfy,
+            ImageBackend::Grok => &self.grok,
+            ImageBackend::OnDevice => &self.on_device,
         }
     }
 
@@ -135,7 +148,9 @@ impl ImageGenSettings {
         if self.seed < -1 {
             self.seed = -1;
         }
-        for (config, fallback) in [(&mut self.a1111, &defaults.a1111), (&mut self.comfy, &defaults.comfy)] {
+        for (config, fallback) in
+            [(&mut self.a1111, &defaults.a1111), (&mut self.comfy, &defaults.comfy), (&mut self.grok, &defaults.grok)]
+        {
             config.url = config.url.trim().trim_end_matches('/').to_string();
             if config.url.is_empty() {
                 config.url = fallback.url.clone();
@@ -143,6 +158,10 @@ impl ImageGenSettings {
         }
         // Explorer's "Copy as path" wraps the path in quotes.
         self.comfy_launcher = self.comfy_launcher.trim().trim_matches('"').trim().to_string();
+        // Grok reads sentences; tags come out as a jumble of everything at once.
+        if self.backend == ImageBackend::Grok {
+            self.prompt_style = PromptStyle::Natural;
+        }
         self
     }
 }
@@ -207,5 +226,17 @@ mod tests {
         assert_eq!(s.a1111.url, "http://box:7860");
         assert_eq!(s.comfy.url, "http://127.0.0.1:8188");
         assert_eq!(ImageGenSettings { width: 1001, ..Default::default() }.sanitized().width, 1000);
+    }
+
+    #[test]
+    fn grok_always_gets_sentences_and_keeps_its_api_address() {
+        let s = ImageGenSettings { backend: ImageBackend::Grok, prompt_style: PromptStyle::Tags, ..Default::default() }.sanitized();
+        assert_eq!(s.prompt_style, PromptStyle::Natural);
+        assert_eq!(s.active().url, "https://api.x.ai/v1");
+
+        // Settings saved before Grok existed get its defaults.
+        let conn = open_in_memory().unwrap();
+        app_settings::set(&conn, SETTINGS_KEY, r#"{"backend":"grok"}"#).unwrap();
+        assert_eq!(load(&conn).unwrap().grok.url, "https://api.x.ai/v1");
     }
 }

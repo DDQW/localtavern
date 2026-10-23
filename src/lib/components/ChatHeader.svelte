@@ -68,6 +68,14 @@
       {/if}
       {#if !chat.isBreakout}
         <button onclick={newChat} disabled={chat.busy} title="Start a new chat" aria-label="New chat">＋<span class="wide"> New chat</span></button>
+      {:else}
+        <button
+          onclick={() => chat.returnToGroup()}
+          disabled={chat.busy}
+          title="Leave the private talk: they go back to the group and speak up there, knowing what was said here"
+        >
+          ↩<span class="wide"> Back to the group</span>
+        </button>
       {/if}
     </div>
 

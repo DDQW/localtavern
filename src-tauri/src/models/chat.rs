@@ -42,6 +42,37 @@ pub struct MessageAttachment {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub enum ClipKind {
+    /// A sound effect (`[sound: ...]`).
+    Sound,
+    /// A line spoken aloud in the character's voice (`[voice: ...]`).
+    Voice,
+}
+
+/// A sound or a spoken line a reply carries. Shown as a play button; the audio is only made (and
+/// paid for) the first time it is pressed, then kept in `path`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioClip {
+    pub id: Uuid,
+    pub kind: ClipKind,
+    /// A sound: what it should sound like. A voice: the words spoken.
+    pub text: String,
+    /// A voice: who speaks it.
+    pub character_id: Option<Uuid>,
+    /// The audio file, once made.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+impl AudioClip {
+    pub fn new(kind: ClipKind, text: impl Into<String>, character_id: Option<Uuid>) -> Self {
+        Self { id: Uuid::new_v4(), kind, text: text.into(), character_id, path: None }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LlmUsage {
     pub prompt_tokens: Option<i32>,
     pub completion_tokens: Option<i32>,
@@ -71,6 +102,9 @@ pub struct ChatMessage {
     pub alternates: Vec<MessageAlternate>,
     pub active_alternate_index: i32,
     pub attachments: Vec<MessageAttachment>,
+    /// Sounds and spoken lines the reply carries, as play buttons.
+    #[serde(default)]
+    pub clips: Vec<AudioClip>,
     /// Emotion detected in this reply when the speaking character has an expression pack.
     pub detected_emotion: Option<String>,
     /// The story clock before this reply and what the reply did to it (roleplay replies).
@@ -94,6 +128,7 @@ impl ChatMessage {
             alternates: Vec::new(),
             active_alternate_index: 0,
             attachments: Vec::new(),
+            clips: Vec::new(),
             detected_emotion: None,
             clock: None,
             timestamp: Utc::now(),

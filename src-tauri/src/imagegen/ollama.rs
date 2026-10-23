@@ -10,14 +10,24 @@ const POLL_INTERVAL: Duration = Duration::from_millis(300);
 const MAX_WAIT: Duration = Duration::from_secs(15);
 
 async fn loaded_models(client: &reqwest::Client, base_url: &str) -> Option<Vec<String>> {
-    let response = client.get(format!("{base_url}/api/ps")).timeout(Duration::from_secs(3)).send().await.ok()?;
+    let response = client
+        .get(format!("{base_url}/api/ps"))
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+        .ok()?;
     let text = response.error_for_status().ok()?.text().await.ok()?;
     let body: Value = serde_json::from_str(&text).ok()?;
     Some(
         body.get("models")?
             .as_array()?
             .iter()
-            .filter_map(|m| m.get("model").or_else(|| m.get("name")).and_then(Value::as_str).map(str::to_string))
+            .filter_map(|m| {
+                m.get("model")
+                    .or_else(|| m.get("name"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .collect(),
     )
 }
@@ -27,7 +37,10 @@ async fn loaded_models(client: &reqwest::Client, base_url: &str) -> Option<Vec<S
 /// unload, never as an error - a picture shouldn't fail because of it.
 pub async fn unload_all(client: &reqwest::Client, base_url: &str) -> Vec<String> {
     let base_url = base_url.trim().trim_end_matches('/');
-    let Some(models) = loaded_models(client, base_url).await.filter(|m| !m.is_empty()) else {
+    let Some(models) = loaded_models(client, base_url)
+        .await
+        .filter(|m| !m.is_empty())
+    else {
         return Vec::new();
     };
     for model in &models {
@@ -72,7 +85,9 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/api/generate"))
-            .and(body_partial_json(json!({"model": "big:latest", "keep_alive": 0})))
+            .and(body_partial_json(
+                json!({"model": "big:latest", "keep_alive": 0}),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"done": true})))
             .expect(1)
             .mount(&server)
@@ -89,8 +104,16 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": []})))
             .mount(&server)
             .await;
-        Mock::given(path("/api/generate")).respond_with(ResponseTemplate::new(500)).expect(0).mount(&server).await;
-        assert!(unload_all(&reqwest::Client::new(), &server.uri()).await.is_empty());
-        assert!(unload_all(&reqwest::Client::new(), "http://127.0.0.1:9").await.is_empty());
+        Mock::given(path("/api/generate"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        assert!(unload_all(&reqwest::Client::new(), &server.uri())
+            .await
+            .is_empty());
+        assert!(unload_all(&reqwest::Client::new(), "http://127.0.0.1:9")
+            .await
+            .is_empty());
     }
 }

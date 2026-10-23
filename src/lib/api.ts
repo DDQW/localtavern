@@ -5,6 +5,8 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { mockApi } from "./mock";
 import type {
+  AudioSettings,
+  Voice,
   Appearance,
   InstructionInfo,
   Instructions,
@@ -28,6 +30,7 @@ import type {
   VastAiOptions,
   OnDeviceOptions,
   OnDeviceStatus,
+  OnDeviceImageStatus,
   DownloadProgress,
   Persona,
   PromptPresetFull,
@@ -72,6 +75,18 @@ export interface Api {
   sendMessage(conversationId: Uuid, text: string, attachments: string[], onEvent: EventHandler): Promise<void>;
   swipeNext(conversationId: Uuid, messageId: Uuid, onEvent: EventHandler): Promise<void>;
   pickSpeaker(conversationId: Uuid, characterId: Uuid, onEvent: EventHandler): Promise<void>;
+  /** Group chats: has these members answer something that just happened around them. */
+  reactToRoom(conversationId: Uuid, characterIds: Uuid[], onEvent: EventHandler): Promise<void>;
+  getAudioSettings(): Promise<AudioSettings>;
+  saveAudioSettings(settings: AudioSettings): Promise<AudioSettings>;
+  audioHasKey(): Promise<boolean>;
+  /** Saves the ElevenLabs API key (empty removes it); resolves to whether a key is saved now. */
+  setAudioKey(key: string): Promise<boolean>;
+  listVoices(): Promise<Voice[]>;
+  /** Makes the audio of a play button the first time it is pressed; resolves to the message with its file. */
+  makeClip(messageId: Uuid, clipId: Uuid): Promise<ChatMessage>;
+  /** Group chats: a member comes back from their private talk and speaks up, knowing what was said. */
+  rejoinGroup(conversationId: Uuid, characterId: Uuid, onEvent: EventHandler): Promise<void>;
   continueMessage(conversationId: Uuid, onEvent: EventHandler): Promise<void>;
   /** A drafted user message for the input box; null when stopped. */
   impersonate(conversationId: Uuid): Promise<string | null>;
@@ -131,6 +146,10 @@ export interface Api {
   /** Resolves with the saved file's name once the download is complete. */
   downloadOndeviceModel(url: string, onProgress: (progress: DownloadProgress) => void): Promise<string>;
   cancelOndeviceDownload(): Promise<void>;
+  ondeviceImageStatus(): Promise<OnDeviceImageStatus>;
+  deleteOndeviceImageModel(fileName: string): Promise<void>;
+  /** Resolves with the saved file's name once the download is complete. Cancelled with cancelOndeviceDownload. */
+  downloadOndeviceImageModel(url: string, onProgress: (progress: DownloadProgress) => void): Promise<string>;
 
   storeImage(path: string): Promise<string>;
   deleteImage(path: string): Promise<boolean>;
@@ -231,6 +250,16 @@ const tauriApi: Api = {
   swipeNext: (conversationId, messageId, onEvent) => streaming("swipe_next", { conversationId, messageId }, onEvent),
   pickSpeaker: (conversationId, characterId, onEvent) =>
     streaming("pick_speaker", { conversationId, characterId }, onEvent),
+  reactToRoom: (conversationId, characterIds, onEvent) =>
+    streaming("react_to_room", { conversationId, characterIds }, onEvent),
+  getAudioSettings: () => invoke("get_audio_settings"),
+  saveAudioSettings: (settings) => invoke("save_audio_settings", { settings }),
+  audioHasKey: () => invoke("audio_has_key"),
+  setAudioKey: (key) => invoke("set_audio_key", { key }),
+  listVoices: () => invoke("list_voices"),
+  makeClip: (messageId, clipId) => invoke("make_clip", { messageId, clipId }),
+  rejoinGroup: (conversationId, characterId, onEvent) =>
+    streaming("rejoin_group", { conversationId, characterId }, onEvent),
   continueMessage: (conversationId, onEvent) => streaming("continue_message", { conversationId }, onEvent),
   impersonate: (conversationId) => invoke("impersonate", { conversationId }),
   contextStatus: (conversationId) => invoke("context_status", { conversationId }),
@@ -286,6 +315,13 @@ const tauriApi: Api = {
     return invoke("download_ondevice_model", { url, onProgress: channel });
   },
   cancelOndeviceDownload: () => invoke("cancel_ondevice_download"),
+  ondeviceImageStatus: () => invoke("ondevice_image_status"),
+  deleteOndeviceImageModel: (fileName) => invoke("delete_ondevice_image_model", { fileName }),
+  downloadOndeviceImageModel: (url, onProgress) => {
+    const channel = new Channel<DownloadProgress>();
+    channel.onmessage = onProgress;
+    return invoke("download_ondevice_image_model", { url, onProgress: channel });
+  },
 
   storeImage: (path) => invoke("store_image", { path }),
   deleteImage: (path) => invoke("delete_image", { path }),

@@ -143,6 +143,9 @@
       </div>
     {:else if waiting}
       <div class="typing" aria-label="Generating"><span></span><span></span><span></span></div>
+      {#if message.waitingForPicture}
+        <p class="muted held">Waiting for the picture to finish - it needs the graphics card to itself.</p>
+      {/if}
     {:else if isTool}
       <pre class="toolout" aria-label="PowerShell output">{message.text}</pre>
     {:else}
@@ -154,6 +157,27 @@
         {#each message.attachments as attachment (attachment.imagePath)}
           <button class="thumb" onclick={() => (lightbox.src = fileUrl(attachment.imagePath))} aria-label="View picture">
             <img src={fileUrl(attachment.imagePath)} alt={attachment.description ?? ""} title={attachment.description ?? undefined} loading="lazy" />
+          </button>
+        {/each}
+      </div>
+    {/if}
+
+    {#if message.clips?.length && !message.editing && !message.streaming}
+      <div class="clips">
+        {#each message.clips as clip (clip.id)}
+          {@const making = chat.makingClips.includes(clip.id)}
+          {@const playing = chat.playingClip === clip.id}
+          <button
+            class="clipbtn"
+            class:playing
+            onclick={() => chat.playClip(message, clip)}
+            disabled={making}
+            title={clip.path ? (playing ? "Stop" : "Play") : "Play - made the first time you press it"}
+            aria-label={`${playing ? "Stop" : "Play"} ${clip.kind === "voice" ? "spoken line" : "sound"}: ${clip.text}`}
+          >
+            <span aria-hidden="true">{making ? "…" : playing ? "■" : "▶"}</span>
+            <span class="kind" aria-hidden="true">{clip.kind === "voice" ? "🗣" : "🔊"}</span>
+            <span class="cliptext">{clip.kind === "voice" ? `“${clip.text}”` : clip.text}</span>
           </button>
         {/each}
       </div>
@@ -325,6 +349,40 @@
     border-radius: 8px;
     background: #000;
   }
+  .clips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+  }
+
+  .clipbtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 13px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+
+  .clipbtn:hover:not(:disabled),
+  .clipbtn.playing {
+    color: inherit;
+    border-color: var(--accent);
+  }
+
+  .cliptext {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 38ch;
+    font-style: italic;
+  }
+
   .attachments {
     display: flex;
     flex-wrap: wrap;
@@ -415,5 +473,10 @@
   .hint {
     margin-left: 8px;
     font-size: 11px;
+  }
+
+  .held {
+    margin: 0;
+    font-size: 12px;
   }
 </style>

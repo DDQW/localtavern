@@ -1,11 +1,15 @@
 //! Picture generation through a local Stable Diffusion server, SillyTavern-style: the chat model
 //! describes the character or scene (see [`prompts`]) and the server renders it. Two server
-//! families are supported: the A1111 API (AUTOMATIC1111, Forge, reForge, SD.Next) and ComfyUI.
+//! families are supported: the A1111 API (AUTOMATIC1111, Forge, reForge, SD.Next) and ComfyUI -
+//! plus Grok Imagine in the cloud, through the SuperGrok sign-in, and stable-diffusion.cpp on the
+//! phone itself.
 
 pub mod a1111;
 pub mod comfy;
+pub mod grok;
 pub mod launcher;
 pub mod ollama;
+pub mod ondevice;
 pub mod prompts;
 pub mod settings;
 
@@ -15,6 +19,7 @@ use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{Error, Result};
+use crate::providers::auth::AccessTokenSource;
 pub use settings::{BackendConfig, ImageBackend, ImageGenSettings, PromptStyle};
 
 /// One picture to render, with every setting already resolved.
@@ -49,27 +54,40 @@ pub struct BackendOptions {
 }
 
 /// Rendering is one long request (A1111) or a long wait (ComfyUI), so the read limit is far longer
-/// than the chat client's: a big SDXL picture on a slow card can take several minutes.
+/// than the chat client's: a big SDXL picture on a slow card can take several minutes. Grok is
+/// reached over HTTPS, so it needs the same certificate roots as the chat client.
 pub fn client() -> reqwest::Client {
-    reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .read_timeout(Duration::from_secs(900))
-        .user_agent(concat!("LocalTavern/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("LocalTavern/", env!("CARGO_PKG_VERSION")));
+    crate::providers::http::with_tls_roots(builder)
         .build()
         .expect("reqwest client configuration is static and valid")
 }
 
-pub async fn options(client: &reqwest::Client, settings: &ImageGenSettings) -> Result<BackendOptions> {
+/// `grok` is the SuperGrok sign-in; only the Grok backend asks it for a token. The on-device lists
+/// come from the image models folder, without starting the server.
+pub async fn options(
+    client: &reqwest::Client,
+    settings: &ImageGenSettings,
+    grok: &dyn AccessTokenSource,
+    on_device: &ondevice::OnDeviceImages,
+) -> Result<BackendOptions> {
     match settings.backend {
         ImageBackend::A1111 => a1111::options(client, &settings.a1111.url).await,
         ImageBackend::ComfyUi => comfy::options(client, &settings.comfy.url).await,
+        ImageBackend::Grok => grok::options(client, &settings.grok.url, grok).await,
+        ImageBackend::OnDevice => Ok(on_device.options()),
     }
 }
 
-/// Renders one picture. `Ok(None)` means it was stopped; the server is asked to stop too.
+/// Renders one picture. `Ok(None)` means it was stopped; the server is asked to stop too. For the
+/// on-device backend, `settings.on_device.url` must be the running server's address.
 pub async fn generate(
     client: &reqwest::Client,
     settings: &ImageGenSettings,
+    grok: &dyn AccessTokenSource,
     request: &ImageRequest,
     video: bool,
     cancel: &CancellationToken,
@@ -77,7 +95,8 @@ pub async fn generate(
     let url = &settings.active().url;
     let work = async {
         match settings.backend {
-            ImageBackend::A1111 => {
+            // sd-server speaks the A1111 API.
+            ImageBackend::A1111 | ImageBackend::OnDevice => {
                 if video {
                     return Err(Error::Other("Story videos need the ComfyUI backend.".into()));
                 }
@@ -85,7 +104,13 @@ pub async fn generate(
             }
             ImageBackend::ComfyUi => {
                 let workflow = if video { &settings.comfy_video_workflow } else { &settings.comfy_workflow };
-                comfy::generate(client, url, workflow, request).await
+                comfy::generate(client, url, workflow, request, video).await
+            }
+            ImageBackend::Grok => {
+                if video {
+                    return Err(Error::Other("Story videos need the ComfyUI backend.".into()));
+                }
+                grok::generate(client, url, grok, request).await
             }
         }
     };
@@ -95,6 +120,9 @@ pub async fn generate(
             match settings.backend {
                 ImageBackend::A1111 => a1111::interrupt(client, url).await,
                 ImageBackend::ComfyUi => comfy::interrupt(client, url).await,
+                // Dropping the request is all there is: xAI has no way to cancel one, and sd-server
+                // has no interrupt (the caller stops it instead).
+                ImageBackend::Grok | ImageBackend::OnDevice => {}
             }
             Ok(None)
         }
