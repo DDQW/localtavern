@@ -149,7 +149,7 @@ const values = (choices: Choice[]) => choices.map((c) => c.value);
 const chance = (p: number) => Math.random() < p;
 
 /** Plausible random picks for one-click creation. Keeps the chosen sex (random if none) and the
- * 18+ section untouched. */
+ * intimate details untouched. */
 export function randomAppearance(current: Appearance | null): Appearance {
   const sex: Sex = current?.sex ?? pick<Sex>(["female", "male"]);
   const a = emptyAppearance(sex);

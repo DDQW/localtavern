@@ -29,7 +29,7 @@ pub struct Appearance {
     pub marks: Vec<String>,
     pub female: FemaleTraits,
     pub male: MaleTraits,
-    /// The optional 18+ section; only rendered when something in it is filled in.
+    /// Intimate traits; only rendered when something in it is filled in.
     pub adult: AdultTraits,
     pub notes: Option<String>,
 }

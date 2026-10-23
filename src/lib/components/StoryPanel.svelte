@@ -160,7 +160,7 @@
       </div>
       <label class="field">Appearance <textarea rows="5" bind:value={editing.appearance}></textarea></label>
       <label class="field">
-        18+ details
+        Intimate details
         <textarea rows="4" bind:value={editing.adultDetails}></textarea>
       </label>
       <div class="row">
@@ -359,7 +359,7 @@
           {#if person.appearance}<p class="small">{person.appearance}</p>{/if}
           {#if person.adultDetails}
             <details class="adult">
-              <summary class="small">18+ details</summary>
+              <summary class="small">Intimate details</summary>
               <p class="small">{person.adultDetails}</p>
             </details>
           {/if}

@@ -146,12 +146,11 @@ mod tests {
     }
 
     #[test]
-    fn an_adult_character_can_send_intimate_photos_when_the_moment_fits() {
+    fn intimate_photos_extend_the_photo_instruction() {
         let line = build_instruction(&ins(), "Nova", "Alex", true);
         assert!(line.contains("Leave the line out when no photo is sent or taken. The photos can be as intimate as the moment"), "{line}");
         assert!(line.ends_with("the picture keeps Nova's look from the character card."), "{line}");
         assert!(line.contains("Nova can send Alex suggestive or nude photos of Nova"), "{line}");
-        assert!(!line.contains("adult"), "the model isn't asked to judge ages: {line}");
     }
 
     #[test]

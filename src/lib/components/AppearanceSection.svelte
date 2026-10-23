@@ -163,7 +163,7 @@
         <button type="button" role="radio" aria-checked={sex === "male"} class:on={sex === "male"} onclick={() => setSex("male")}>♂ Male</button>
       </div>
       <span class="spacer"></span>
-      <button type="button" onclick={randomize} title="Fill every pick at random (keeps the sex and the 18+ section)">🎲 Randomize</button>
+      <button type="button" onclick={randomize} title="Fill every pick at random (keeps the sex and the intimate details)">🎲 Randomize</button>
       <button type="button" class="ghost" onclick={clearPicks} title="Forget the picks; the text below stays">Clear picks</button>
     </div>
 
@@ -253,19 +253,17 @@
       <input value={appearance.notes ?? ""} oninput={(e) => (appearance!.notes = e.currentTarget.value || null)} placeholder="Always wears a red scarf" />
     </label>
 
-    <details class="adult">
-      <summary>18+ details <span class="muted">(only added to the text when filled in)</span></summary>
-      <ChipGroup label="Nipples" options={opt.NIPPLES} bind:value={appearance.adult.nipples} />
-      <ChipGroup label="Pubic hair" options={opt.PUBIC_HAIR} bind:value={appearance.adult.pubicHair} />
-      <ChipGroup label="Genitals" options={opt.GENITALS[sex ?? "female"]} bind:value={appearance.adult.genitals} />
-      {#if sex === "male"}
-        <ChipGroup label="Circumcision" options={opt.CIRCUMCISION} bind:value={appearance.adult.circumcision} />
-      {/if}
-      <label class="field">
-        Notes
-        <input value={appearance.adult.notes ?? ""} oninput={(e) => (appearance!.adult.notes = e.currentTarget.value || null)} />
-      </label>
-    </details>
+    <h3>Intimate details</h3>
+    <ChipGroup label="Nipples" options={opt.NIPPLES} bind:value={appearance.adult.nipples} />
+    <ChipGroup label="Pubic hair" options={opt.PUBIC_HAIR} bind:value={appearance.adult.pubicHair} />
+    <ChipGroup label="Genitals" options={opt.GENITALS[sex ?? "female"]} bind:value={appearance.adult.genitals} />
+    {#if sex === "male"}
+      <ChipGroup label="Circumcision" options={opt.CIRCUMCISION} bind:value={appearance.adult.circumcision} />
+    {/if}
+    <label class="field">
+      Notes
+      <input value={appearance.adult.notes ?? ""} oninput={(e) => (appearance!.adult.notes = e.currentTarget.value || null)} />
+    </label>
   {/if}
 </details>
 
@@ -440,24 +438,6 @@
     padding: 3px 11px;
     border-radius: 999px;
     width: 150px;
-  }
-
-  .adult {
-    border-top: 1px solid var(--border);
-    padding-top: 10px;
-  }
-
-  .adult > summary {
-    cursor: pointer;
-    font-size: 13px;
-  }
-
-  .adult[open] > summary {
-    margin-bottom: 12px;
-  }
-
-  .adult > :global(* + *) {
-    margin-top: 12px;
   }
 
   .hint {

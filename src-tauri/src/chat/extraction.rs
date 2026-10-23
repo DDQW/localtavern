@@ -193,7 +193,7 @@ List any NEW, durable, specific facts about the user worth remembering long-term
                 .join("\n")
         };
         let prompt = format!(
-            "You keep the cast list of a fictional roleplay story (fiction for adults). From the exchange below, find side \
+            "You keep the cast list of a fictional roleplay story. From the exchange below, find side \
 characters who appear in it and are NOT one of these main characters: {main}.\n\n\
 Side characters already recorded:\n{known_list}\n\n\
 Exchange:\nUser: {user}\nStory: {reply}\n\n\
@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(changed.len(), 2); // Mia is skipped as main cast, Tom and Kid are added
         assert_eq!(known.len(), 2);
         assert_eq!(known[0].adult_details, "d");
-        assert_eq!(known[1].adult_details, "d"); // No longer filtered by age
+        assert_eq!(known[1].adult_details, "d");
 
         let changed = merge_found(&mut known, vec![found("tom", Some(50), "red beard, scar", "")], &ex);
         assert_eq!(changed.len(), 1);
