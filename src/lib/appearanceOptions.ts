@@ -148,8 +148,8 @@ const pick = <T>(items: T[]): T => items[Math.floor(Math.random() * items.length
 const values = (choices: Choice[]) => choices.map((c) => c.value);
 const chance = (p: number) => Math.random() < p;
 
-/** Plausible random picks for one-click creation. Keeps the chosen sex (random if none) and the
- * intimate details untouched. */
+/** Plausible random picks for one-click creation. Keeps the chosen sex (random if none) and any
+ * picks already set at the end of the form. */
 export function randomAppearance(current: Appearance | null): Appearance {
   const sex: Sex = current?.sex ?? pick<Sex>(["female", "male"]);
   const a = emptyAppearance(sex);

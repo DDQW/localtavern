@@ -163,7 +163,7 @@
         <button type="button" role="radio" aria-checked={sex === "male"} class:on={sex === "male"} onclick={() => setSex("male")}>♂ Male</button>
       </div>
       <span class="spacer"></span>
-      <button type="button" onclick={randomize} title="Fill every pick at random (keeps the sex and the intimate details)">🎲 Randomize</button>
+      <button type="button" onclick={randomize} title="Fill every pick at random (keeps the sex)">🎲 Randomize</button>
       <button type="button" class="ghost" onclick={clearPicks} title="Forget the picks; the text below stays">Clear picks</button>
     </div>
 
@@ -253,7 +253,6 @@
       <input value={appearance.notes ?? ""} oninput={(e) => (appearance!.notes = e.currentTarget.value || null)} placeholder="Always wears a red scarf" />
     </label>
 
-    <h3>Intimate details</h3>
     <ChipGroup label="Nipples" options={opt.NIPPLES} bind:value={appearance.adult.nipples} />
     <ChipGroup label="Pubic hair" options={opt.PUBIC_HAIR} bind:value={appearance.adult.pubicHair} />
     <ChipGroup label="Genitals" options={opt.GENITALS[sex ?? "female"]} bind:value={appearance.adult.genitals} />

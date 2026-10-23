@@ -160,8 +160,7 @@
       </div>
       <label class="field">Appearance <textarea rows="5" bind:value={editing.appearance}></textarea></label>
       <label class="field">
-        Intimate details
-        <textarea rows="4" bind:value={editing.adultDetails}></textarea>
+        <textarea rows="4" bind:value={editing.adultDetails} aria-label="Further details"></textarea>
       </label>
       <div class="row">
         <button disabled={!editing.name.trim()} onclick={saveEdit}>Save</button>
@@ -357,12 +356,7 @@
             {#if introduced(person)}<span class="muted small">Introduced {introduced(person)}</span>{/if}
           </header>
           {#if person.appearance}<p class="small">{person.appearance}</p>{/if}
-          {#if person.adultDetails}
-            <details class="adult">
-              <summary class="small">Intimate details</summary>
-              <p class="small">{person.adultDetails}</p>
-            </details>
-          {/if}
+          {#if person.adultDetails}<p class="small">{person.adultDetails}</p>{/if}
           <div class="row">
             <button class="ghost small" onclick={() => (editing = structuredClone($state.snapshot(person)))}>Edit</button>
             <button class="ghost small" onclick={() => chat.removeCastMember(person.id)} aria-label="Remove {person.name}">Remove</button>
@@ -518,15 +512,6 @@
   .person textarea {
     width: 100%;
     resize: vertical;
-  }
-
-  .adult {
-    margin: 0;
-  }
-
-  .adult summary {
-    font-weight: 500;
-    color: var(--accent);
   }
 
   .two {
