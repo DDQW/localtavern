@@ -3,6 +3,7 @@ name = "localtavern"
 version = "0.2.27"
 description = "LocalTavern - local-first AI character chat"
 authors = ["Dominik Wölki"]
+license = "AGPL-3.0-only"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
