@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { chat } from "$lib/chat.svelte";
+  import { chat } from "#lib/chat.svelte.js";
 
   const context = $derived(chat.context);
   const percent = $derived(context?.window ? Math.round((context.used / context.window) * 100) : null);

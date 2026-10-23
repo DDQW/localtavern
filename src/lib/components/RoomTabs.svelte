@@ -2,7 +2,7 @@
   // A group chat and its private talks as one place: a tab for the group, one per private talk,
   // and a picker to start a talk with a member who has none yet.
   import { goto } from "$app/navigation";
-  import { chat } from "$lib/chat.svelte";
+  import { chat } from "#lib/chat.svelte.js";
   import Avatar from "./Avatar.svelte";
 
   const room = $derived(chat.session?.room ?? null);

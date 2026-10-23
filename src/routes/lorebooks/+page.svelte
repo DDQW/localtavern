@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { api, errorText } from "$lib/api";
-  import type { Lorebook } from "$lib/types";
+  import { api, errorText } from "#lib/api.js";
+  import type { Lorebook } from "#lib/types.js";
 
   let books = $state<Lorebook[]>([]);
   let error = $state("");

@@ -2,8 +2,8 @@
   // Every text the app adds to a chat request on its own (roleplay rules, tags, the story clock,
   // photos, group and private-talk notes, Continue, Impersonate...): reworded here when one
   // misfires with a model, plus the switches around them.
-  import { api, errorText } from "$lib/api";
-  import type { InstructionInfo, Instructions } from "$lib/types";
+  import { api, errorText } from "#lib/api.js";
+  import type { InstructionInfo, Instructions } from "#lib/types.js";
 
   let instructions = $state<Instructions | null>(null);
   let defaults = $state<InstructionInfo[]>([]);

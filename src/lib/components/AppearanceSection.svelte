@@ -4,9 +4,9 @@
   // step with the picks for as long as it is still there unchanged; once it is edited or polished,
   // the picks only offer to update it.
   import { untrack } from "svelte";
-  import { api, errorText } from "$lib/api";
-  import * as opt from "$lib/appearanceOptions";
-  import type { Appearance, AppearanceSubject, Sex } from "$lib/types";
+  import { api, errorText } from "#lib/api.js";
+  import * as opt from "#lib/appearanceOptions.js";
+  import type { Appearance, AppearanceSubject, Sex } from "#lib/types.js";
   import ChipGroup from "./ChipGroup.svelte";
 
   let {

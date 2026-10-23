@@ -1,13 +1,13 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { chat } from "$lib/chat.svelte";
+  import { chat } from "#lib/chat.svelte.js";
   import ChatHeader from "./ChatHeader.svelte";
   import Composer from "./Composer.svelte";
   import Message from "./Message.svelte";
   import StoryPanel from "./StoryPanel.svelte";
   import PictureDialog from "./PictureDialog.svelte";
   import ToolApprovalDialog from "./ToolApprovalDialog.svelte";
-  import { ui } from "$lib/ui.svelte";
+  import { ui } from "#lib/ui.svelte.js";
 
   const PAGE = 60;
 

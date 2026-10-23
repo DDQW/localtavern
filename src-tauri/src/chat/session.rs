@@ -275,12 +275,9 @@ pub fn chat_history(conn: &Connection, conversation_id: Uuid) -> Result<Vec<Chat
 /// A story photo/video's picture message as the system note the model gets instead; `None` for any other picture.
 fn photo_note(picture: ChatMessage) -> Option<ChatMessage> {
     let draft: super::ImagePromptDraft = serde_json::from_str(picture.raw_prompt_text.as_deref()?).ok()?;
-    let text = if let Some(photo) = draft.photo.as_deref() {
-        photo_tag::context_note(photo)
-    } else if let Some(video) = draft.video.as_deref() {
-        video_tag::context_note(video)
-    } else {
-        return None;
+    let text = match (draft.photo.as_deref(), draft.video.as_deref()) {
+        (Some(photo), _) => photo_tag::context_note(photo),
+        (None, video) => video_tag::context_note(video?),
     };
     let mut note = ChatMessage::new(picture.conversation_id, MessageRole::System, text);
     note.id = picture.id;

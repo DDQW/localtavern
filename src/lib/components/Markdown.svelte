@@ -1,8 +1,8 @@
 <script lang="ts">
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { inTauri } from "$lib/api";
-  import { lightbox } from "$lib/lightbox.svelte";
-  import { renderMarkdown } from "$lib/markdown";
+  import { inTauri } from "#lib/api.js";
+  import { lightbox } from "#lib/lightbox.svelte.js";
+  import { renderMarkdown } from "#lib/markdown.js";
 
   let { text, dialogue = false }: { text: string; dialogue?: boolean } = $props();
 

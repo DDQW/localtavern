@@ -1,8 +1,8 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { api, errorText } from "$lib/api";
-  import { pickLauncher } from "$lib/pick";
-  import type { ImageBackendConfig, ImageBackendOptions, ImageGenSettings } from "$lib/types";
+  import { api, errorText } from "#lib/api.js";
+  import { pickLauncher } from "#lib/pick.js";
+  import type { ImageBackendConfig, ImageBackendOptions, ImageGenSettings } from "#lib/types.js";
 
   let settings = $state<ImageGenSettings | null>(null);
   let options = $state<ImageBackendOptions | null>(null);

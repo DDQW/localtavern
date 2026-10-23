@@ -1,10 +1,10 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
-  import { api, errorText } from "$lib/api";
-  import AiDraft from "$lib/components/AiDraft.svelte";
-  import type { Character, Lorebook, WorldInfoEntry, WorldInfoPosition } from "$lib/types";
-  import { newId, splitList } from "$lib/util";
+  import { api, errorText } from "#lib/api.js";
+  import AiDraft from "#lib/components/AiDraft.svelte";
+  import type { Character, Lorebook, WorldInfoEntry, WorldInfoPosition } from "#lib/types.js";
+  import { newId, splitList } from "#lib/util.js";
 
   /** An entry as the form edits it: the key lists are comma-separated text until saved. */
   interface EntryForm extends Omit<WorldInfoEntry, "keys" | "secondaryKeys"> {

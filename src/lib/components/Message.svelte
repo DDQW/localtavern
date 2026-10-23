@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { api, errorText } from "$lib/api";
-  import { chat } from "$lib/chat.svelte";
-  import { fileUrl } from "$lib/media";
-  import { lightbox } from "$lib/lightbox.svelte";
-  import type { UiMessage } from "$lib/types";
+  import { api, errorText } from "#lib/api.js";
+  import { chat } from "#lib/chat.svelte.js";
+  import { fileUrl } from "#lib/media.js";
+  import { lightbox } from "#lib/lightbox.svelte.js";
+  import type { UiMessage } from "#lib/types.js";
   import Avatar from "./Avatar.svelte";
   import Markdown from "./Markdown.svelte";
 

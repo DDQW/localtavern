@@ -1,8 +1,8 @@
 <script lang="ts">
   import { page } from "$app/state";
   import "../app.css";
-  import Lightbox from "$lib/components/Lightbox.svelte";
-  import { ui } from "$lib/ui.svelte";
+  import Lightbox from "#lib/components/Lightbox.svelte";
+  import { ui } from "#lib/ui.svelte.js";
 
   let { children } = $props();
 

@@ -155,8 +155,7 @@ impl ChatEngine {
             (ImageMode::Scene | ImageMode::LastMessage, None) if ctx.characters.len() == 1 => ctx.characters.first(),
             _ => None,
         };
-        let (character_prefix, locked) =
-            looked.map(|c| prompts::character_visual_identity(c)).unwrap_or_default();
+        let (character_prefix, locked) = looked.map(prompts::character_visual_identity).unwrap_or_default();
         let char_positive = looked.map(|c| c.picture_style.prompt_prefix.as_str()).unwrap_or("");
         let char_negative = looked.map(|c| c.picture_style.negative_prompt.as_str()).unwrap_or("");
         let prefix = prompts::merge_prompt_parts(&[&settings.prompt_prefix, char_positive]);

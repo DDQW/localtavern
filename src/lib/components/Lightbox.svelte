@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { lightbox } from "$lib/lightbox.svelte";
+  import { lightbox } from "#lib/lightbox.svelte.js";
 
   function close() {
     lightbox.src = "";

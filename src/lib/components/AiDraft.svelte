@@ -2,7 +2,7 @@
   // "✨ Draft with AI": an idea box and a Generate button. The caller does the request in
   // `generate` and shows the result itself (so each field can offer replace / add / undo).
   import type { Snippet } from "svelte";
-  import { errorText } from "$lib/api";
+  import { errorText } from "#lib/api.js";
 
   let {
     label = "✨ Draft with AI",

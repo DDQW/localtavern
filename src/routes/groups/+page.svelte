@@ -1,8 +1,8 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
-  import { api, errorText } from "$lib/api";
-  import { chat } from "$lib/chat.svelte";
-  import type { Character, GroupActivationMode, GroupChat } from "$lib/types";
+  import { api, errorText } from "#lib/api.js";
+  import { chat } from "#lib/chat.svelte.js";
+  import type { Character, GroupActivationMode, GroupChat } from "#lib/types.js";
 
   const MODES: Record<GroupActivationMode, string> = {
     manual: "You pick who replies",

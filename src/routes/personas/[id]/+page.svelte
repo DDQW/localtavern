@@ -1,12 +1,12 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
-  import { api, errorText } from "$lib/api";
-  import AppearanceSection from "$lib/components/AppearanceSection.svelte";
-  import Avatar from "$lib/components/Avatar.svelte";
-  import { pickImages } from "$lib/pick";
-  import type { Persona } from "$lib/types";
-  import { newId } from "$lib/util";
+  import { api, errorText } from "#lib/api.js";
+  import AppearanceSection from "#lib/components/AppearanceSection.svelte";
+  import Avatar from "#lib/components/Avatar.svelte";
+  import { pickImages } from "#lib/pick.js";
+  import type { Persona } from "#lib/types.js";
+  import { newId } from "#lib/util.js";
 
   let form = $state<Persona | null>(null);
   let error = $state("");

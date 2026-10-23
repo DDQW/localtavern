@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { api, errorText } from "$lib/api";
-  import ImageGenSection from "$lib/components/ImageGenSection.svelte";
-  import InstructionsSection from "$lib/components/InstructionsSection.svelte";
-  import OnDeviceSection from "$lib/components/OnDeviceSection.svelte";
+  import { api, errorText } from "#lib/api.js";
+  import ImageGenSection from "#lib/components/ImageGenSection.svelte";
+  import InstructionsSection from "#lib/components/InstructionsSection.svelte";
+  import OnDeviceSection from "#lib/components/OnDeviceSection.svelte";
   import type {
     DefaultPersonas,
     GeminiOptions,
@@ -15,7 +15,7 @@
     SafetyThreshold,
     SessionStatus,
     UserMemory,
-  } from "$lib/types";
+  } from "#lib/types.js";
 
   let providers = $state<ProviderInfo[]>([]);
   let dataDir = $state("");

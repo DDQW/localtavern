@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fileUrl } from "$lib/media";
+  import { fileUrl } from "#lib/media.js";
 
   let { name, path = null, size = 36 }: { name: string; path?: string | null; size?: number } = $props();
 

@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { api, errorText } from "$lib/api";
-  import { lightbox } from "$lib/lightbox.svelte";
-  import { fileUrl } from "$lib/media";
-  import { pickFolder, pickImages } from "$lib/pick";
-  import type { Character, CharacterShot, ExpressionImage, Outfit } from "$lib/types";
-  import { newId } from "$lib/util";
+  import { api, errorText } from "#lib/api.js";
+  import { lightbox } from "#lib/lightbox.svelte.js";
+  import { fileUrl } from "#lib/media.js";
+  import { pickFolder, pickImages } from "#lib/pick.js";
+  import type { Character, CharacterShot, ExpressionImage, Outfit } from "#lib/types.js";
+  import { newId } from "#lib/util.js";
 
   // The character's picture sets: moods for the default clothes, costumes with their own moods,
   // and action pictures - all drawn with the same base look and seed so they look like one person.

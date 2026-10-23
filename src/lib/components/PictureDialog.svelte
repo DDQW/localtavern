@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { chat } from "$lib/chat.svelte";
-  import type { ImagePromptDraft } from "$lib/types";
+  import { chat } from "#lib/chat.svelte.js";
+  import type { ImagePromptDraft } from "#lib/types.js";
 
   let dialog = $state<HTMLDialogElement>();
   let draft = $state<ImagePromptDraft | null>(null);

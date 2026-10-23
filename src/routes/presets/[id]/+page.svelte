@@ -1,9 +1,9 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
-  import { api, errorText } from "$lib/api";
-  import type { PromptBlockFull, PromptBlockType, PromptPresetFull, ReasoningEffort } from "$lib/types";
-  import { move, newId, numberOrNull } from "$lib/util";
+  import { api, errorText } from "#lib/api.js";
+  import type { PromptBlockFull, PromptBlockType, PromptPresetFull, ReasoningEffort } from "#lib/types.js";
+  import { move, newId, numberOrNull } from "#lib/util.js";
 
   const LABELS: Record<PromptBlockType, string> = {
     systemPrompt: "System prompt",

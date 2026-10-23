@@ -1,11 +1,11 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
-  import { api, errorText } from "$lib/api";
-  import AiDraft from "$lib/components/AiDraft.svelte";
-  import Avatar from "$lib/components/Avatar.svelte";
-  import type { Character, Country, GroupActivationMode, GroupChat } from "$lib/types";
-  import { move, newId } from "$lib/util";
+  import { api, errorText } from "#lib/api.js";
+  import AiDraft from "#lib/components/AiDraft.svelte";
+  import Avatar from "#lib/components/Avatar.svelte";
+  import type { Character, Country, GroupActivationMode, GroupChat } from "#lib/types.js";
+  import { move, newId } from "#lib/util.js";
 
   const MODES: { id: GroupActivationMode; label: string; help: string }[] = [
     { id: "manual", label: "Manual", help: "After each of your messages you choose who replies." },

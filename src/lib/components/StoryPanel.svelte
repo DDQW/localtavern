@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { api } from "$lib/api";
-  import { chat } from "$lib/chat.svelte";
-  import type { Country, HolidayOverview, Meter, StoryCharacter, WeatherCondition } from "$lib/types";
-  import { addMinutes } from "$lib/util";
+  import { api } from "#lib/api.js";
+  import { chat } from "#lib/chat.svelte.js";
+  import type { Country, HolidayOverview, Meter, StoryCharacter, WeatherCondition } from "#lib/types.js";
+  import { addMinutes } from "#lib/util.js";
 
   const world = $derived(chat.session?.conversation.worldState ?? null);
   const cast = $derived(chat.session?.characters ?? []);

@@ -1,9 +1,9 @@
 <script lang="ts">
   // A character's weekly routine (one timetable per weekday plus public holidays) and home
   // country, which new roleplays start in. The prompt is told where the routine has them now.
-  import { api } from "$lib/api";
-  import { DAY_KINDS, TEMPLATES, WEEKDAYS, emptySchedule } from "$lib/scheduleTemplates";
-  import type { Character, Country, DayPlan, Schedule } from "$lib/types";
+  import { api } from "#lib/api.js";
+  import { DAY_KINDS, TEMPLATES, WEEKDAYS, emptySchedule } from "#lib/scheduleTemplates.js";
+  import type { Character, Country, DayPlan, Schedule } from "#lib/types.js";
   import AiDraft from "./AiDraft.svelte";
 
   let { schedule = $bindable(null), character }: { schedule: Schedule | null; character: () => Character } = $props();

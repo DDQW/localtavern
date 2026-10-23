@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from "$app/state";
-  import { chat } from "$lib/chat.svelte";
-  import ChatView from "$lib/components/ChatView.svelte";
+  import { chat } from "#lib/chat.svelte.js";
+  import ChatView from "#lib/components/ChatView.svelte";
 
   // A specific conversation, e.g. picked from History.
   $effect(() => {

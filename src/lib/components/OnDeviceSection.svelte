@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { api, errorText } from "$lib/api";
-  import type { DownloadProgress, ModelFile, OnDeviceStatus } from "$lib/types";
+  import { api, errorText } from "#lib/api.js";
+  import type { DownloadProgress, ModelFile, OnDeviceStatus } from "#lib/types.js";
 
   let { onchange }: { onchange?: () => void } = $props();
 

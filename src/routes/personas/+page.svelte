@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { api, errorText } from "$lib/api";
-  import Avatar from "$lib/components/Avatar.svelte";
-  import type { Persona } from "$lib/types";
+  import { api, errorText } from "#lib/api.js";
+  import Avatar from "#lib/components/Avatar.svelte";
+  import type { Persona } from "#lib/types.js";
 
   let personas = $state<Persona[]>([]);
   let error = $state("");

@@ -717,6 +717,9 @@ async fn meters_follow_the_story_after_each_reply_and_stop_when_switched_off() {
     let conv = session.conversation.id;
     f.engine.set_model(conv, "fake", "fake-model").unwrap();
     let meter = |f: &RoutedFixture| f.db.with(|c| conversations::get(c, conv)).unwrap().unwrap().world_state.unwrap().meters.get(&nova.id).copied();
+    let mut state = f.db.with(|c| conversations::get(c, conv)).unwrap().unwrap().world_state.unwrap();
+    state.meters_enabled = true; // off until switched on
+    f.engine.set_world_state(conv, state).unwrap();
 
     let sink = Arc::new(VecSink::default());
     f.engine.send_message(conv, "I kiss her.".into(), vec![], sink.clone()).await.unwrap();

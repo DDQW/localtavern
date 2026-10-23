@@ -1,7 +1,7 @@
 <script lang="ts">
   // One trait of the appearance builder: preset chips (optionally with a colour swatch) plus a
   // custom text entry. Clicking the selected chip clears it.
-  import type { Choice } from "$lib/appearanceOptions";
+  import type { Choice } from "#lib/appearanceOptions.js";
 
   let {
     label,

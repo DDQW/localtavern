@@ -1,16 +1,16 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
-  import { api, errorText } from "$lib/api";
-  import AiDraft from "$lib/components/AiDraft.svelte";
-  import AppearanceSection from "$lib/components/AppearanceSection.svelte";
-  import ScheduleSection from "$lib/components/ScheduleSection.svelte";
-  import CharacterPictures from "$lib/components/CharacterPictures.svelte";
-  import Avatar from "$lib/components/Avatar.svelte";
-  import { fileUrl } from "$lib/media";
-  import { pickImages, pickSaveJson } from "$lib/pick";
-  import type { Character, Lorebook } from "$lib/types";
-  import { newId, nowIso, splitList } from "$lib/util";
+  import { api, errorText } from "#lib/api.js";
+  import AiDraft from "#lib/components/AiDraft.svelte";
+  import AppearanceSection from "#lib/components/AppearanceSection.svelte";
+  import ScheduleSection from "#lib/components/ScheduleSection.svelte";
+  import CharacterPictures from "#lib/components/CharacterPictures.svelte";
+  import Avatar from "#lib/components/Avatar.svelte";
+  import { fileUrl } from "#lib/media.js";
+  import { pickImages, pickSaveJson } from "#lib/pick.js";
+  import type { Character, Lorebook } from "#lib/types.js";
+  import { newId, nowIso, splitList } from "#lib/util.js";
 
   let form = $state<Character | null>(null);
   let tagsText = $state("");

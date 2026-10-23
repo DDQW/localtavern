@@ -43,7 +43,8 @@ async fn the_model_describes_the_character_and_the_draft_gets_prefixes_and_size(
     f.db.with(|c| characters::upsert(c, &styled)).unwrap();
 
     let draft = f.engine.image_prompt(conv, ImageMode::Character, None, &settings()).await.unwrap().unwrap();
-    assert_eq!(draft.prompt, "best quality, <lora:nova:0.8>, full body portrait, silver hair, blue coat");
+    // A tagged base look locks identity: hair tags leave the shot and the look goes last.
+    assert_eq!(draft.prompt, "best quality, full body portrait, blue coat, <lora:nova:0.8>");
     assert_eq!(draft.negative_prompt, "blurry");
     assert_eq!((draft.width, draft.height), (832, 1216));
     assert_eq!(draft.character_id, Some(nova.id));
@@ -197,7 +198,7 @@ async fn a_story_photo_that_failed_stays_in_the_chat_reaches_the_model_and_can_b
 
     // The note doesn't end the exchange: Continue still extends the last reply.
     f.engine.continue_message(conv, Arc::new(VecSink::default())).await.unwrap();
-    let last_reply = messages(&f, conv).into_iter().filter(|m| m.role == MessageRole::Character).last().unwrap();
+    let last_reply = messages(&f, conv).into_iter().rfind(|m| m.role == MessageRole::Character).unwrap();
     assert_eq!(last_reply.text, "Cute, right? Told you.");
 }
 
@@ -326,7 +327,7 @@ async fn a_photo_the_character_sends_is_announced_and_kept_out_of_the_text() {
 #[tokio::test]
 async fn no_photo_instruction_or_event_when_auto_photos_are_off() {
     let f = fixture(vec![Script::Items(vec![chunk("Here. [photo: a sunset]"), finish("STOP")])]);
-    f.db.with(|c| crate::imagegen::settings::save(c, ImageGenSettings { auto_photos: false, ..Default::default() })).unwrap();
+    f.db.with(|c| crate::imagegen::settings::save(c, ImageGenSettings { auto_photos: false, auto_videos: false, ..Default::default() })).unwrap();
     let conv = ready_roleplay(&f);
     let (result, events) = send(&f, conv, "hi").await;
     result.unwrap();

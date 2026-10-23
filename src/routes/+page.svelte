@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { api } from "$lib/api";
-  import { chat } from "$lib/chat.svelte";
-  import ChatView from "$lib/components/ChatView.svelte";
+  import { api } from "#lib/api.js";
+  import { chat } from "#lib/chat.svelte.js";
+  import ChatView from "#lib/components/ChatView.svelte";
 
   // Entering Assistant opens the latest assistant chat, and selects the assistant persona when one
   // is set. A header change after that is left alone until the next visit.

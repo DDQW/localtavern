@@ -1,10 +1,10 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { api, errorText, inTauri } from "$lib/api";
-  import { chat } from "$lib/chat.svelte";
-  import { fileUrl } from "$lib/media";
-  import type { ImageMode, Uuid } from "$lib/types";
+  import { api, errorText, inTauri } from "#lib/api.js";
+  import { chat } from "#lib/chat.svelte.js";
+  import { fileUrl } from "#lib/media.js";
+  import type { ImageMode, Uuid } from "#lib/types.js";
 
   // A touch keyboard has no Shift+Enter, so there Enter is a newline and the Send button sends.
   const touch = typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches;

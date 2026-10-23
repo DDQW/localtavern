@@ -1,8 +1,8 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
-  import { api, errorText } from "$lib/api";
-  import type { PromptPresetFull } from "$lib/types";
-  import { newId } from "$lib/util";
+  import { api, errorText } from "#lib/api.js";
+  import type { PromptPresetFull } from "#lib/types.js";
+  import { newId } from "#lib/util.js";
 
   let presets = $state<PromptPresetFull[]>([]);
   let error = $state("");

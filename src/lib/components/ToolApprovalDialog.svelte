@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { chat } from "$lib/chat.svelte";
+  import { chat } from "#lib/chat.svelte.js";
 
   let dialog = $state<HTMLDialogElement>();
   let pattern = $state("");

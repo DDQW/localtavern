@@ -1,10 +1,10 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
-  import { api, errorText } from "$lib/api";
-  import { chat } from "$lib/chat.svelte";
-  import Avatar from "$lib/components/Avatar.svelte";
-  import { pickCard } from "$lib/pick";
-  import type { Character } from "$lib/types";
+  import { api, errorText } from "#lib/api.js";
+  import { chat } from "#lib/chat.svelte.js";
+  import Avatar from "#lib/components/Avatar.svelte";
+  import { pickCard } from "#lib/pick.js";
+  import type { Character } from "#lib/types.js";
 
   let characters = $state<Character[]>([]);
   let query = $state("");

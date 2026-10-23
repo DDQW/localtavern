@@ -1,11 +1,11 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
-  import { api } from "$lib/api";
-  import { chat } from "$lib/chat.svelte";
-  import type { Character } from "$lib/types";
+  import { api } from "#lib/api.js";
+  import { chat } from "#lib/chat.svelte.js";
+  import type { Character } from "#lib/types.js";
   import ContextMeter from "./ContextMeter.svelte";
   import RoomTabs from "./RoomTabs.svelte";
-  import { ui } from "$lib/ui.svelte";
+  import { ui } from "#lib/ui.svelte.js";
 
   let providers = $state<{ id: string; name: string }[]>([]);
   let allCharacters = $state<Character[]>([]);
@@ -40,7 +40,7 @@
   }
 
   async function newChat() {
-    if (await chat.newChat()) await goto(`/chat/${chat.conversationId}`, { replaceState: true });
+    if (await chat.newChat()) await goto(`/chat/${chat.conversationId}`, { replace: true });
   }
 </script>
 

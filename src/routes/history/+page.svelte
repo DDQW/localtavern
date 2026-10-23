@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
-  import { api, errorText } from "$lib/api";
-  import type { Conversation, SearchHit } from "$lib/types";
+  import { api, errorText } from "#lib/api.js";
+  import type { Conversation, SearchHit } from "#lib/types.js";
 
   let conversations = $state<Conversation[]>([]);
   let hits = $state<SearchHit[]>([]);
