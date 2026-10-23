@@ -223,7 +223,7 @@ export interface StoryCharacter {
   age: number | null;
   role: string;
   appearance: string;
-  /** Explicit (18+) details; only kept for characters aged 18 or more. */
+  /** Explicit physical details the story has established. */
   adultDetails: string;
   /** The in-story time of the exchange that introduced them. */
   introducedAt: string | null;

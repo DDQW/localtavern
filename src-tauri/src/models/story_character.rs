@@ -14,7 +14,7 @@ pub struct StoryCharacter {
     /// Who they are to the story ("Mia's landlord", "bartender at the Anchor").
     pub role: String,
     pub appearance: String,
-    /// Explicit (18+) physical details. Only ever kept for characters whose age is 18 or more.
+    /// Explicit physical details the story has established.
     pub adult_details: String,
     /// The in-story time of the exchange that introduced them.
     pub introduced_at: Option<NaiveDateTime>,
@@ -38,12 +38,9 @@ impl StoryCharacter {
         }
     }
 
-    /// Drops what must not be kept: adult details unless the character is known to be an adult.
+    /// Drops what must not be kept: trims name and validates age range.
     pub fn enforce_rules(&mut self) {
         self.name = self.name.trim().to_string();
         self.age = self.age.filter(|a| (0..=1000).contains(a));
-        if !self.age.is_some_and(|a| a >= 18) {
-            self.adult_details.clear();
-        }
     }
 }

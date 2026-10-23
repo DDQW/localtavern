@@ -86,18 +86,19 @@ mod tests {
     }
 
     #[test]
-    fn adult_details_need_a_known_adult_age() {
+    fn adult_details_are_no_longer_filtered_by_age() {
         let mut c = StoryCharacter::new(Uuid::new_v4(), " Eve ");
         c.adult_details = "x".into();
         c.enforce_rules();
-        assert!(c.adult_details.is_empty());
+        assert_eq!(c.adult_details, "x");
         assert_eq!(c.name, "Eve");
         c.age = Some(25);
-        c.adult_details = "x".into();
+        c.adult_details = "y".into();
         c.enforce_rules();
-        assert_eq!(c.adult_details, "x");
+        assert_eq!(c.adult_details, "y");
         c.age = Some(17);
+        c.adult_details = "z".into();
         c.enforce_rules();
-        assert!(c.adult_details.is_empty());
+        assert_eq!(c.adult_details, "z");
     }
 }

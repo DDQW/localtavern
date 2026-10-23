@@ -160,8 +160,8 @@
       </div>
       <label class="field">Appearance <textarea rows="5" bind:value={editing.appearance}></textarea></label>
       <label class="field">
-        18+ details {#if editing.age === null || editing.age < 18}<span class="muted">(only for characters aged 18 or more)</span>{/if}
-        <textarea rows="4" bind:value={editing.adultDetails} disabled={editing.age === null || editing.age < 18}></textarea>
+        18+ details
+        <textarea rows="4" bind:value={editing.adultDetails}></textarea>
       </label>
       <div class="row">
         <button disabled={!editing.name.trim()} onclick={saveEdit}>Save</button>

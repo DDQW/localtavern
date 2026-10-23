@@ -181,7 +181,7 @@ List any NEW, durable, specific facts about the user worth remembering long-term
                 .iter()
                 .map(|k| {
                     format!(
-                        "- {} (age {}; {}) look: {} | 18+: {}",
+                        "- {} (age {}; {}) look: {} | intimate: {}",
                         k.name,
                         k.age.map(|a| a.to_string()).unwrap_or_else(|| "unknown".into()),
                         k.role,
@@ -204,9 +204,8 @@ established NEW facts. Each item has these keys:\n\
 \"role\": who they are in the story, in a few words;\n\
 \"appearance\": a proper description of what they look like - build, height, hair, eyes, skin, clothing, distinguishing marks, \
 voice, manner - using only what the story says or clearly implies (for a character already recorded, give the full updated text);\n\
-\"adult_details\": for characters who are adults (age 18 or more) ONLY, and only when the story is explicit about them: their \
-18+ physical details (body, intimate anatomy), stated matter-of-factly; otherwise an empty string. Always an empty string for \
-anyone under 18 or of unknown age.\n\
+\"adult_details\": only when the story is explicit about them: their intimate physical details (body, intimate anatomy), stated \
+matter-of-factly; otherwise an empty string.\n\
 Skip crowds, unnamed extras and anyone merely mentioned in passing. If there is nobody, reply exactly: []",
             main = if ex.main_names.is_empty() { "(none)".to_string() } else { ex.main_names.join(", ") },
             user = ex.user_text,
@@ -251,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_skips_the_main_cast_keeps_first_age_and_drops_minors_details() {
+    fn merge_skips_the_main_cast_and_keeps_first_age() {
         let ex = exchange(&["Mia Weber"]);
         let mut known = Vec::new();
         let changed = merge_found(
@@ -259,10 +258,10 @@ mod tests {
             vec![found("Mia", Some(20), "x", ""), found("Tom", Some(34), "red beard", "d"), found("Kid", Some(15), "small", "d")],
             &ex,
         );
-        assert_eq!(changed.len(), 2);
+        assert_eq!(changed.len(), 2); // Mia is skipped as main cast, Tom and Kid are added
         assert_eq!(known.len(), 2);
         assert_eq!(known[0].adult_details, "d");
-        assert!(known[1].adult_details.is_empty());
+        assert_eq!(known[1].adult_details, "d"); // No longer filtered by age
 
         let changed = merge_found(&mut known, vec![found("tom", Some(50), "red beard, scar", "")], &ex);
         assert_eq!(changed.len(), 1);

@@ -959,7 +959,6 @@ You are the character. (Mock prompt for message ${messageId}.)
     const list = storyCast.get(character.conversationId) ?? [];
     const saved = { ...character, name: character.name.trim() };
     if (!saved.name) throw "A character needs a name.";
-    if (saved.age === null || saved.age < 18) saved.adultDetails = "";
     const i = list.findIndex((c) => c.id === saved.id);
     if (i >= 0) list[i] = saved;
     else list.push(saved);
