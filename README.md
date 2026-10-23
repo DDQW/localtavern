@@ -39,4 +39,4 @@ The setup file is written to `src-tauri/target/release/bundle/nsis/`.
 
 ## License
 
-[GNU Affero General Public License v3.0](LICENSE) only.
+GNU Affero General Public License v3.0
