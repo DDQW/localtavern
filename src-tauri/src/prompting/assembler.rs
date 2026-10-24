@@ -199,7 +199,12 @@ fn build_history(ctx: &PromptAssemblyContext, macros: &Macros) -> Vec<LlmMessage
                 )
             };
 
-            LlmMessage { role, text, attachments }
+            let reasoning = match role {
+                LlmRole::Model => message.reasoning_text.clone().filter(|r| !r.trim().is_empty()),
+                LlmRole::User => None,
+            };
+
+            LlmMessage { role, text, attachments, reasoning }
         })
         .collect();
 

@@ -460,6 +460,7 @@ mod tests {
                 image_path: file.to_string_lossy().into_owned(),
                 mime_type: "image/png".into(),
             }]),
+            reasoning: None,
         };
         let mapped = to_gemini_request(&request(vec![message], Default::default()), &Default::default());
 
@@ -481,6 +482,7 @@ mod tests {
                 image_path: "C:/does/not/exist.png".into(),
                 mime_type: "image/png".into(),
             }]),
+            reasoning: None,
         };
         let mapped = to_gemini_request(&request(vec![message], Default::default()), &Default::default());
         assert_eq!(mapped.contents[0].parts.as_ref().unwrap().len(), 1);

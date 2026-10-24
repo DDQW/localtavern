@@ -63,9 +63,15 @@ pub fn to_mistral_request(request: &LlmRequest) -> MistralChatCompletionRequest 
     if let Some(system) = request.system_instruction.as_deref().filter(|s| !s.is_empty()) {
         messages.push(MistralMessage { role: "system".into(), content: Value::from(system) });
     }
+    let cfg = &request.generation_config;
+    let reasoning_effort = to_reasoning_effort(&request.model, cfg.reasoning_effort);
+    let replay_reasoning = reasoning_effort.is_some_and(|e| e != "none");
     messages.extend(request.history.iter().map(|m| MistralMessage {
         role: if m.role == LlmRole::User { "user" } else { "assistant" }.into(),
-        content: m.chat_content(),
+        content: match m.reasoning.as_deref().filter(|_| replay_reasoning && m.role == LlmRole::Model) {
+            Some(thought) => replayed_content(thought, &m.text),
+            None => m.chat_content(),
+        },
     }));
     // Mistral rejects a conversation that ends on an assistant turn (the next group member's reply
     // follows straight after the previous one's). Its `prefix` flag would accept it, but then the
@@ -74,17 +80,25 @@ pub fn to_mistral_request(request: &LlmRequest) -> MistralChatCompletionRequest 
         messages.push(MistralMessage { role: "user".into(), content: Value::from(NEXT_REPLY_NOTE) });
     }
 
-    let cfg = &request.generation_config;
     MistralChatCompletionRequest {
         model: request.model.clone(),
         messages,
         stream: true,
-        reasoning_effort: to_reasoning_effort(&request.model, cfg.reasoning_effort).map(String::from),
+        reasoning_effort: reasoning_effort.map(String::from),
         temperature: cfg.temperature,
         top_p: cfg.top_p,
         max_tokens: cfg.max_output_tokens,
         stop: cfg.stop_sequences.clone(),
     }
+}
+
+/// Mistral wants an earlier turn's reasoning replayed as a `thinking` chunk ahead of its reply, and
+/// says the model loses coherence when it is stripped.
+fn replayed_content(thought: &str, reply: &str) -> Value {
+    serde_json::json!([
+        {"type": "thinking", "thinking": [{"type": "text", "text": thought}]},
+        {"type": "text", "text": reply},
+    ])
 }
 
 /// The hybrid models only think when asked (`reasoning_effort`), and take just "high" or "none".
@@ -199,6 +213,29 @@ mod tests {
             r.model = model.into();
             assert_eq!(to_mistral_request(&r).reasoning_effort.as_deref(), expected, "{model} {effort:?}");
         }
+    }
+
+    #[test]
+    fn earlier_reasoning_is_replayed_only_while_the_model_is_thinking() {
+        let mut turn = LlmMessage::new(LlmRole::Model, "Alice: Hello!");
+        turn.reasoning = Some("She greets him.".into());
+        let history = vec![LlmMessage::new(LlmRole::User, "hi"), turn, LlmMessage::new(LlmRole::User, "again")];
+
+        let mapped = to_mistral_request(&request(None, history.clone(), LlmGenerationConfig::default()));
+        assert_eq!(
+            mapped.messages[1].content,
+            serde_json::json!([
+                {"type": "thinking", "thinking": [{"type": "text", "text": "She greets him."}]},
+                {"type": "text", "text": "Alice: Hello!"},
+            ])
+        );
+
+        let off = LlmGenerationConfig { reasoning_effort: Some(ReasoningEffort::Off), ..Default::default() };
+        assert_eq!(to_mistral_request(&request(None, history.clone(), off)).messages[1].content, "Alice: Hello!");
+
+        let mut codestral = request(None, history, LlmGenerationConfig::default());
+        codestral.model = "codestral-latest".into();
+        assert_eq!(to_mistral_request(&codestral).messages[1].content, "Alice: Hello!");
     }
 
     #[test]

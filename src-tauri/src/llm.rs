@@ -35,11 +35,13 @@ pub struct LlmMessage {
     pub role: LlmRole,
     pub text: String,
     pub attachments: Option<Vec<LlmAttachment>>,
+    /// What a model turn reasoned before replying, for providers that want it replayed.
+    pub reasoning: Option<String>,
 }
 
 impl LlmMessage {
     pub fn new(role: LlmRole, text: impl Into<String>) -> Self {
-        Self { role, text: text.into(), attachments: None }
+        Self { role, text: text.into(), attachments: None, reasoning: None }
     }
 
     /// The `content` of an OpenAI-style chat-completions message: the bare text, or - when a user
