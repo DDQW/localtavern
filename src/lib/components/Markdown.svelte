@@ -90,6 +90,14 @@
     color: var(--accent);
   }
 
+  /* A character's thoughts: italics inside parentheses, `*(like this)*`. */
+  .md :global(.md-thought) {
+    color: var(--thought);
+    background: color-mix(in srgb, var(--thought) 14%, transparent);
+    border-radius: 4px;
+    padding: 0 0.3em;
+  }
+
   .md :global(blockquote) {
     margin: 0.6em 0;
     padding: 0.1em 0.9em;

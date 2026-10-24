@@ -1,6 +1,7 @@
 // Colours spoken dialogue: text between quotation marks gets a `md-quote` span, the way SillyTavern
 // (and this app's earlier WinUI version) styled it. Actions written as *asterisks* are plain
-// emphasis, so they come out italic without any help from here.
+// emphasis, so they come out italic without any help from here. A character's thoughts are italics
+// that are a parenthesis too, `*(I hope he buys it.)*`, and get a `md-thought` class.
 //
 // Straight, curly and guillemet quotes are all treated as the same toggle, since models and phones
 // emit curly ones far more often than a keyboard's ASCII `"`. The quote marks themselves belong to
@@ -41,8 +42,42 @@ export function splitDialogue(text: string, inQuote: boolean): { segments: Segme
   return { segments, inQuote };
 }
 
-/** markdown-it plugin: wraps quoted text in `<span class="md-quote">`. */
+/** Whether emphasised text is a thought: all of it inside one pair of parentheses. */
+export function isThought(text: string): boolean {
+  const t = text.trim();
+  if (t.length < 3 || !t.startsWith("(") || !t.endsWith(")")) return false;
+  // The first "(" has to close at the very end: "(a) and (b)" is two asides, not one thought.
+  let depth = 0;
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] === "(") depth++;
+    else if (t[i] === ")" && --depth === 0 && i < t.length - 1) return false;
+  }
+  return depth === 0;
+}
+
+/** Gives the emphasis that holds a thought (see [`isThought`]) the class `md-thought`. */
+function markThoughts(children: Token[]): void {
+  for (let i = 0; i < children.length; i++) {
+    if (children[i].type !== "em_open") continue;
+    let depth = 0;
+    let text = "";
+    for (let j = i; j < children.length; j++) {
+      const token = children[j];
+      if (token.type === "em_open") depth++;
+      else if (token.type === "em_close" && --depth === 0) break;
+      else if (token.type === "text" || token.type === "code_inline") text += token.content;
+    }
+    if (isThought(text)) children[i].attrJoin("class", "md-thought");
+  }
+}
+
+/** markdown-it plugin: wraps quoted text in `<span class="md-quote">` and marks thoughts. */
 export function dialoguePlugin(md: MarkdownIt): void {
+  md.core.ruler.push("dialogue_thoughts", (state: StateCore) => {
+    for (const block of state.tokens) {
+      if (block.type === "inline" && block.children) markThoughts(block.children);
+    }
+  });
   md.core.ruler.push("dialogue_quotes", (state: StateCore) => {
     for (const block of state.tokens) {
       if (block.type !== "inline" || !block.children) continue;
