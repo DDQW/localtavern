@@ -1,12 +1,16 @@
 //! Pictures the user sends are described once, in the background after the reply to them. From the
 //! user's next message on, the assembler sends that description instead of the picture: resending
 //! the image made the model decode it again on every reply (and cost its tokens every time).
+//!
+//! A photo a character sends is described the same way once it is drawn, so the story goes by what
+//! the picture shows rather than by what the character said it would show.
 
 use std::path::Path;
+use std::sync::atomic::Ordering;
 
 use uuid::Uuid;
 
-use super::{report, ChatEngine};
+use super::{report, ChatEngine, ImagePromptDraft};
 use crate::llm::{LlmAttachment, LlmGenerationConfig, LlmMessage, LlmRequest, LlmRole};
 use crate::models::{ChatMessage, MessageAttachment, MessageRole};
 use crate::repo::conversations;
@@ -56,6 +60,28 @@ impl ChatEngine {
                     }
                 }
                 engine.inner.describing.lock().unwrap().remove(&message.id);
+            }
+        });
+    }
+
+    /// Describes the drawn picture of a story photo (one a character sent) in the background, with the
+    /// conversation's own model. Best-effort, and only while background requests are on: without a
+    /// description the model keeps going by what the character said the photo showed.
+    pub(super) fn spawn_photo_description(&self, picture: &ChatMessage) {
+        let is_story_photo = picture.role == MessageRole::Image
+            && picture.raw_prompt_text.as_deref().and_then(|raw| serde_json::from_str::<ImagePromptDraft>(raw).ok()).is_some_and(|d| d.photo.is_some());
+        let Some(attachment) = picture.attachments.first().filter(|a| a.description.is_none() && is_story_photo) else { return };
+        if !self.inner.extraction.load(Ordering::Relaxed) || tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let Ok(Some(conversation)) = self.db().with(|c| conversations::get(c, picture.conversation_id)) else { return };
+        if conversation.model.trim().is_empty() {
+            return;
+        }
+        let (engine, message_id, attachment) = (self.clone(), picture.id, attachment.clone());
+        tokio::spawn(async move {
+            if let Some(description) = engine.describe_picture(&conversation.provider_id, &conversation.model, "", &attachment).await {
+                engine.save_description(message_id, &attachment.image_path, description);
             }
         });
     }

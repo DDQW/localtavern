@@ -190,6 +190,7 @@ impl ChatEngine {
             conversations::add_message(c, &message)?;
             Ok(())
         })?;
+        self.spawn_photo_description(&message);
         Ok(message)
     }
 
@@ -219,6 +220,7 @@ impl ChatEngine {
         for attachment in &old {
             images::delete_if_owned(&self.inner.images_dir, std::path::Path::new(&attachment.image_path));
         }
+        self.spawn_photo_description(&message);
         Ok(message)
     }
 

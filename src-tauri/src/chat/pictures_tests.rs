@@ -402,3 +402,43 @@ async fn intimate_photo_text_is_included_by_default() {
     let system = f.provider.requests()[0].system_instruction.clone().unwrap();
     assert!(system.contains("suggestive or nude photos of Nova"), "{system}");
 }
+
+#[tokio::test]
+async fn a_drawn_story_photo_is_looked_at_and_the_story_goes_by_what_it_shows() {
+    let f = fixture(vec![
+        Script::Items(vec![chunk("Here you go."), finish("STOP")]),
+        Script::Items(vec![chunk("A woman in a red dress laughing on a beach."), finish("STOP")]),
+        Script::Items(vec![chunk("Cute, right?"), finish("STOP")]),
+    ]);
+    let conv = ready_roleplay(&f);
+    no_clock(&f, conv);
+    send(&f, conv, "send me a pic").await.0.unwrap();
+    let nova = f.engine.resume(conv).unwrap().characters[0].id;
+    let photo = ImagePromptDraft { photo: Some("selfie of Nova in a blue coat".into()), ..draft("best quality, selfie", Some(nova)) };
+
+    f.engine.set_extraction(true);
+    let drawn = f.engine.add_picture(conv, &photo, &png()).unwrap();
+    let described = async {
+        loop {
+            let saved = f.db.with(|c| conversations::get_message(c, drawn.id)).unwrap().unwrap();
+            if saved.attachments[0].description.is_some() {
+                return saved.attachments[0].description.clone().unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    let description = tokio::time::timeout(std::time::Duration::from_secs(5), described).await.expect("the photo gets described");
+    f.engine.set_extraction(false);
+    assert_eq!(description, "A woman in a red dress laughing on a beach.");
+
+    let look = &f.provider.requests()[1].history;
+    assert_eq!(look.len(), 1, "the picture is described on its own, without the story");
+    assert_eq!(look[0].attachments.as_ref().map(Vec::len), Some(1), "and sent for real");
+
+    send(&f, conv, "wow").await.0.unwrap();
+    let history = &f.provider.requests()[2].history;
+    let note = history.iter().find(|m| m.text.contains("photo was shared")).expect("the photo is in the context");
+    assert_eq!(note.text, "[System note: A photo was shared in the story here. It showed: A woman in a red dress laughing on a beach.]");
+    assert!(history.iter().all(|m| !m.text.contains("blue coat")), "the analysis replaces what the reply said");
+    assert!(history.iter().all(|m| m.attachments.is_none()), "the picture itself still isn't uploaded");
+}

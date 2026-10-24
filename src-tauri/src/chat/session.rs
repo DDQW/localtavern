@@ -273,10 +273,12 @@ pub fn chat_history(conn: &Connection, conversation_id: Uuid) -> Result<Vec<Chat
 }
 
 /// A story photo/video's picture message as the system note the model gets instead; `None` for any other picture.
+/// A drawn photo that has been looked at is noted by what the picture shows, else by what the reply said it would.
 fn photo_note(picture: ChatMessage) -> Option<ChatMessage> {
     let draft: super::ImagePromptDraft = serde_json::from_str(picture.raw_prompt_text.as_deref()?).ok()?;
+    let seen = picture.attachments.first().and_then(|a| a.description.as_deref()).filter(|d| !d.trim().is_empty());
     let text = match (draft.photo.as_deref(), draft.video.as_deref()) {
-        (Some(photo), _) => photo_tag::context_note(photo),
+        (Some(photo), _) => photo_tag::context_note(seen.unwrap_or(photo)),
         (None, video) => video_tag::context_note(video?),
     };
     let mut note = ChatMessage::new(picture.conversation_id, MessageRole::System, text);
