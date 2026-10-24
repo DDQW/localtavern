@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::llm::{LlmRequest, LlmRole};
+use crate::models::ReasoningEffort;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MistralMessage {
@@ -12,13 +13,14 @@ pub struct MistralMessage {
 }
 
 /// No `stream_options`: Mistral already reports usage on the final chunk, and doesn't document the
-/// option. No reasoning setting either - Magistral models always think, and the other models take
-/// none, so a preset's reasoning effort has nothing to map onto here.
+/// option.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MistralChatCompletionRequest {
     pub model: String,
     pub messages: Vec<MistralMessage>,
     pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -77,6 +79,7 @@ pub fn to_mistral_request(request: &LlmRequest) -> MistralChatCompletionRequest 
         model: request.model.clone(),
         messages,
         stream: true,
+        reasoning_effort: to_reasoning_effort(&request.model, cfg.reasoning_effort).map(String::from),
         temperature: cfg.temperature,
         top_p: cfg.top_p,
         max_tokens: cfg.max_output_tokens,
@@ -84,11 +87,40 @@ pub fn to_mistral_request(request: &LlmRequest) -> MistralChatCompletionRequest 
     }
 }
 
+/// The hybrid models only think when asked (`reasoning_effort`), and take just "high" or "none".
+/// Unset asks for "high", so a reasoning-capable model shows its thinking without a preset change.
+/// Other models (Ministral, Codestral, older dated ids) get nothing, since they don't take the field.
+fn to_reasoning_effort(model: &str, effort: Option<ReasoningEffort>) -> Option<&'static str> {
+    let model = model.to_ascii_lowercase();
+    // Z.ai GLM takes low/high/max but not "none".
+    if model.starts_with("zai-glm") {
+        return match effort {
+            Some(ReasoningEffort::Off) => None,
+            Some(ReasoningEffort::Low) => Some("low"),
+            Some(ReasoningEffort::Medium) | None => Some("high"),
+            Some(ReasoningEffort::High) => Some("max"),
+        };
+    }
+    const HYBRID: [&str; 8] = [
+        "mistral-small-latest",
+        "mistral-small-2603",
+        "mistral-medium-latest",
+        "mistral-medium-3-5",
+        "mistral-medium-2604",
+        "mistral-large-latest",
+        "mistral-large-4",
+        "mistral-large-2610",
+    ];
+    if !HYBRID.iter().any(|id| model.starts_with(id)) {
+        return None;
+    }
+    Some(if effort == Some(ReasoningEffort::Off) { "none" } else { "high" })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::llm::{LlmGenerationConfig, LlmMessage};
-    use crate::models::ReasoningEffort;
 
     fn request(system: Option<&str>, history: Vec<LlmMessage>, config: LlmGenerationConfig) -> LlmRequest {
         LlmRequest {
@@ -138,12 +170,34 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_effort_and_unset_options_are_not_sent() {
-        let config = LlmGenerationConfig { reasoning_effort: Some(ReasoningEffort::High), ..Default::default() };
-        let json = serde_json::to_string(&to_mistral_request(&request(None, vec![LlmMessage::new(LlmRole::User, "hi")], config))).unwrap();
+    fn unset_options_are_not_sent() {
+        let mut r = request(None, vec![LlmMessage::new(LlmRole::User, "hi")], LlmGenerationConfig::default());
+        r.model = "codestral-latest".into();
+        let json = serde_json::to_string(&to_mistral_request(&r)).unwrap();
 
         for absent in ["reasoning", "temperature", "top_p", "max_tokens", "stop", "stream_options", "prefix"] {
             assert!(!json.contains(absent), "{absent} in {json}");
+        }
+    }
+
+    #[test]
+    fn maps_reasoning_effort_per_model() {
+        use ReasoningEffort::*;
+        for (model, effort, expected) in [
+            ("mistral-small-latest", None, Some("high")),
+            ("mistral-medium-3-5", Some(Low), Some("high")),
+            ("mistral-large-2610", Some(High), Some("high")),
+            ("mistral-small-latest", Some(Off), Some("none")),
+            ("zai-glm-5-3", Some(Off), None), // GLM rejects "none"
+            ("zai-glm-5-3", Some(Low), Some("low")),
+            ("zai-glm-5-3", Some(High), Some("max")),
+            ("ministral-8b-latest", Some(High), None),
+            ("codestral-latest", None, None),
+            ("mistral-small-2506", Some(High), None),
+        ] {
+            let mut r = request(None, vec![LlmMessage::new(LlmRole::User, "hi")], LlmGenerationConfig { reasoning_effort: effort, ..Default::default() });
+            r.model = model.into();
+            assert_eq!(to_mistral_request(&r).reasoning_effort.as_deref(), expected, "{model} {effort:?}");
         }
     }
 
