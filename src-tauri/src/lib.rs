@@ -116,6 +116,11 @@ pub fn run() {
             app.manage(image_commands::ImageJobs::new(&data_dir, gpu.clone()));
             app.manage(build_state(data_dir, gpu)?);
             image_commands::start_comfy_on_launch(app.handle());
+            // The version in the title shows at a glance whether the running build is the latest.
+            #[cfg(desktop)]
+            if let Some(window) = app.get_webview_window("main") {
+                window.set_title(&format!("LocalTavern {}", env!("CARGO_PKG_VERSION")))?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
