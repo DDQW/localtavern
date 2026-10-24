@@ -512,6 +512,13 @@ export const mockApi: Api = {
   async openBreakout(conversationId, characterId) {
     return session(breakoutFor(conversationId, characterId).id);
   },
+  async declineBreakout(conversationId, characterId) {
+    const name = characters.find((c) => c.id === characterId)?.name ?? "They";
+    const user = personas.find((p) => p.id === personaFor("roleplay"))?.name || "Alex";
+    const note = message(conversationId, "system", `${user} turned down ${name}'s offer to talk in private and stayed with the group.`);
+    messages.get(conversationId)!.push(note);
+    return structuredClone(note);
+  },
   async openLastRoleplay() {
     const last = [...conversations].reverse().find((c) => c.mode === "roleplay");
     if (!last) return null;

@@ -193,6 +193,7 @@ pub fn run() {
             commands::store_image,
             commands::open_group,
             commands::open_breakout,
+            commands::decline_breakout,
             commands::pick_speaker,
             commands::react_to_room,
             commands::get_audio_settings,

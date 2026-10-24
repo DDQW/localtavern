@@ -1043,6 +1043,25 @@ present, keep it as its own final paragraph, still naming whose details they are
         Ok(())
     }
 
+    /// The user turned down a member's offer of a private talk: the group's story notes it, so the
+    /// member (and whoever answers next) knows they stayed.
+    pub fn decline_breakout(&self, group_conversation_id: Uuid, character_id: Uuid) -> Result<ChatMessage> {
+        let ctx = self.db().with(|c| load_reply_context(c, group_conversation_id))?;
+        let character = ctx
+            .characters
+            .iter()
+            .find(|c| c.id == character_id)
+            .ok_or_else(|| Error::Other("That character isn't in this group.".into()))?;
+        let user = roles::user_name(ctx.persona.as_ref());
+        let note = ChatMessage::new(
+            group_conversation_id,
+            MessageRole::System,
+            format!("{user} turned down {}'s offer to talk in private and stayed with the group.", character.name),
+        );
+        self.db().with(|c| conversations::add_message(c, &note))?;
+        Ok(note)
+    }
+
     /// Swiping right: moves to the next existing alternate, or generates a new one when already at
     /// the last (SillyTavern-style - there is no separate "Regenerate" button).
     pub async fn swipe_next(&self, conversation_id: Uuid, message_id: Uuid, sink: Arc<dyn EventSink>) -> Result<()> {

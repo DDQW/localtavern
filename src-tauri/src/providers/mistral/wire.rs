@@ -59,12 +59,27 @@ pub struct MistralListModelsResponse {
 const NEXT_REPLY_NOTE: &str = "[System note: Write the next reply.]";
 
 pub fn to_mistral_request(request: &LlmRequest) -> MistralChatCompletionRequest {
+    build_request(request, true)
+}
+
+/// The same request for a model that turned out not to take `reasoning_effort`.
+pub fn to_mistral_request_without_reasoning(request: &LlmRequest) -> MistralChatCompletionRequest {
+    build_request(request, false)
+}
+
+/// Whether an error is Mistral refusing the reasoning setting (an unsupported level, or the field on
+/// a model that has none).
+pub fn is_reasoning_rejection(err: &crate::providers::error::ProviderError) -> bool {
+    err.kind == crate::providers::error::ProviderErrorKind::InvalidRequest && err.message.to_ascii_lowercase().contains("reasoning")
+}
+
+fn build_request(request: &LlmRequest, with_reasoning: bool) -> MistralChatCompletionRequest {
     let mut messages = Vec::new();
     if let Some(system) = request.system_instruction.as_deref().filter(|s| !s.is_empty()) {
         messages.push(MistralMessage { role: "system".into(), content: Value::from(system) });
     }
     let cfg = &request.generation_config;
-    let reasoning_effort = to_reasoning_effort(&request.model, cfg.reasoning_effort);
+    let reasoning_effort = to_reasoning_effort(&request.model, cfg.reasoning_effort).filter(|_| with_reasoning);
     let replay_reasoning = reasoning_effort.is_some_and(|e| e != "none");
     messages.extend(request.history.iter().map(|m| MistralMessage {
         role: if m.role == LlmRole::User { "user" } else { "assistant" }.into(),
@@ -101,7 +116,7 @@ fn replayed_content(thought: &str, reply: &str) -> Value {
     ])
 }
 
-/// The hybrid models only think when asked (`reasoning_effort`), and take just "high" or "none".
+/// The hybrid models (Small, Medium) only think when asked (`reasoning_effort`), and take just "high" or "none".
 /// Unset asks for "high", so a reasoning-capable model shows its thinking without a preset change.
 /// Other models (Ministral, Codestral, older dated ids) get nothing, since they don't take the field.
 fn to_reasoning_effort(model: &str, effort: Option<ReasoningEffort>) -> Option<&'static str> {
@@ -115,6 +130,8 @@ fn to_reasoning_effort(model: &str, effort: Option<ReasoningEffort>) -> Option<&
             Some(ReasoningEffort::High) => Some("max"),
         };
     }
+    // Large 4 takes it too; Large 3 doesn't, and "-latest" may still point there, so the provider
+    // retries without the field when Mistral rejects it (see `is_reasoning_rejection`).
     const HYBRID: [&str; 8] = [
         "mistral-small-latest",
         "mistral-small-2603",
@@ -138,7 +155,7 @@ mod tests {
 
     fn request(system: Option<&str>, history: Vec<LlmMessage>, config: LlmGenerationConfig) -> LlmRequest {
         LlmRequest {
-            model: "mistral-large-latest".into(),
+            model: "mistral-small-latest".into(),
             system_instruction: system.map(String::from),
             history,
             generation_config: config,
@@ -201,6 +218,8 @@ mod tests {
             ("mistral-small-latest", None, Some("high")),
             ("mistral-medium-3-5", Some(Low), Some("high")),
             ("mistral-large-2610", Some(High), Some("high")),
+            ("mistral-large-4-0", None, Some("high")),
+            ("mistral-large-2512", None, None), // Large 3
             ("mistral-small-latest", Some(Off), Some("none")),
             ("zai-glm-5-3", Some(Off), None), // GLM rejects "none"
             ("zai-glm-5-3", Some(Low), Some("low")),

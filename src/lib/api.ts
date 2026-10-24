@@ -66,6 +66,8 @@ export interface Api {
   openGroup(groupId: Uuid, forceNew: boolean): Promise<ChatSession>;
   /** The private talk with one member of a group conversation (resumed, or started empty). */
   openBreakout(conversationId: Uuid, characterId: Uuid): Promise<ChatSession>;
+  /** The user turned down a member's offer of a private talk; resolves to the note added to the group. */
+  declineBreakout(conversationId: Uuid, characterId: Uuid): Promise<ChatMessage>;
   openLastRoleplay(): Promise<ChatSession | null>;
   resumeConversation(conversationId: Uuid): Promise<ChatSession>;
   newChat(conversationId: Uuid): Promise<ChatSession>;
@@ -239,6 +241,7 @@ const tauriApi: Api = {
   openCharacter: (characterId, forceNew) => invoke("open_character", { characterId, forceNew }),
   openGroup: (groupId, forceNew) => invoke("open_group", { groupId, forceNew }),
   openBreakout: (conversationId, characterId) => invoke("open_breakout", { conversationId, characterId }),
+  declineBreakout: (conversationId, characterId) => invoke("decline_breakout", { conversationId, characterId }),
   openLastRoleplay: () => invoke("open_last_roleplay"),
   resumeConversation: (conversationId) => invoke("resume_conversation", { conversationId }),
   newChat: (conversationId) => invoke("new_chat", { conversationId }),

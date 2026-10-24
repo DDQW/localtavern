@@ -1371,6 +1371,26 @@ async fn pick(f: &Fixture, conversation: Uuid, character: Uuid) -> Vec<ChatEvent
 }
 
 #[tokio::test]
+async fn turning_down_a_private_talk_leaves_a_note_in_the_group_for_the_next_reply() {
+    let f = fixture(vec![Script::Items(vec![chunk("Fine, here then."), finish("STOP")])]);
+    let (alice, bob) = (add_character(&f.db, "Alice", None, &[]), add_character(&f.db, "Bob", None, &[]));
+    let group = add_group(&f, GroupActivationMode::RoundRobin, &[&alice, &bob]);
+    let conv = ready_group(&f, &group);
+
+    let note = f.engine.decline_breakout(conv, alice.id).unwrap();
+    assert_eq!(note.role, MessageRole::System);
+    assert_eq!(note.speaker_character_id, None, "no \"Open the talk\" button on a refusal");
+    assert!(note.text.contains("turned down Alice's offer to talk in private"), "{}", note.text);
+    assert_eq!(messages(&f, conv).iter().filter(|m| m.id == note.id).count(), 1);
+    assert!(f.engine.decline_breakout(conv, Uuid::new_v4()).is_err());
+
+    let sink = Arc::new(VecSink::default());
+    f.engine.react(conv, vec![alice.id], sink.clone()).await.unwrap();
+    let seen = request_text(&f.provider.requests()[0]);
+    assert!(seen.contains("[System note: ") && seen.contains("turned down Alice's offer"), "{seen}");
+}
+
+#[tokio::test]
 async fn a_private_talk_hears_the_group_but_the_group_and_other_talks_never_hear_it() {
     let f = fixture(vec![
         Script::Items(vec![chunk("Hi, you two."), finish("STOP")]),        // group: Alice

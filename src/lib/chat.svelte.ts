@@ -77,6 +77,8 @@ class ChatStore {
   private inFlight = new Set<Uuid>();
   /** A member took the user aside during the running reply: their private talk opens once it ends. */
   private takenAside: { breakoutId: Uuid; characterId: Uuid } | null = null;
+  /** A member offered a private talk and the reply has ended: the user can go with them or stay. */
+  asideOffer = $state<{ breakoutId: Uuid; characterId: Uuid } | null>(null);
   /** The member ended the private talk during the running reply: the group opens once it ends. */
   private leaving = false;
   /** Group conversations that got news (something heard from a private talk, and the answers to it)
@@ -149,6 +151,7 @@ class ChatStore {
     this.stopClip();
     this.session = session;
     this.takenAside = null;
+    this.asideOffer = null;
     this.leaving = false;
     this.unseenRooms = this.unseenRooms.filter((id) => id !== session.conversation.id);
     this.messages = resumed ? resumed.messages : session.messages.map((m) => toUi(m));
@@ -513,7 +516,7 @@ class ChatStore {
         void this.refreshContext();
         const aside = this.takenAside;
         this.takenAside = null;
-        if (aside) void this.followAside(aside.breakoutId, aside.characterId);
+        if (aside && this.conversationId === conversationId) this.asideOffer = aside;
         const leaving = this.leaving;
         this.leaving = false;
         if (leaving) void this.returnToGroup();
@@ -598,11 +601,30 @@ class ChatStore {
     await this.stream(groupId, (onEvent) => api.rejoinGroup(groupId, characterId, onEvent));
   }
 
-  /** A member took the user aside: opens their private talk, where they speak first. */
-  private async followAside(breakoutId: Uuid, characterId: Uuid) {
-    if (!(await this.resume(breakoutId))) return;
-    await goto(`/chat/${breakoutId}`);
-    if (this.conversationId === breakoutId) await this.pickSpeaker(characterId);
+  /** The user goes with the member who offered a private talk: opens it, where they speak first. */
+  async acceptAside() {
+    const offer = this.asideOffer;
+    if (!offer || this.busy) return;
+    this.asideOffer = null;
+    if (!(await this.resume(offer.breakoutId))) return;
+    await goto(`/chat/${offer.breakoutId}`);
+    if (this.conversationId === offer.breakoutId) await this.pickSpeaker(offer.characterId);
+  }
+
+  /** The user stays: the group's story notes it, and the member answers the refusal. */
+  async declineAside() {
+    const offer = this.asideOffer;
+    const groupId = this.conversationId;
+    if (!offer || !groupId || this.busy) return;
+    this.asideOffer = null;
+    try {
+      this.replace(await api.declineBreakout(groupId, offer.characterId));
+    } catch (e) {
+      this.error = errorText(e);
+      return;
+    }
+    this.busy = true;
+    await this.stream(groupId, (onEvent) => api.reactToRoom(groupId, [offer.characterId], onEvent));
   }
 
   // ---- sending and generating ----
@@ -615,6 +637,7 @@ class ChatStore {
     this.input = "";
     this.pendingAttachments = [];
     this.error = "";
+    this.asideOffer = null;
     this.busy = true;
     await this.stream(id, (onEvent) => api.sendMessage(id, text, attachments, onEvent));
   }

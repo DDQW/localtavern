@@ -6,7 +6,7 @@ mod errors;
 pub mod signin;
 pub mod wire;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -27,11 +27,34 @@ pub struct MistralProvider {
     base_url: String,
     /// Context lengths from the last model listing, by model id.
     context_windows: Mutex<HashMap<String, i32>>,
+    /// Models that refused `reasoning_effort`, so later requests leave it out from the start.
+    no_reasoning: Mutex<HashSet<String>>,
 }
 
 impl MistralProvider {
     pub fn new(client: reqwest::Client, api_keys: Arc<dyn ApiKeyProvider>) -> Self {
-        Self { client, api_keys, base_url: DEFAULT_BASE_URL.to_string(), context_windows: Mutex::default() }
+        Self {
+            client,
+            api_keys,
+            base_url: DEFAULT_BASE_URL.to_string(),
+            context_windows: Mutex::default(),
+            no_reasoning: Mutex::default(),
+        }
+    }
+
+    async fn post_completion(&self, key: &str, body: &wire::MistralChatCompletionRequest) -> Result<reqwest::Response, ProviderError> {
+        let json = serde_json::to_string(body)
+            .map_err(|e| ProviderError::unknown(format!("Failed to serialize Mistral request: {e}")))?;
+        let http_request = self
+            .client
+            .post(format!("{}/chat/completions", self.base_url))
+            .bearer_auth(key)
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream")
+            .body(json);
+
+        let response = send(http_request, "Mistral").await?;
+        ensure_success(response, errors::to_provider_error).await
     }
 
     async fn fetch_models(&self) -> Result<Vec<wire::MistralModelInfo>, ProviderError> {
@@ -93,19 +116,18 @@ impl LlmProvider for MistralProvider {
 
     async fn stream_completion(&self, request: LlmRequest) -> Result<ChunkStream, ProviderError> {
         let key = self.require_key()?;
-        let json = serde_json::to_string(&wire::to_mistral_request(&request))
-            .map_err(|e| ProviderError::unknown(format!("Failed to serialize Mistral request: {e}")))?;
+        let known_without = self.no_reasoning.lock().unwrap().contains(&request.model);
+        let first = if known_without { wire::to_mistral_request_without_reasoning(&request) } else { wire::to_mistral_request(&request) };
 
-        let http_request = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(key)
-            .header("content-type", "application/json")
-            .header("accept", "text/event-stream")
-            .body(json);
-
-        let response = send(http_request, "Mistral").await?;
-        let response = ensure_success(response, errors::to_provider_error).await?;
+        // Which models take `reasoning_effort` (and which levels) keeps changing, and an alias like
+        // "-latest" moves between them: when Mistral refuses it, ask again without.
+        let response = match self.post_completion(&key, &first).await {
+            Err(e) if first.reasoning_effort.is_some() && wire::is_reasoning_rejection(&e) => {
+                self.no_reasoning.lock().unwrap().insert(request.model.clone());
+                self.post_completion(&key, &wire::to_mistral_request_without_reasoning(&request)).await?
+            }
+            other => other?,
+        };
         Ok(openai_compat::read_chunks(response.bytes_stream(), "Mistral").boxed())
     }
 }
@@ -116,7 +138,7 @@ mod tests {
     use crate::llm::{LlmGenerationConfig, LlmMessage, LlmRole};
     use crate::providers::error::ProviderErrorKind;
     use crate::providers::keys::StaticApiKey;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn provider(server: &MockServer, key: Option<&str>) -> MistralProvider {
@@ -173,6 +195,32 @@ mod tests {
         assert_eq!(err.kind, ProviderErrorKind::Auth);
         assert!(err.message_is_user_facing);
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refused_reasoning_effort_is_retried_without_it_and_remembered() {
+        let server = MockServer::start().await;
+        let rejection = r#"{"object":"error","message":"Unsupported reasoning level: high","type":"invalid_request_error"}"#;
+        Mock::given(method("POST"))
+            .and(body_string_contains("reasoning_effort"))
+            .respond_with(ResponseTemplate::new(400).set_body_raw(rejection, "application/json"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let ok = "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(ok, "text/event-stream"))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let p = provider(&server, Some("key"));
+
+        for _ in 0..2 {
+            let chunks = p.stream_completion(request("mistral-large-latest", "Hello")).await.unwrap().collect::<Vec<_>>().await;
+            assert_eq!(chunks[0].as_ref().unwrap().delta_text, "Hi");
+        }
+        // One rejected request, one retry, then the second call goes straight out without the field.
+        assert_eq!(server.received_requests().await.unwrap().len(), 3);
     }
 
     #[tokio::test]

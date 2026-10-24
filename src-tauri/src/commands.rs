@@ -175,6 +175,12 @@ pub fn open_breakout(state: State<'_, AppState>, conversation_id: Uuid, characte
     state.engine.open_breakout(conversation_id, character_id)
 }
 
+/// The user said no to a member's offer of a private talk: notes it in the group's story.
+#[tauri::command]
+pub fn decline_breakout(state: State<'_, AppState>, conversation_id: Uuid, character_id: Uuid) -> Result<ChatMessage> {
+    state.engine.decline_breakout(conversation_id, character_id)
+}
+
 #[tauri::command]
 pub async fn pick_speaker(
     state: State<'_, AppState>,

@@ -77,6 +77,16 @@
     </div>
   {/if}
 
+  {#if chat.asideOffer && !chat.busy && chat.session}
+    <div class="speakers" role="group" aria-label="Private talk offer">
+      <span class="muted">
+        {chat.session.characters.find((c) => c.id === chat.asideOffer?.characterId)?.name ?? "Someone"} wants a private word.
+      </span>
+      <button onclick={() => chat.acceptAside()}>Go with them</button>
+      <button class="ghost" onclick={() => chat.declineAside()}>Stay here</button>
+    </div>
+  {/if}
+
   {#if chat.awaitingSpeaker && chat.session}
     <div class="speakers" role="group" aria-label="Who replies?">
       <span class="muted">Who replies?</span>
