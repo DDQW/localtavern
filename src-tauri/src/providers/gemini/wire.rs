@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use crate::llm::{LlmMessage, LlmRequest, LlmRole};
@@ -330,6 +329,7 @@ fn build_parts(message: &LlmMessage) -> Vec<GeminiPart> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use crate::llm::{LlmAttachment, LlmGenerationConfig};
 
     fn request(history: Vec<LlmMessage>, config: LlmGenerationConfig) -> LlmRequest {
