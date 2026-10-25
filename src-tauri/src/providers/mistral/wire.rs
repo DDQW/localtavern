@@ -85,7 +85,9 @@ fn build_request(request: &LlmRequest, with_reasoning: bool) -> MistralChatCompl
         role: if m.role == LlmRole::User { "user" } else { "assistant" }.into(),
         content: match m.reasoning.as_deref().filter(|_| replay_reasoning && m.role == LlmRole::Model) {
             Some(thought) => replayed_content(thought, &m.text),
-            None => m.chat_content(),
+            // The object form of `image_url` is what Mistral actually accepts, even though the docs
+            // show a bare string.
+            None => m.chat_content_as(&["image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp"]),
         },
     }));
     // Mistral rejects a conversation that ends on an assistant turn (the next group member's reply
@@ -161,6 +163,26 @@ mod tests {
             generation_config: config,
             enable_web_search: None,
         }
+    }
+
+    #[test]
+    fn a_user_picture_is_an_image_url_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cat.png");
+        std::fs::write(&path, b"png").unwrap();
+        let mut user = LlmMessage::new(LlmRole::User, "What's this?");
+        user.attachments = Some(vec![crate::llm::LlmAttachment {
+            image_path: path.to_string_lossy().into_owned(),
+            mime_type: "image/png".into(),
+        }]);
+        let mut model = LlmMessage::new(LlmRole::Model, "A cat.");
+        model.attachments = user.attachments.clone();
+
+        let mapped = to_mistral_request(&request(None, vec![user, model], Default::default()));
+        let parts = mapped.messages[0].content.as_array().unwrap();
+        assert_eq!(parts[0]["text"], "What's this?");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,cG5n");
+        assert_eq!(mapped.messages[1].content, "A cat.");
     }
 
     #[test]

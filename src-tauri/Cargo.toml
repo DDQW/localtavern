@@ -1,6 +1,6 @@
 [package]
 name = "localtavern"
-version = "0.2.29"
+version = "0.2.30"
 description = "LocalTavern - local-first AI character chat"
 authors = ["Dominik Wölki"]
 license = "AGPL-3.0-only"
@@ -34,6 +34,7 @@ async-stream = "0.3.6"
 async-trait = "0.1.92"
 bytes = "1.12.1"
 base64 = "0.23.1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp"] }
 percent-encoding = "2.3.2"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "process", "fs"] }
 keyring = "4.2.0"

@@ -319,9 +319,9 @@ fn to_thinking_level(effort: Option<ReasoningEffort>) -> Option<&'static str> {
 fn build_parts(message: &LlmMessage) -> Vec<GeminiPart> {
     let mut parts = vec![GeminiPart::from_text(&message.text)];
     for attachment in message.attachments.iter().flatten() {
-        if let Ok(bytes) = std::fs::read(&attachment.image_path) {
-            let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-            parts.push(GeminiPart::from_inline_data(&attachment.mime_type, encoded));
+        // Gemini documents JPEG, PNG, and WebP. GIF and BMP are re-encoded as PNG.
+        if let Some((mime, encoded)) = attachment.encoded_as(&["image/jpeg", "image/png", "image/webp"]) {
+            parts.push(GeminiPart::from_inline_data(mime, encoded));
         }
     }
     parts

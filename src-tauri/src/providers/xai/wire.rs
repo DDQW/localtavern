@@ -64,7 +64,8 @@ pub fn to_xai_request(request: &LlmRequest) -> XaiChatCompletionRequest {
     }
     messages.extend(request.history.iter().map(|m| XaiMessage {
         role: if m.role == LlmRole::User { "user" } else { "assistant" }.into(),
-        content: m.chat_content(),
+        // xAI only accepts JPEG and PNG. WebP, GIF, and BMP are re-encoded as PNG.
+        content: m.chat_content_as(&["image/jpeg", "image/png"]),
     }));
 
     let cfg = &request.generation_config;
@@ -114,6 +115,25 @@ mod tests {
             },
             enable_web_search: None,
         }
+    }
+
+    #[test]
+    fn a_bmp_is_sent_as_a_png_data_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.bmp");
+        image::RgbImage::from_pixel(1, 1, image::Rgb([1, 2, 3])).save_with_format(&path, image::ImageFormat::Bmp).unwrap();
+        let mut user = LlmMessage::new(LlmRole::User, "What's this?");
+        user.attachments = Some(vec![crate::llm::LlmAttachment {
+            image_path: path.to_string_lossy().into_owned(),
+            mime_type: "image/bmp".into(),
+        }]);
+        let mut request = request("grok-4.6", None);
+        request.history = vec![user];
+
+        let mapped = to_xai_request(&request);
+        let url = mapped.messages[1].content[1]["image_url"]["url"].as_str().unwrap();
+        assert!(url.starts_with("data:image/png;base64,"), "{url}");
+        assert!(!url.contains("image/bmp"));
     }
 
     #[test]

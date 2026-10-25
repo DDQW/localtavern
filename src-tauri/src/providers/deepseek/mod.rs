@@ -62,6 +62,9 @@ impl LlmProvider for DeepSeekProvider {
     }
 
     async fn stream_completion(&self, request: LlmRequest) -> Result<ChunkStream, ProviderError> {
+        if has_user_pictures(&request) && !wire::sees_pictures(&request.model) {
+            return Err(pictures_unsupported(&request.model));
+        }
         let key = self.require_key()?;
         let json = serde_json::to_string(&wire::to_deepseek_request(&request))
             .map_err(|e| ProviderError::unknown(format!("Failed to serialize DeepSeek request: {e}")))?;
@@ -77,6 +80,17 @@ impl LlmProvider for DeepSeekProvider {
         let response = ensure_success(response, errors::to_provider_error).await?;
         Ok(openai_compat::read_chunks(response.bytes_stream(), "DeepSeek").boxed())
     }
+}
+
+fn has_user_pictures(request: &LlmRequest) -> bool {
+    request.history.iter().any(|m| m.role == crate::llm::LlmRole::User && m.attachments.as_ref().is_some_and(|a| !a.is_empty()))
+}
+
+/// Pro, and every other non-Flash model, is text-only. Said up front so the chat doesn't send the
+/// picture, get a text-only reply, and have the model claim it cannot see anything.
+fn pictures_unsupported(model: &str) -> ProviderError {
+    let who = if model.to_ascii_lowercase().contains("pro") { "DeepSeek Pro".to_string() } else { format!("'{model}'") };
+    ProviderError::invalid_request(format!("{who} can't see pictures. Switch to DeepSeek Flash, or remove the picture.")).user_facing()
 }
 
 #[cfg(test)]
@@ -224,5 +238,65 @@ mod tests {
         let err = provider(&server, Some("bad")).list_models().await.unwrap_err();
         assert_eq!(err.kind, ProviderErrorKind::Auth);
         assert_eq!(err.message, "Authentication Fails");
+    }
+
+    fn with_picture(model: &str) -> (tempfile::TempDir, LlmRequest) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cat.png");
+        std::fs::write(&path, b"png").unwrap();
+        let mut message = LlmMessage::new(LlmRole::User, "What's this?");
+        message.attachments = Some(vec![crate::llm::LlmAttachment {
+            image_path: path.to_string_lossy().into_owned(),
+            mime_type: "image/png".into(),
+        }]);
+        let request = LlmRequest {
+            model: model.into(),
+            system_instruction: None,
+            history: vec![message],
+            generation_config: LlmGenerationConfig::default(),
+            enable_web_search: None,
+        };
+        (dir, request)
+    }
+
+    #[tokio::test]
+    async fn pro_refuses_a_picture_before_any_http_call() {
+        let server = MockServer::start().await;
+        let (_dir, request) = with_picture("deepseek-v4-pro");
+        let Err(err) = provider(&server, Some("key")).stream_completion(request).await else {
+            panic!("Pro accepted a picture");
+        };
+        assert_eq!(err.kind, ProviderErrorKind::InvalidRequest);
+        assert!(err.message_is_user_facing);
+        assert_eq!(err.message, "DeepSeek Pro can't see pictures. Switch to DeepSeek Flash, or remove the picture.");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn flash_sends_the_picture_as_an_image_url_part() {
+        let server = MockServer::start().await;
+        let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"A cat.\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (_dir, request) = with_picture("deepseek-flash");
+        let chunks = provider(&server, Some("key"))
+            .stream_completion(request)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(chunks[0].delta_text, "A cat.");
+        let body = String::from_utf8(server.received_requests().await.unwrap()[0].body.clone()).unwrap();
+        assert!(body.contains("\"model\":\"deepseek-flash\""), "{body}");
+        assert!(body.contains("data:image/png;base64,cG5n"), "{body}");
     }
 }

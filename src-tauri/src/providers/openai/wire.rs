@@ -113,7 +113,7 @@ pub fn to_responses_request(request: &LlmRequest) -> ResponsesRequest {
             let (role, part_kind) = if m.role == LlmRole::User { ("user", "input_text") } else { ("assistant", "output_text") };
             let mut content = vec![ResponsesContentPart { kind: part_kind.into(), text: Some(m.text.clone()), image_url: None }];
             if m.role == LlmRole::User {
-                content.extend(m.attachments.iter().flatten().filter_map(|a| a.data_url()).map(|url| ResponsesContentPart {
+                content.extend(m.attachments.iter().flatten().filter_map(|a| a.data_url_as(&["image/jpeg", "image/png", "image/gif", "image/webp"])).map(|url| ResponsesContentPart {
                     kind: "input_image".into(),
                     text: None,
                     image_url: Some(url),

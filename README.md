@@ -16,7 +16,7 @@ It is aimed at the same kind of use as SillyTavern: roleplay with a character, g
 
 The Windows installer is on the [releases](https://github.com/DDQW/localtavern/releases) page:
 
-[LocalTavern 0.2.27 for Windows (x64)](https://github.com/DDQW/localtavern/releases/download/v0.2.27/LocalTavern_0.2.27_x64-setup.exe)
+[LocalTavern 0.2.30 for Windows (x64)](https://github.com/DDQW/localtavern/releases/download/v0.2.30/LocalTavern_0.2.30_x64-setup.exe)
 
 It installs for the current user. Your data is kept in the app's own folder, not in the installer.
 

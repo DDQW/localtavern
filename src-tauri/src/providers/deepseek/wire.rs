@@ -1,6 +1,7 @@
 //! DeepSeek's OpenAI-compatible chat-completions wire types and the request mapper.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::llm::{LlmRequest, LlmRole};
 use crate::models::ReasoningEffort;
@@ -8,7 +9,8 @@ use crate::models::ReasoningEffort;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeepSeekMessage {
     pub role: String,
-    pub content: String,
+    /// A string, or — when a user turn carries pictures — a list of text and `image_url` parts.
+    pub content: Value,
 }
 
 /// Requests usage accounting on a trailing SSE chunk.
@@ -67,14 +69,24 @@ pub struct DeepSeekListModelsResponse {
     pub data: Option<Vec<DeepSeekModelInfo>>,
 }
 
+/// Flash (including the retired `deepseek-v4-flash` and vision-exp names, which DeepSeek still
+/// serves as Flash) accepts images. Pro does not, and must not be matched by a looser check.
+pub fn sees_pictures(model: &str) -> bool {
+    let id = model.to_ascii_lowercase();
+    !id.contains("pro") && (id.contains("flash") || id.contains("vision"))
+}
+
 pub fn to_deepseek_request(request: &LlmRequest) -> DeepSeekChatCompletionRequest {
     let mut messages = Vec::new();
     if let Some(system) = request.system_instruction.as_deref().filter(|s| !s.is_empty()) {
-        messages.push(DeepSeekMessage { role: "system".into(), content: system.into() });
+        messages.push(DeepSeekMessage { role: "system".into(), content: Value::from(system) });
     }
+    // User pictures become `image_url` parts; a model turn's pictures are left out. DeepSeek
+    // rejects images on system or assistant messages, and only Flash can see the user ones.
     messages.extend(request.history.iter().map(|m| DeepSeekMessage {
         role: if m.role == LlmRole::User { "user" } else { "assistant" }.into(),
-        content: m.text.clone(),
+        // Flash accepts JPEG, PNG, GIF, and WebP. A BMP (or anything else) is re-encoded as PNG.
+        content: m.chat_content_as(&["image/jpeg", "image/png", "image/gif", "image/webp"]),
     }));
 
     let cfg = &request.generation_config;
@@ -125,7 +137,8 @@ mod tests {
     fn system_instruction_becomes_a_leading_system_message() {
         let mapped = to_deepseek_request(&request(Some("Be helpful."), hi(), Default::default()));
         assert_eq!(mapped.messages.len(), 2);
-        assert_eq!((mapped.messages[0].role.as_str(), mapped.messages[0].content.as_str()), ("system", "Be helpful."));
+        assert_eq!(mapped.messages[0].role, "system");
+        assert_eq!(mapped.messages[0].content, "Be helpful.");
         assert_eq!(mapped.messages[1].role, "user");
     }
 
@@ -182,6 +195,36 @@ mod tests {
             let mapped = to_deepseek_request(&request(None, hi(), config));
             assert_eq!(mapped.thinking.as_ref().map(|t| t.kind.as_str()), thinking, "{effort:?}");
             assert_eq!(mapped.reasoning_effort.as_deref(), level, "{effort:?}");
+        }
+    }
+
+    #[test]
+    fn a_user_picture_becomes_an_image_url_part_and_a_model_picture_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cat.png");
+        std::fs::write(&path, b"png").unwrap();
+        let attachment = crate::llm::LlmAttachment { image_path: path.to_string_lossy().into_owned(), mime_type: "image/png".into() };
+
+        let mut user = LlmMessage::new(LlmRole::User, "What's this?");
+        user.attachments = Some(vec![attachment.clone()]);
+        let mut model = LlmMessage::new(LlmRole::Model, "A cat.");
+        model.attachments = Some(vec![attachment]);
+
+        let mapped = to_deepseek_request(&request(None, vec![user, model], Default::default()));
+        let parts = mapped.messages[0].content.as_array().unwrap();
+        assert_eq!(parts[0]["text"], "What's this?");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,cG5n");
+        assert_eq!(mapped.messages[1].content, "A cat.");
+    }
+
+    #[test]
+    fn only_flash_and_vision_names_see_pictures() {
+        for model in ["deepseek-flash", "deepseek-v4-flash", "DeepSeek-V4-Flash-Vision-Exp"] {
+            assert!(sees_pictures(model), "{model}");
+        }
+        for model in ["deepseek-v4-pro", "deepseek-pro", "deepseek-chat", "deepseek-reasoner"] {
+            assert!(!sees_pictures(model), "{model}");
         }
     }
 
