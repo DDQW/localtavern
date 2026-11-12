@@ -225,8 +225,9 @@ struct AssembleOptions<'a> {
     returning: bool,
     /// A private talk's reply may end the talk and go back to the group (`[back]` tag).
     offer_back: bool,
-    /// The user discarded a reply and wants another. Earlier reasoning is left out, and the model
-    /// is told the last attempt was thrown away, so it doesn't rewrite the same plan.
+    /// The user discarded a reply and wants another. That reply is already absent from the history.
+    /// Earlier turns keep their reasoning, so the model still remembers what happened, and a note
+    /// asks for a different reply without undoing the scene.
     another_take: bool,
 }
 
@@ -1628,9 +1629,6 @@ present, keep it as its own final paragraph, still naming whose details they are
         if let Some(speaker) = options.speaker {
             pctx = pctx.with_speaker(speaker);
         }
-        if options.another_take {
-            pctx = pctx.with_include_reasoning(false);
-        }
         if let Some(text) = world_text.as_deref() {
             pctx = pctx.with_world_state_text(text);
         }
@@ -1742,7 +1740,10 @@ present, keep it as its own final paragraph, still naming whose details they are
             }
         }
         if options.another_take {
-            request.history.push(LlmMessage::new(LlmRole::User, ins.note("The previous reply was discarded. Write a different one.")));
+            request.history.push(LlmMessage::new(
+                LlmRole::User,
+                ins.note("The previous reply was discarded. Write a different reply. Everything that already happened before it still stands."),
+            ));
         }
         Ok(request)
     }

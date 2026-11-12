@@ -934,7 +934,7 @@ async fn swiping_right_past_the_last_alternate_generates_a_new_one_and_left_goes
 }
 
 #[tokio::test]
-async fn retrying_a_deleted_reply_does_not_replay_earlier_reasoning() {
+async fn retrying_a_deleted_reply_keeps_earlier_reasoning() {
     let first = LlmResponseChunk {
         delta_text: "Hello.".into(),
         thought_delta_text: "I'll greet them and offer ale next.".into(),
@@ -960,9 +960,11 @@ async fn retrying_a_deleted_reply_does_not_replay_earlier_reasoning() {
 
     let retry = f.provider.requests();
     let again = &retry[2];
-    assert!(again.history.iter().all(|m| m.reasoning.is_none()), "the discarded plan is not sent back");
-    assert!(again.history.iter().any(|m| m.text == "Hello."));
-    assert!(again.history.last().unwrap().text.contains("discarded"));
+    let prior = again.history.iter().find(|m| m.text == "Hello.").unwrap();
+    assert_eq!(prior.reasoning.as_deref(), Some("I'll greet them and offer ale next."), "earlier turns still carry what happened");
+    assert!(again.history.iter().all(|m| m.text != "Have the ale."), "the discarded reply itself stays out");
+    let note = again.history.last().unwrap().text.as_str();
+    assert!(note.contains("discarded") && note.contains("still stands"), "{note}");
 }
 
 #[tokio::test]
