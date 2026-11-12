@@ -117,21 +117,31 @@ impl LlmProvider for MistralProvider {
 
     async fn stream_completion(&self, request: LlmRequest) -> Result<ChunkStream, ProviderError> {
         let key = self.require_key()?;
-        let known_without = self.no_reasoning.lock().unwrap().contains(&request.model);
-        let first = if known_without { wire::to_mistral_request_without_reasoning(&request) } else { wire::to_mistral_request(&request) };
+        let mut with_reasoning = !self.no_reasoning.lock().unwrap().contains(&request.model);
+        // Magistral only emits a trace when its thinking template is still in the system message.
+        // A plain string replaces that prompt. If the endpoint refuses the template, ask again
+        // without it rather than failing the reply.
+        let mut with_template = wire::is_magistral(&request.model);
 
         // Which models take `reasoning_effort` (and which levels) keeps changing, and an alias like
         // "-latest" moves between them: when Mistral refuses the field, ask again without and
         // remember that. A refusal that names other accepted levels (Large 4 rejecting "none")
         // is only this call — remembering it would turn reasoning off for the rest of the session.
-        let response = match self.post_completion(&key, &first).await {
-            Err(e) if first.reasoning_effort.is_some() && wire::is_reasoning_rejection(&e) => {
-                if !wire::rejection_names_accepted_levels(&e.message) {
-                    self.no_reasoning.lock().unwrap().insert(request.model.clone());
+        let response = loop {
+            let body = wire::completion_body(&request, with_reasoning, with_template);
+            match self.post_completion(&key, &body).await {
+                Ok(response) => break response,
+                Err(e) if with_reasoning && body.reasoning_effort.is_some() && wire::is_reasoning_rejection(&e) => {
+                    if !wire::rejection_names_accepted_levels(&e.message) {
+                        self.no_reasoning.lock().unwrap().insert(request.model.clone());
+                    }
+                    with_reasoning = false;
                 }
-                self.post_completion(&key, &wire::to_mistral_request_without_reasoning(&request)).await?
+                Err(e) if with_template && e.kind == super::error::ProviderErrorKind::InvalidRequest => {
+                    with_template = false;
+                }
+                Err(e) => return Err(e),
             }
-            other => other?,
         };
         Ok(think::separate_think_tags(openai_compat::read_chunks(response.bytes_stream(), "Mistral")).boxed())
     }
@@ -271,6 +281,63 @@ mod tests {
         let thought: String = chunks.iter().map(|c| c.thought_delta_text.as_str()).collect();
         assert_eq!(text, "Hi  there");
         assert_eq!(thought, "because");
+    }
+
+    #[tokio::test]
+    async fn magistral_asks_with_its_thinking_template_and_surfaces_the_trace() {
+        let server = MockServer::start().await;
+        let sse = concat!(
+            r#"data: {"choices":[{"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"She reaches for the mug."}]}]}}]}"#,
+            "\n\n",
+            r#"data: {"choices":[{"delta":{"content":"Here."},"finish_reason":"stop"}]}"#,
+            "\n\n",
+            "data: [DONE]\n\n",
+        );
+        Mock::given(method("POST"))
+            .and(body_string_contains("HOW YOU SHOULD THINK"))
+            .and(body_string_contains("\"reasoning_effort\":\"high\""))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let p = provider(&server, Some("key"));
+        let mut req = request("magistral-medium-latest", "Hello");
+        req.system_instruction = Some("Stay in character.".into());
+
+        let chunks = p.stream_completion(req).await.unwrap().collect::<Vec<_>>().await;
+        let chunks: Vec<_> = chunks.into_iter().collect::<Result<Vec<_>, _>>().unwrap();
+        let thought: String = chunks.iter().map(|c| c.thought_delta_text.as_str()).collect();
+        let text: String = chunks.iter().map(|c| c.delta_text.as_str()).collect();
+        assert_eq!(thought, "She reaches for the mug.");
+        assert_eq!(text, "Here.");
+    }
+
+    #[tokio::test]
+    async fn a_refused_magistral_template_is_retried_as_a_plain_system_prompt() {
+        let server = MockServer::start().await;
+        let rejection = r#"{"object":"error","message":"System message content is invalid","type":"invalid_request_error"}"#;
+        Mock::given(method("POST"))
+            .and(body_string_contains("HOW YOU SHOULD THINK"))
+            .respond_with(ResponseTemplate::new(400).set_body_raw(rejection, "application/json"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let ok = "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(ok, "text/event-stream"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let p = provider(&server, Some("key"));
+        let mut req = request("magistral-small-latest", "Hello");
+        req.system_instruction = Some("Stay in character.".into());
+
+        let chunks = p.stream_completion(req).await.unwrap().collect::<Vec<_>>().await;
+        assert_eq!(chunks[0].as_ref().unwrap().delta_text, "Hi");
+        let second = String::from_utf8(server.received_requests().await.unwrap()[1].body.clone()).unwrap();
+        assert!(second.contains("Stay in character."), "{second}");
+        assert!(!second.contains("HOW YOU SHOULD THINK"), "{second}");
+        assert!(second.contains("reasoning_effort"), "{second}");
     }
 
     #[tokio::test]

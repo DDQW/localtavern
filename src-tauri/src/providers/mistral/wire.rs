@@ -59,12 +59,17 @@ pub struct MistralListModelsResponse {
 const NEXT_REPLY_NOTE: &str = "[System note: Write the next reply.]";
 
 pub fn to_mistral_request(request: &LlmRequest) -> MistralChatCompletionRequest {
-    build_request(request, true)
+    completion_body(request, true, true)
 }
 
-/// The same request for a model that turned out not to take `reasoning_effort`.
-pub fn to_mistral_request_without_reasoning(request: &LlmRequest) -> MistralChatCompletionRequest {
-    build_request(request, false)
+/// `with_reasoning` sends `reasoning_effort` when this model accepts one. `with_template` keeps
+/// Magistral's thinking template beside the app's system prompt.
+pub fn completion_body(request: &LlmRequest, with_reasoning: bool, with_template: bool) -> MistralChatCompletionRequest {
+    build_request(request, with_reasoning, with_template)
+}
+
+pub fn is_magistral(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("magistral")
 }
 
 /// Whether an error is Mistral refusing the reasoning setting (an unsupported level, or the field on
@@ -82,10 +87,11 @@ pub fn rejection_names_accepted_levels(message: &str) -> bool {
     msg.contains("supported value") || msg.contains("allowed value") || msg.contains("must be one of") || msg.contains("valid value")
 }
 
-fn build_request(request: &LlmRequest, with_reasoning: bool) -> MistralChatCompletionRequest {
+fn build_request(request: &LlmRequest, with_reasoning: bool, with_template: bool) -> MistralChatCompletionRequest {
     let mut messages = Vec::new();
     if let Some(system) = request.system_instruction.as_deref().filter(|s| !s.is_empty()) {
-        messages.push(MistralMessage { role: "system".into(), content: Value::from(system) });
+        let content = if with_template && is_magistral(&request.model) { magistral_system(system) } else { Value::from(system) };
+        messages.push(MistralMessage { role: "system".into(), content });
     }
     let cfg = &request.generation_config;
     let reasoning_effort = to_reasoning_effort(&request.model, cfg.reasoning_effort).filter(|_| with_reasoning);
@@ -116,6 +122,27 @@ fn build_request(request: &LlmRequest, with_reasoning: bool) -> MistralChatCompl
         max_tokens: cfg.max_output_tokens,
         stop: cfg.stop_sequences.clone(),
     }
+}
+
+/// Magistral thinks by continuing an open thinking chunk in its system prompt. A plain string
+/// replaces that prompt, and the trace is never returned, so the Reasoning fold stays empty.
+/// The app's instructions stay; the template from Mistral's native-reasoning docs follows them.
+/// The thinking chunk is left open on purpose: `closed: true` would finish it instead of letting
+/// the model continue.
+fn magistral_system(instructions: &str) -> Value {
+    const LEAD: &str = "\
+# HOW YOU SHOULD THINK AND ANSWER
+
+First draft your thinking process (inner monologue) until you arrive at a response. Write both your thoughts and the response in the same language as the input.
+
+Your thinking process must follow the template below:";
+    const PLACEHOLDER: &str = "\
+Your thoughts or/and draft, like working through an exercise on scratch paper. Be as casual and as long as you want until you are confident to generate the response to the user.";
+    serde_json::json!([
+        {"type": "text", "text": format!("{instructions}\n\n{LEAD}")},
+        {"type": "thinking", "thinking": [{"type": "text", "text": PLACEHOLDER}]},
+        {"type": "text", "text": "Here, provide a self-contained response."},
+    ])
 }
 
 /// Mistral wants an earlier turn's reasoning replayed as a `thinking` chunk ahead of its reply, and
@@ -275,6 +302,25 @@ mod tests {
             r.model = model.into();
             assert_eq!(to_mistral_request(&r).reasoning_effort.as_deref(), expected, "{model} {effort:?}");
         }
+    }
+
+    #[test]
+    fn magistral_keeps_a_thinking_template_beside_the_app_prompt() {
+        let mut r = request(Some("Stay in character."), vec![LlmMessage::new(LlmRole::User, "hi")], LlmGenerationConfig::default());
+        r.model = "magistral-medium-latest".into();
+        let mapped = to_mistral_request(&r);
+        let parts = mapped.messages[0].content.as_array().unwrap();
+        assert_eq!(parts.len(), 3);
+        assert!(parts[0]["text"].as_str().unwrap().contains("Stay in character."));
+        assert!(parts[0]["text"].as_str().unwrap().contains("HOW YOU SHOULD THINK"));
+        assert_eq!(parts[1]["type"], "thinking");
+        assert!(parts[1].get("closed").is_none(), "an open chunk is the prefix Magistral continues");
+        assert_eq!(parts[2]["text"], "Here, provide a self-contained response.");
+        assert_eq!(mapped.reasoning_effort.as_deref(), Some("high"));
+
+        // Other Mistral models keep a plain system string. Their thinking comes from reasoning_effort.
+        let plain = to_mistral_request(&request(Some("Stay in character."), vec![LlmMessage::new(LlmRole::User, "hi")], LlmGenerationConfig::default()));
+        assert_eq!(plain.messages[0].content, "Stay in character.");
     }
 
     #[test]
