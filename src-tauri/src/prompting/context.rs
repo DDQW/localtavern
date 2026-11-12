@@ -20,6 +20,9 @@ pub struct PromptAssemblyContext<'a> {
     pub scenario: Option<&'a str>,
     /// The app's own texts (labels, system-note wrapper), in the user's wording.
     pub instructions: &'a Instructions,
+    /// Earlier replies' hidden reasoning. Left out when the user discarded a reply and wants a
+    /// different one: replaying that trace makes the model repeat the plan it already settled on.
+    pub include_reasoning: bool,
 }
 
 impl<'a> PromptAssemblyContext<'a> {
@@ -37,7 +40,13 @@ impl<'a> PromptAssemblyContext<'a> {
             world_state_text: None,
             scenario: None,
             instructions: instructions::defaults(),
+            include_reasoning: true,
         }
+    }
+
+    pub fn with_include_reasoning(mut self, include: bool) -> Self {
+        self.include_reasoning = include;
+        self
     }
 
     pub fn with_persona(mut self, persona: &'a Persona) -> Self {
