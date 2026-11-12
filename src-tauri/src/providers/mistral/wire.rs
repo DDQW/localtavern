@@ -129,8 +129,9 @@ fn replayed_content(thought: &str, reply: &str) -> Value {
     ])
 }
 
-/// The hybrid models (Small, Medium) only think when asked (`reasoning_effort`), and take just "high" or "none".
+/// The hybrid models (Small, Medium, Magistral) only think when asked (`reasoning_effort`), and take just "high" or "none".
 /// Unset asks for "high", so a reasoning-capable model shows its thinking without a preset change.
+/// Leaving the field off Magistral is read as reasoning off, and the trace then shows up inside the reply.
 /// Large 4 (and `mistral-large-latest`, which now points at it) takes `low` / `medium` / `high` and
 /// rejects `none` — `low` is the level that used to be called `none`.
 /// Other models (Ministral, Codestral, Large 3, older dated ids) get nothing, since they don't take the field.
@@ -156,6 +157,8 @@ fn to_reasoning_effort(model: &str, effort: Option<ReasoningEffort>) -> Option<&
             Some(ReasoningEffort::High) | None => "high",
         });
     }
+    // Magistral small and medium, including the dated ids and `-latest`. Low and medium are not
+    // levels it accepts, so anything short of off is "high".
     const HYBRID: [&str; 5] = [
         "mistral-small-latest",
         "mistral-small-2603",
@@ -163,10 +166,10 @@ fn to_reasoning_effort(model: &str, effort: Option<ReasoningEffort>) -> Option<&
         "mistral-medium-3-5",
         "mistral-medium-2604",
     ];
-    if !HYBRID.iter().any(|id| model.starts_with(id)) {
-        return None;
+    if model.starts_with("magistral") || HYBRID.iter().any(|id| model.starts_with(id)) {
+        return Some(if effort == Some(ReasoningEffort::Off) { "none" } else { "high" });
     }
-    Some(if effort == Some(ReasoningEffort::Off) { "none" } else { "high" })
+    None
 }
 
 #[cfg(test)]
@@ -266,6 +269,10 @@ mod tests {
             ("mistral-large-latest", Some(Off), Some("low")), // Large 4 rejects "none"
             ("mistral-large-2512", None, None), // Large 3
             ("mistral-small-latest", Some(Off), Some("none")),
+            ("magistral-small-latest", None, Some("high")),
+            ("magistral-medium-2509", Some(Low), Some("high")),
+            ("magistral-medium-latest", Some(Medium), Some("high")),
+            ("magistral-small-2506", Some(Off), Some("none")),
             ("zai-glm-5-3", Some(Off), None), // GLM rejects "none"
             ("zai-glm-5-3", Some(Low), Some("low")),
             ("zai-glm-5-3", Some(High), Some("max")),
@@ -296,6 +303,13 @@ mod tests {
 
         let off = LlmGenerationConfig { reasoning_effort: Some(ReasoningEffort::Off), ..Default::default() };
         assert_eq!(to_mistral_request(&request(None, history.clone(), off.clone())).messages[1].content, "Alice: Hello!");
+
+        let mut magistral = request(None, history.clone(), LlmGenerationConfig::default());
+        magistral.model = "magistral-medium-latest".into();
+        assert_eq!(to_mistral_request(&magistral).messages[1].content[0]["type"], "thinking");
+        let mut magistral_off = request(None, history.clone(), off.clone());
+        magistral_off.model = "magistral-small-2506".into();
+        assert_eq!(to_mistral_request(&magistral_off).messages[1].content, "Alice: Hello!");
 
         // Large 4 has no "none". Off is "low", which still thinks, so the trace stays on the turn.
         let mut large = request(None, history.clone(), off);
