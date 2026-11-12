@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::llm::{LlmRequest, LlmRole};
-use crate::models::ReasoningEffort;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeepSeekMessage {
@@ -110,6 +109,7 @@ pub fn to_deepseek_request(request: &LlmRequest) -> DeepSeekChatCompletionReques
 mod tests {
     use super::*;
     use crate::llm::{LlmGenerationConfig, LlmMessage};
+    use crate::models::ReasoningEffort;
 
     fn request(system: Option<&str>, history: Vec<LlmMessage>, config: LlmGenerationConfig) -> LlmRequest {
         LlmRequest {

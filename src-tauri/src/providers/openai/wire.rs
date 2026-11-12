@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::llm::{LlmRequest, LlmRole};
-use crate::models::ReasoningEffort;
 
 /// `type` is "input_text" for user turns and "output_text" for assistant turns - the Responses API
 /// rejects the wrong one.
@@ -141,6 +140,7 @@ pub fn to_responses_request(request: &LlmRequest) -> ResponsesRequest {
 mod tests {
     use super::*;
     use crate::llm::{LlmGenerationConfig, LlmMessage};
+    use crate::models::ReasoningEffort;
 
     fn request(effort: Option<ReasoningEffort>) -> LlmRequest {
         LlmRequest {

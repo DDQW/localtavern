@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::llm::{LlmMessage, LlmRequest, LlmRole};
-use crate::models::ReasoningEffort;
 
 // ---- options ----
 
@@ -326,6 +325,7 @@ mod tests {
     use super::*;
     use base64::Engine;
     use crate::llm::{LlmAttachment, LlmGenerationConfig};
+    use crate::models::ReasoningEffort;
 
     fn request(history: Vec<LlmMessage>, config: LlmGenerationConfig) -> LlmRequest {
         LlmRequest {

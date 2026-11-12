@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::llm::{LlmRequest, LlmRole};
-use crate::models::ReasoningEffort;
 
 // ---- options ----
 
@@ -171,6 +170,7 @@ pub fn to_ollama_request(request: &LlmRequest, context_size: Option<i32>) -> Oll
 mod tests {
     use super::*;
     use crate::llm::{LlmGenerationConfig, LlmMessage};
+    use crate::models::ReasoningEffort;
 
     fn request(system: Option<&str>, history: Vec<LlmMessage>, config: LlmGenerationConfig) -> LlmRequest {
         LlmRequest {

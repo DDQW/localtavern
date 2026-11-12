@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::llm::{LlmRequest, LlmRole};
-use crate::models::ReasoningEffort;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct XaiMessage {
@@ -91,6 +90,7 @@ fn supports_reasoning_effort(model: &str) -> bool {
 mod tests {
     use super::*;
     use crate::llm::{LlmGenerationConfig, LlmMessage};
+    use crate::models::ReasoningEffort;
 
     fn request(model: &str, effort: Option<ReasoningEffort>) -> LlmRequest {
         LlmRequest {

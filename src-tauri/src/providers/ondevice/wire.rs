@@ -5,7 +5,6 @@
 use serde::Serialize;
 
 use crate::llm::{LlmRequest, LlmRole};
-use crate::models::ReasoningEffort;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Message {
@@ -74,6 +73,7 @@ pub fn to_request(request: &LlmRequest) -> ChatRequest {
 mod tests {
     use super::*;
     use crate::llm::{LlmAttachment, LlmGenerationConfig, LlmMessage};
+    use crate::models::ReasoningEffort;
 
     fn request(history: Vec<LlmMessage>, config: LlmGenerationConfig) -> LlmRequest {
         LlmRequest {
