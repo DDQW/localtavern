@@ -54,9 +54,9 @@ pub struct XaiListModelsResponse {
     pub data: Option<Vec<XaiModelInfo>>,
 }
 
-/// grok-build-* is a coding-agent model that takes no `reasoning_effort` at all, and xAI rejects
-/// "none" on grok-4.5+, so "Off" means: omit the field. An unset level defaults to "high" (what
-/// Zed does too) - left to xAI's own default the Grok 4.x models reason noticeably less.
+/// grok-build-* is a coding-agent model that takes no `reasoning_effort` at all. Grok 4.5 and
+/// later reject "none" and cannot turn reasoning off; omitting the field uses their default,
+/// which is "high", so Off is sent as "low". An unset level is "high".
 pub fn to_xai_request(request: &LlmRequest) -> XaiChatCompletionRequest {
     let mut messages = Vec::new();
     if let Some(system) = request.system_instruction.as_deref().filter(|s| !s.is_empty()) {
@@ -71,10 +71,9 @@ pub fn to_xai_request(request: &LlmRequest) -> XaiChatCompletionRequest {
     let cfg = &request.generation_config;
     let reasoning_effort = if supports_reasoning_effort(&request.model) {
         match cfg.reasoning_effort {
-            Some(ReasoningEffort::Low) => Some("low".to_string()),
+            Some(ReasoningEffort::Off) | Some(ReasoningEffort::Low) => Some("low".to_string()),
             Some(ReasoningEffort::Medium) => Some("medium".to_string()),
             Some(ReasoningEffort::High) | None => Some("high".to_string()),
-            Some(ReasoningEffort::Off) => None,
         }
     } else {
         None
@@ -153,7 +152,7 @@ mod tests {
             (Some(ReasoningEffort::Low), Some("low")),
             (Some(ReasoningEffort::Medium), Some("medium")),
             (Some(ReasoningEffort::High), Some("high")),
-            (Some(ReasoningEffort::Off), None), // xAI rejects "none" on 4.5+, so omit
+            (Some(ReasoningEffort::Off), Some("low")), // xAI rejects "none"; omitting the field is "high"
             (None, Some("high")), // unset defaults to high rather than xAI's lower default
         ] {
             let mapped = to_xai_request(&request("grok-4.6", effort));
@@ -164,7 +163,7 @@ mod tests {
     #[test]
     fn omits_reasoning_effort_for_grok_build_models() {
         for model in ["grok-build-0.1", "GROK-BUILD-2"] {
-            for effort in [Some(ReasoningEffort::High), None] {
+            for effort in [Some(ReasoningEffort::High), Some(ReasoningEffort::Off), None] {
                 assert!(to_xai_request(&request(model, effort)).reasoning_effort.is_none(), "{model} {effort:?}");
             }
         }

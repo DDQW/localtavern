@@ -134,17 +134,19 @@ fn replayed_content(thought: &str, reply: &str) -> Value {
 /// Leaving the field off Magistral is read as reasoning off, and the trace then shows up inside the reply.
 /// Large 4 (and `mistral-large-latest`, which now points at it) takes `low` / `medium` / `high` and
 /// rejects `none` — `low` is the level that used to be called `none`.
-/// Other models (Ministral, Codestral, Large 3, older dated ids) get nothing, since they don't take the field.
+/// Other models get nothing, since they don't take the field: Ministral, Codestral, Devstral,
+/// Large 3 and older dated ids, and DeepSeek V4.1 Flash (`deepseek-v4-1-flash-1017`) as hosted here.
 fn to_reasoning_effort(model: &str, effort: Option<ReasoningEffort>) -> Option<&'static str> {
     let model = model.to_ascii_lowercase();
-    // Z.ai GLM takes low/high/max but not "none".
+    // Z.ai GLM 5.2, 5.3, and 5.3 Flash take low/high/max and reject "none". Off is the lowest
+    // level they will accept. Leaving the field out keeps the model's own effort, and the reply
+    // is a thinking chunk either way.
     if model.starts_with("zai-glm") {
-        return match effort {
-            Some(ReasoningEffort::Off) => None,
-            Some(ReasoningEffort::Low) => Some("low"),
-            Some(ReasoningEffort::Medium) | None => Some("high"),
-            Some(ReasoningEffort::High) => Some("max"),
-        };
+        return Some(match effort {
+            Some(ReasoningEffort::Off) | Some(ReasoningEffort::Low) => "low",
+            Some(ReasoningEffort::Medium) | None => "high",
+            Some(ReasoningEffort::High) => "max",
+        });
     }
     // `mistral-large-4` also matches `mistral-large-4-0`. `mistral-large-2610` is the dated id of
     // the same 26.10 release. If an alias still points at Large 3, which rejects the field, the
@@ -273,7 +275,12 @@ mod tests {
             ("magistral-medium-2509", Some(Low), Some("high")),
             ("magistral-medium-latest", Some(Medium), Some("high")),
             ("magistral-small-2506", Some(Off), Some("none")),
-            ("zai-glm-5-3", Some(Off), None), // GLM rejects "none"
+            ("zai-glm-5-3", Some(Off), Some("low")), // GLM rejects "none"
+            ("zai-glm-5-3-flash", Some(Medium), Some("high")),
+            ("zai-glm-5-2", Some(High), Some("max")),
+            ("deepseek-v4-1-flash-1017", Some(High), None),
+            ("devstral-2512", Some(High), None),
+            ("ministral-14b-2512", Some(High), None),
             ("zai-glm-5-3", Some(Low), Some("low")),
             ("zai-glm-5-3", Some(High), Some("max")),
             ("ministral-8b-latest", Some(High), None),
