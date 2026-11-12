@@ -129,38 +129,19 @@ fn replayed_content(thought: &str, reply: &str) -> Value {
     ])
 }
 
-/// The hybrid models (Small, Medium, Magistral) only think when asked (`reasoning_effort`), and take just "high" or "none".
-/// Unset asks for "high", so a reasoning-capable model shows its thinking without a preset change.
-/// Leaving the field off Magistral is read as reasoning off, and the trace then shows up inside the reply.
-/// Large 4 (and `mistral-large-latest`, which now points at it) takes `low` / `medium` / `high` and
-/// rejects `none` — `low` is the level that used to be called `none`.
+/// Every reasoning model is asked for the strongest level it accepts. A preset cannot lower it.
+/// GLM's top is "max". Large 4, Small, Medium, and Magistral top out at "high" and reject anything above it.
 /// Other models get nothing, since they don't take the field: Ministral, Codestral, Devstral,
 /// Large 3 and older dated ids, and DeepSeek V4.1 Flash (`deepseek-v4-1-flash-1017`) as hosted here.
-fn to_reasoning_effort(model: &str, effort: Option<ReasoningEffort>) -> Option<&'static str> {
+fn to_reasoning_effort(model: &str, _effort: Option<ReasoningEffort>) -> Option<&'static str> {
     let model = model.to_ascii_lowercase();
-    // Z.ai GLM 5.2, 5.3, and 5.3 Flash take low/high/max and reject "none". Off is the lowest
-    // level they will accept. Leaving the field out keeps the model's own effort, and the reply
-    // is a thinking chunk either way.
     if model.starts_with("zai-glm") {
-        return Some(match effort {
-            Some(ReasoningEffort::Off) | Some(ReasoningEffort::Low) => "low",
-            Some(ReasoningEffort::Medium) | None => "high",
-            Some(ReasoningEffort::High) => "max",
-        });
+        return Some("max");
     }
     // `mistral-large-4` also matches `mistral-large-4-0`. `mistral-large-2610` is the dated id of
     // the same 26.10 release. If an alias still points at Large 3, which rejects the field, the
     // provider retries that call without it (see `is_reasoning_rejection`).
     const LARGE_4: [&str; 3] = ["mistral-large-latest", "mistral-large-4", "mistral-large-2610"];
-    if LARGE_4.iter().any(|id| model.starts_with(id)) {
-        return Some(match effort {
-            Some(ReasoningEffort::Off) | Some(ReasoningEffort::Low) => "low",
-            Some(ReasoningEffort::Medium) => "medium",
-            Some(ReasoningEffort::High) | None => "high",
-        });
-    }
-    // Magistral small and medium, including the dated ids and `-latest`. Low and medium are not
-    // levels it accepts, so anything short of off is "high".
     const HYBRID: [&str; 5] = [
         "mistral-small-latest",
         "mistral-small-2603",
@@ -168,8 +149,11 @@ fn to_reasoning_effort(model: &str, effort: Option<ReasoningEffort>) -> Option<&
         "mistral-medium-3-5",
         "mistral-medium-2604",
     ];
-    if model.starts_with("magistral") || HYBRID.iter().any(|id| model.starts_with(id)) {
-        return Some(if effort == Some(ReasoningEffort::Off) { "none" } else { "high" });
+    if LARGE_4.iter().any(|id| model.starts_with(id))
+        || model.starts_with("magistral")
+        || HYBRID.iter().any(|id| model.starts_with(id))
+    {
+        return Some("high");
     }
     None
 }
@@ -266,23 +250,23 @@ mod tests {
             ("mistral-medium-3-5", Some(Medium), Some("high")),
             ("mistral-large-2610", Some(High), Some("high")),
             ("mistral-large-4-0", None, Some("high")),
-            ("mistral-large-4", Some(Low), Some("low")),
-            ("mistral-large-4", Some(Medium), Some("medium")),
-            ("mistral-large-latest", Some(Off), Some("low")), // Large 4 rejects "none"
+            ("mistral-large-4", Some(Low), Some("high")),
+            ("mistral-large-4", Some(Medium), Some("high")),
+            ("mistral-large-latest", Some(Off), Some("high")),
             ("mistral-large-2512", None, None), // Large 3
-            ("mistral-small-latest", Some(Off), Some("none")),
+            ("mistral-small-latest", Some(Off), Some("high")),
             ("magistral-small-latest", None, Some("high")),
             ("magistral-medium-2509", Some(Low), Some("high")),
             ("magistral-medium-latest", Some(Medium), Some("high")),
-            ("magistral-small-2506", Some(Off), Some("none")),
-            ("zai-glm-5-3", Some(Off), Some("low")), // GLM rejects "none"
-            ("zai-glm-5-3-flash", Some(Medium), Some("high")),
+            ("magistral-small-2506", Some(Off), Some("high")),
+            ("zai-glm-5-3", Some(Off), Some("max")),
+            ("zai-glm-5-3-flash", Some(Medium), Some("max")),
             ("zai-glm-5-2", Some(High), Some("max")),
             ("deepseek-v4-1-flash-1017", Some(High), None),
             ("devstral-2512", Some(High), None),
             ("ministral-14b-2512", Some(High), None),
-            ("zai-glm-5-3", Some(Low), Some("low")),
-            ("zai-glm-5-3", Some(High), Some("max")),
+            ("zai-glm-5-3", Some(Low), Some("max")),
+            ("zai-glm-5-3", None, Some("max")),
             ("ministral-8b-latest", Some(High), None),
             ("codestral-latest", None, None),
             ("mistral-small-2506", Some(High), None),
@@ -308,21 +292,21 @@ mod tests {
             ])
         );
 
+        // Off is still the top level, so the earlier trace stays on the turn.
         let off = LlmGenerationConfig { reasoning_effort: Some(ReasoningEffort::Off), ..Default::default() };
-        assert_eq!(to_mistral_request(&request(None, history.clone(), off.clone())).messages[1].content, "Alice: Hello!");
+        assert_eq!(to_mistral_request(&request(None, history.clone(), off.clone())).messages[1].content[0]["type"], "thinking");
 
         let mut magistral = request(None, history.clone(), LlmGenerationConfig::default());
         magistral.model = "magistral-medium-latest".into();
         assert_eq!(to_mistral_request(&magistral).messages[1].content[0]["type"], "thinking");
         let mut magistral_off = request(None, history.clone(), off.clone());
         magistral_off.model = "magistral-small-2506".into();
-        assert_eq!(to_mistral_request(&magistral_off).messages[1].content, "Alice: Hello!");
+        assert_eq!(to_mistral_request(&magistral_off).messages[1].content[0]["type"], "thinking");
 
-        // Large 4 has no "none". Off is "low", which still thinks, so the trace stays on the turn.
         let mut large = request(None, history.clone(), off);
         large.model = "mistral-large-latest".into();
         let replayed = to_mistral_request(&large);
-        assert_eq!(replayed.reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(replayed.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(replayed.messages[1].content[0]["type"], "thinking");
 
         let mut codestral = request(None, history, LlmGenerationConfig::default());

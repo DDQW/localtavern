@@ -66,11 +66,7 @@ pub fn to_request(request: &LlmRequest) -> ChatRequest {
         top_k: cfg.top_k,
         max_tokens: cfg.max_output_tokens,
         stop: cfg.stop_sequences.clone(),
-        // Thinking only when a level is asked for: left to the model's default, Gemma thinks first, and
-        // on a phone that's minutes of hidden text before every reply.
-        chat_template_kwargs: Some(TemplateKwargs {
-            enable_thinking: cfg.reasoning_effort.is_some_and(|effort| effort != ReasoningEffort::Off),
-        }),
+        chat_template_kwargs: Some(TemplateKwargs { enable_thinking: true }),
     }
 }
 
@@ -114,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn thinks_only_when_a_level_is_asked_for_and_forwards_sampling() {
+    fn thinks_on_every_request_and_forwards_sampling() {
         let config = LlmGenerationConfig {
             temperature: Some(0.9),
             top_k: Some(64),
@@ -122,14 +118,14 @@ mod tests {
             ..Default::default()
         };
         let json = serde_json::to_value(to_request(&request(vec![LlmMessage::new(LlmRole::User, "Hi")], config))).unwrap();
-        assert_eq!(json["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(json["chat_template_kwargs"]["enable_thinking"], true);
         assert_eq!(json["temperature"], 0.9);
         assert_eq!(json["top_k"], 64);
         assert_eq!(json["cache_prompt"], true);
         assert!(json.get("top_p").is_none());
 
         let plain = serde_json::to_value(to_request(&request(vec![], Default::default()))).unwrap();
-        assert_eq!(plain["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(plain["chat_template_kwargs"]["enable_thinking"], true);
 
         let asked = LlmGenerationConfig { reasoning_effort: Some(ReasoningEffort::Low), ..Default::default() };
         let thinking = serde_json::to_value(to_request(&request(vec![], asked))).unwrap();

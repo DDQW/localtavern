@@ -54,9 +54,8 @@ pub struct XaiListModelsResponse {
     pub data: Option<Vec<XaiModelInfo>>,
 }
 
-/// grok-build-* is a coding-agent model that takes no `reasoning_effort` at all. Grok 4.5 and
-/// later reject "none" and cannot turn reasoning off; omitting the field uses their default,
-/// which is "high", so Off is sent as "low". An unset level is "high".
+/// grok-build-* takes no `reasoning_effort`. Every other Grok model is asked for "xhigh", the top
+/// of the ladder. Grok 4.5 does not have that level and treats it as "high". A preset cannot lower it.
 pub fn to_xai_request(request: &LlmRequest) -> XaiChatCompletionRequest {
     let mut messages = Vec::new();
     if let Some(system) = request.system_instruction.as_deref().filter(|s| !s.is_empty()) {
@@ -69,15 +68,7 @@ pub fn to_xai_request(request: &LlmRequest) -> XaiChatCompletionRequest {
     }));
 
     let cfg = &request.generation_config;
-    let reasoning_effort = if supports_reasoning_effort(&request.model) {
-        match cfg.reasoning_effort {
-            Some(ReasoningEffort::Off) | Some(ReasoningEffort::Low) => Some("low".to_string()),
-            Some(ReasoningEffort::Medium) => Some("medium".to_string()),
-            Some(ReasoningEffort::High) | None => Some("high".to_string()),
-        }
-    } else {
-        None
-    };
+    let reasoning_effort = supports_reasoning_effort(&request.model).then(|| "xhigh".to_string());
 
     XaiChatCompletionRequest {
         model: request.model.clone(),
@@ -149,11 +140,11 @@ mod tests {
     #[test]
     fn maps_reasoning_effort() {
         for (effort, expected) in [
-            (Some(ReasoningEffort::Low), Some("low")),
-            (Some(ReasoningEffort::Medium), Some("medium")),
-            (Some(ReasoningEffort::High), Some("high")),
-            (Some(ReasoningEffort::Off), Some("low")), // xAI rejects "none"; omitting the field is "high"
-            (None, Some("high")), // unset defaults to high rather than xAI's lower default
+            (Some(ReasoningEffort::Low), Some("xhigh")),
+            (Some(ReasoningEffort::Medium), Some("xhigh")),
+            (Some(ReasoningEffort::High), Some("xhigh")),
+            (Some(ReasoningEffort::Off), Some("xhigh")),
+            (None, Some("xhigh")),
         ] {
             let mapped = to_xai_request(&request("grok-4.6", effort));
             assert_eq!(mapped.reasoning_effort.as_deref(), expected, "{effort:?}");

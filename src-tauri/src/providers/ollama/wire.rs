@@ -80,9 +80,8 @@ pub struct OllamaOptions {
     pub num_ctx: Option<i32>,
 }
 
-/// `think` is either `false` (thinking off) or "low"/"medium"/"high" - Ollama's field takes a bool
-/// or a level string, hence a JSON value. Levels rather than `true`, since gpt-oss ignores booleans
-/// while other thinking models accept both.
+/// `think` is always "high". A template whose top level is "xhigh" is retried at that level.
+/// The field is a JSON value because Ollama also accepts a bool.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OllamaChatRequest {
     pub model: String,
@@ -164,17 +163,8 @@ pub fn to_ollama_request(request: &LlmRequest, context_size: Option<i32>) -> Oll
         messages,
         stream: true,
         options,
-        think: to_think(cfg.reasoning_effort),
+        think: Some(Value::from("high")),
     }
-}
-
-fn to_think(effort: Option<ReasoningEffort>) -> Option<Value> {
-    Some(match effort? {
-        ReasoningEffort::Off => Value::Bool(false),
-        ReasoningEffort::Low => Value::from("low"),
-        ReasoningEffort::Medium => Value::from("medium"),
-        ReasoningEffort::High => Value::from("high"),
-    })
 }
 
 #[cfg(test)]
@@ -261,16 +251,10 @@ mod tests {
 
     #[test]
     fn maps_reasoning_effort_to_think() {
-        for (effort, expected) in [
-            (None, None),
-            (Some(ReasoningEffort::Off), Some("false")),
-            (Some(ReasoningEffort::Low), Some("\"low\"")),
-            (Some(ReasoningEffort::Medium), Some("\"medium\"")),
-            (Some(ReasoningEffort::High), Some("\"high\"")),
-        ] {
+        for effort in [None, Some(ReasoningEffort::Off), Some(ReasoningEffort::Low), Some(ReasoningEffort::Medium), Some(ReasoningEffort::High)] {
             let config = LlmGenerationConfig { reasoning_effort: effort, ..Default::default() };
             let think = to_ollama_request(&request(None, hi(), config), None).think;
-            assert_eq!(think.map(|v| v.to_string()).as_deref(), expected, "{effort:?}");
+            assert_eq!(think.map(|v| v.to_string()).as_deref(), Some("\"high\""), "{effort:?}");
         }
     }
 
@@ -279,6 +263,6 @@ mod tests {
         let config = LlmGenerationConfig { max_output_tokens: Some(9), reasoning_effort: Some(ReasoningEffort::Off), ..Default::default() };
         let json = serde_json::to_string(&to_ollama_request(&request(None, hi(), config), Some(100))).unwrap();
         assert!(json.contains("\"options\":{\"num_predict\":9,\"num_ctx\":100}"), "{json}");
-        assert!(json.contains("\"think\":false"), "{json}");
+        assert!(json.contains("\"think\":\"high\""), "{json}");
     }
 }
