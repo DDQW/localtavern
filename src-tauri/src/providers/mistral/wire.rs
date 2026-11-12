@@ -73,6 +73,15 @@ pub fn is_reasoning_rejection(err: &crate::providers::error::ProviderError) -> b
     err.kind == crate::providers::error::ProviderErrorKind::InvalidRequest && err.message.to_ascii_lowercase().contains("reasoning")
 }
 
+/// The refusal names levels the model does accept (`supported values: low, medium, high`). That is a
+/// bad value for this call, not a model without reasoning — remembering it as such would drop
+/// thinking on the next chat. "Unsupported reasoning level: high" does not qualify: it names no
+/// alternative.
+pub fn rejection_names_accepted_levels(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    msg.contains("supported value") || msg.contains("allowed value") || msg.contains("must be one of") || msg.contains("valid value")
+}
+
 fn build_request(request: &LlmRequest, with_reasoning: bool) -> MistralChatCompletionRequest {
     let mut messages = Vec::new();
     if let Some(system) = request.system_instruction.as_deref().filter(|s| !s.is_empty()) {
@@ -112,15 +121,19 @@ fn build_request(request: &LlmRequest, with_reasoning: bool) -> MistralChatCompl
 /// Mistral wants an earlier turn's reasoning replayed as a `thinking` chunk ahead of its reply, and
 /// says the model loses coherence when it is stripped.
 fn replayed_content(thought: &str, reply: &str) -> Value {
+    // `closed` marks a finished trace. An open thinking chunk is a prefix the model continues,
+    // which is not what a previous turn is.
     serde_json::json!([
-        {"type": "thinking", "thinking": [{"type": "text", "text": thought}]},
+        {"type": "thinking", "thinking": [{"type": "text", "text": thought}], "closed": true},
         {"type": "text", "text": reply},
     ])
 }
 
 /// The hybrid models (Small, Medium) only think when asked (`reasoning_effort`), and take just "high" or "none".
 /// Unset asks for "high", so a reasoning-capable model shows its thinking without a preset change.
-/// Other models (Ministral, Codestral, older dated ids) get nothing, since they don't take the field.
+/// Large 4 (and `mistral-large-latest`, which now points at it) takes `low` / `medium` / `high` and
+/// rejects `none` — `low` is the level that used to be called `none`.
+/// Other models (Ministral, Codestral, Large 3, older dated ids) get nothing, since they don't take the field.
 fn to_reasoning_effort(model: &str, effort: Option<ReasoningEffort>) -> Option<&'static str> {
     let model = model.to_ascii_lowercase();
     // Z.ai GLM takes low/high/max but not "none".
@@ -132,17 +145,23 @@ fn to_reasoning_effort(model: &str, effort: Option<ReasoningEffort>) -> Option<&
             Some(ReasoningEffort::High) => Some("max"),
         };
     }
-    // Large 4 takes it too; Large 3 doesn't, and "-latest" may still point there, so the provider
-    // retries without the field when Mistral rejects it (see `is_reasoning_rejection`).
-    const HYBRID: [&str; 8] = [
+    // `mistral-large-4` also matches `mistral-large-4-0`. `mistral-large-2610` is the dated id of
+    // the same 26.10 release. If an alias still points at Large 3, which rejects the field, the
+    // provider retries that call without it (see `is_reasoning_rejection`).
+    const LARGE_4: [&str; 3] = ["mistral-large-latest", "mistral-large-4", "mistral-large-2610"];
+    if LARGE_4.iter().any(|id| model.starts_with(id)) {
+        return Some(match effort {
+            Some(ReasoningEffort::Off) | Some(ReasoningEffort::Low) => "low",
+            Some(ReasoningEffort::Medium) => "medium",
+            Some(ReasoningEffort::High) | None => "high",
+        });
+    }
+    const HYBRID: [&str; 5] = [
         "mistral-small-latest",
         "mistral-small-2603",
         "mistral-medium-latest",
         "mistral-medium-3-5",
         "mistral-medium-2604",
-        "mistral-large-latest",
-        "mistral-large-4",
-        "mistral-large-2610",
     ];
     if !HYBRID.iter().any(|id| model.starts_with(id)) {
         return None;
@@ -239,8 +258,12 @@ mod tests {
         for (model, effort, expected) in [
             ("mistral-small-latest", None, Some("high")),
             ("mistral-medium-3-5", Some(Low), Some("high")),
+            ("mistral-medium-3-5", Some(Medium), Some("high")),
             ("mistral-large-2610", Some(High), Some("high")),
             ("mistral-large-4-0", None, Some("high")),
+            ("mistral-large-4", Some(Low), Some("low")),
+            ("mistral-large-4", Some(Medium), Some("medium")),
+            ("mistral-large-latest", Some(Off), Some("low")), // Large 4 rejects "none"
             ("mistral-large-2512", None, None), // Large 3
             ("mistral-small-latest", Some(Off), Some("none")),
             ("zai-glm-5-3", Some(Off), None), // GLM rejects "none"
@@ -266,13 +289,20 @@ mod tests {
         assert_eq!(
             mapped.messages[1].content,
             serde_json::json!([
-                {"type": "thinking", "thinking": [{"type": "text", "text": "She greets him."}]},
+                {"type": "thinking", "thinking": [{"type": "text", "text": "She greets him."}], "closed": true},
                 {"type": "text", "text": "Alice: Hello!"},
             ])
         );
 
         let off = LlmGenerationConfig { reasoning_effort: Some(ReasoningEffort::Off), ..Default::default() };
-        assert_eq!(to_mistral_request(&request(None, history.clone(), off)).messages[1].content, "Alice: Hello!");
+        assert_eq!(to_mistral_request(&request(None, history.clone(), off.clone())).messages[1].content, "Alice: Hello!");
+
+        // Large 4 has no "none". Off is "low", which still thinks, so the trace stays on the turn.
+        let mut large = request(None, history.clone(), off);
+        large.model = "mistral-large-latest".into();
+        let replayed = to_mistral_request(&large);
+        assert_eq!(replayed.reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(replayed.messages[1].content[0]["type"], "thinking");
 
         let mut codestral = request(None, history, LlmGenerationConfig::default());
         codestral.model = "codestral-latest".into();

@@ -20,7 +20,8 @@ pub struct Delta {
 
 /// `content` is a plain string almost everywhere, but Mistral's reasoning models stream it as a list
 /// of typed parts - `{"type":"text",...}` for the reply and `{"type":"thinking",...}` for the
-/// chain-of-thought.
+/// chain-of-thought. While streaming, Large 4 sends the list during the thinking phase (and once
+/// more, with the first text part, at the transition) and then plain strings for the answer.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(untagged)]
 pub enum Content {
@@ -33,13 +34,49 @@ pub struct ContentPart {
     #[serde(rename = "type")]
     pub kind: Option<String>,
     pub text: Option<String>,
-    /// A thinking part nests its text one level down.
-    pub thinking: Option<Vec<ThinkingPart>>,
+    /// A thinking part nests its trace one level down. The current API sends a list of text chunks;
+    /// older checkpoints and some proxies send a plain string, or a single chunk object.
+    pub thinking: Option<ThinkingField>,
+}
+
+/// The `thinking` field is not one shape. All three show up on Mistral streams.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum ThinkingField {
+    Text(String),
+    Parts(Vec<ThinkingPiece>),
+    One(ThinkingPart),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum ThinkingPiece {
+    Text(String),
+    Part(ThinkingPart),
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ThinkingPart {
     pub text: Option<String>,
+}
+
+impl ThinkingField {
+    fn text(self) -> String {
+        match self {
+            ThinkingField::Text(text) => text,
+            ThinkingField::Parts(parts) => parts.into_iter().map(ThinkingPiece::text).collect(),
+            ThinkingField::One(part) => part.text.unwrap_or_default(),
+        }
+    }
+}
+
+impl ThinkingPiece {
+    fn text(self) -> String {
+        match self {
+            ThinkingPiece::Text(text) => text,
+            ThinkingPiece::Part(part) => part.text.unwrap_or_default(),
+        }
+    }
 }
 
 impl Content {
@@ -50,11 +87,18 @@ impl Content {
             Content::Parts(parts) => {
                 let (mut text, mut thought) = (String::new(), String::new());
                 for part in parts {
+                    // A thinking part's own `text` is reasoning. Some gateways put the trace there
+                    // instead of under `thinking`, and showing it as the reply is the bug.
+                    let thought_part = part.kind.as_deref() == Some("thinking") || (part.thinking.is_some() && part.kind.as_deref() != Some("text"));
                     if let Some(t) = part.text {
-                        text.push_str(&t);
+                        if thought_part {
+                            thought.push_str(&t);
+                        } else {
+                            text.push_str(&t);
+                        }
                     }
-                    for t in part.thinking.into_iter().flatten().filter_map(|t| t.text) {
-                        thought.push_str(&t);
+                    if let Some(thinking) = part.thinking {
+                        thought.push_str(&thinking.text());
                     }
                 }
                 (text, thought)
@@ -264,5 +308,45 @@ mod tests {
         assert_eq!(chunks[1].delta_text, "Hi");
         assert_eq!(chunks[1].thought_delta_text, "");
         assert!(chunks[1].is_final);
+    }
+
+    #[tokio::test]
+    async fn large_4_streams_thinking_then_a_transition_then_plain_text() {
+        // Captured shape: thinking list, one list that closes thinking and starts the answer,
+        // then plain strings. `closed` and `signature` are metadata and must not fail the parse.
+        let sse = concat!(
+            r#"data: {"choices":[{"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"Hello"}],"signature":"sig"}]}}]}"#,
+            "\n\n",
+            r#"data: {"choices":[{"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":" there."}],"closed":true},{"type":"text","text":"Hi"}]}}]}"#,
+            "\n\n",
+            r#"data: {"choices":[{"delta":{"content":" there"},"finish_reason":"stop"}]}"#,
+            "\n\n",
+            "data: [DONE]\n\n",
+        );
+
+        let chunks = collect(sse, 7).await.unwrap();
+
+        assert_eq!(chunks[0].thought_delta_text, "Hello");
+        assert_eq!(chunks[0].delta_text, "");
+        assert_eq!(chunks[1].thought_delta_text, " there.");
+        assert_eq!(chunks[1].delta_text, "Hi");
+        assert_eq!(chunks[2].delta_text, " there");
+        assert_eq!(chunks[2].thought_delta_text, "");
+        assert!(chunks[2].is_final);
+    }
+
+    #[tokio::test]
+    async fn a_thinking_trace_is_read_from_a_string_a_single_object_or_the_part_text() {
+        for (content, thought) in [
+            (r#"[{"type":"thinking","thinking":"hmm"}]"#, "hmm"),
+            (r#"[{"type":"thinking","thinking":{"type":"text","text":"hmm"}}]"#, "hmm"),
+            (r#"[{"type":"thinking","text":"hmm"}]"#, "hmm"),
+            (r#"[{"type":"thinking","thinking":["hmm",{"type":"text","text":"!"}]}]"#, "hmm!"),
+        ] {
+            let sse = format!("data: {{\"choices\":[{{\"delta\":{{\"content\":{content}}}}}]}}\n\n");
+            let chunks = collect(&sse, 4096).await.unwrap();
+            assert_eq!(chunks[0].delta_text, "", "{content}");
+            assert_eq!(chunks[0].thought_delta_text, thought, "{content}");
+        }
     }
 }

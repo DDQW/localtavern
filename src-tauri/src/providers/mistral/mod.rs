@@ -4,6 +4,7 @@
 
 mod errors;
 pub mod signin;
+mod think;
 pub mod wire;
 
 use std::collections::{HashMap, HashSet};
@@ -120,15 +121,19 @@ impl LlmProvider for MistralProvider {
         let first = if known_without { wire::to_mistral_request_without_reasoning(&request) } else { wire::to_mistral_request(&request) };
 
         // Which models take `reasoning_effort` (and which levels) keeps changing, and an alias like
-        // "-latest" moves between them: when Mistral refuses it, ask again without.
+        // "-latest" moves between them: when Mistral refuses the field, ask again without and
+        // remember that. A refusal that names other accepted levels (Large 4 rejecting "none")
+        // is only this call — remembering it would turn reasoning off for the rest of the session.
         let response = match self.post_completion(&key, &first).await {
             Err(e) if first.reasoning_effort.is_some() && wire::is_reasoning_rejection(&e) => {
-                self.no_reasoning.lock().unwrap().insert(request.model.clone());
+                if !wire::rejection_names_accepted_levels(&e.message) {
+                    self.no_reasoning.lock().unwrap().insert(request.model.clone());
+                }
                 self.post_completion(&key, &wire::to_mistral_request_without_reasoning(&request)).await?
             }
             other => other?,
         };
-        Ok(openai_compat::read_chunks(response.bytes_stream(), "Mistral").boxed())
+        Ok(think::separate_think_tags(openai_compat::read_chunks(response.bytes_stream(), "Mistral")).boxed())
     }
 }
 
@@ -221,6 +226,51 @@ mod tests {
         }
         // One rejected request, one retry, then the second call goes straight out without the field.
         assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_level_rejection_that_names_accepted_levels_does_not_disable_reasoning() {
+        let server = MockServer::start().await;
+        // Large 4's answer to `reasoning_effort: "none"`. The model still reasons at low/medium/high.
+        let rejection = r#"{"object":"error","message":"reasoning_effort none is not supported for this model, supported values: ['high', 'low', 'medium']","type":"invalid_request_error"}"#;
+        Mock::given(method("POST"))
+            .and(body_string_contains("reasoning_effort"))
+            .respond_with(ResponseTemplate::new(400).set_body_raw(rejection, "application/json"))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let ok = "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(ok, "text/event-stream"))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let p = provider(&server, Some("key"));
+
+        for _ in 0..2 {
+            let chunks = p.stream_completion(request("mistral-large-latest", "Hello")).await.unwrap().collect::<Vec<_>>().await;
+            assert_eq!(chunks[0].as_ref().unwrap().delta_text, "Hi");
+        }
+    }
+
+    #[tokio::test]
+    async fn think_tags_in_the_text_channel_are_shown_as_reasoning() {
+        let server = MockServer::start().await;
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hi <thi\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"nk>because</think> there\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .mount(&server)
+            .await;
+
+        let chunks = collect(&provider(&server, Some("key")), "Hello").await.unwrap();
+        let text: String = chunks.iter().map(|c| c.delta_text.as_str()).collect();
+        let thought: String = chunks.iter().map(|c| c.thought_delta_text.as_str()).collect();
+        assert_eq!(text, "Hi  there");
+        assert_eq!(thought, "because");
     }
 
     #[tokio::test]
