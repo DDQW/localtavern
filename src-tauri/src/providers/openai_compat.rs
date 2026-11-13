@@ -12,10 +12,13 @@ use super::LlmResponseChunk;
 use crate::models::LlmUsage;
 
 /// `reasoning_content` is a reasoning model's chain-of-thought, streamed separately from `content`.
+/// A string is the common shape. Mistral gateways and some proxies send the same trace as a list of
+/// blocks (`[{"type":"thinking","content":"…"}]`), which a `String` field drops by failing the chunk.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Delta {
     pub content: Option<Content>,
-    pub reasoning_content: Option<String>,
+    #[serde(default, alias = "reasoning")]
+    reasoning_content: Option<ReasoningValue>,
 }
 
 /// `content` is a plain string almost everywhere, but Mistral's reasoning models stream it as a list
@@ -34,9 +37,46 @@ pub struct ContentPart {
     #[serde(rename = "type")]
     pub kind: Option<String>,
     pub text: Option<String>,
+    /// Some gateways put the trace (or the answer) here instead of `text`.
+    pub content: Option<String>,
     /// A thinking part nests its trace one level down. The current API sends a list of text chunks;
     /// older checkpoints and some proxies send a plain string, or a single chunk object.
     pub thinking: Option<ThinkingField>,
+}
+
+/// `reasoning_content` when it isn't a plain string: a list of blocks, or one block.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+enum ReasoningValue {
+    Text(String),
+    Parts(Vec<ReasoningPiece>),
+    One(ReasoningPiece),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+enum ReasoningPiece {
+    Text(String),
+    Part(ContentPart),
+}
+
+impl ReasoningValue {
+    fn text(self) -> String {
+        match self {
+            ReasoningValue::Text(text) => text,
+            ReasoningValue::Parts(parts) => parts.into_iter().map(ReasoningPiece::text).collect(),
+            ReasoningValue::One(part) => part.text(),
+        }
+    }
+}
+
+impl ReasoningPiece {
+    fn text(self) -> String {
+        match self {
+            ReasoningPiece::Text(text) => text,
+            ReasoningPiece::Part(part) => part.into_trace(),
+        }
+    }
 }
 
 /// The `thinking` field is not one shape. All three show up on Mistral streams.
@@ -58,6 +98,7 @@ pub enum ThinkingPiece {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ThinkingPart {
     pub text: Option<String>,
+    pub content: Option<String>,
 }
 
 impl ThinkingField {
@@ -65,7 +106,7 @@ impl ThinkingField {
         match self {
             ThinkingField::Text(text) => text,
             ThinkingField::Parts(parts) => parts.into_iter().map(ThinkingPiece::text).collect(),
-            ThinkingField::One(part) => part.text.unwrap_or_default(),
+            ThinkingField::One(part) => part.into_text(),
         }
     }
 }
@@ -74,8 +115,30 @@ impl ThinkingPiece {
     fn text(self) -> String {
         match self {
             ThinkingPiece::Text(text) => text,
-            ThinkingPiece::Part(part) => part.text.unwrap_or_default(),
+            ThinkingPiece::Part(part) => part.into_text(),
         }
+    }
+}
+
+/// The first non-empty of `text` and `content`. Gateways use one or the other for the same words.
+fn own_text(text: Option<String>, content: Option<String>) -> String {
+    text.filter(|t| !t.is_empty()).or_else(|| content.filter(|t| !t.is_empty())).unwrap_or_default()
+}
+
+impl ThinkingPart {
+    fn into_text(self) -> String {
+        own_text(self.text, self.content)
+    }
+}
+
+impl ContentPart {
+    /// Everything this part says, for a field that is already the reasoning channel.
+    fn into_trace(self) -> String {
+        let mut out = own_text(self.text, self.content);
+        if let Some(thinking) = self.thinking {
+            out.push_str(&thinking.text());
+        }
+        out
     }
 }
 
@@ -87,15 +150,16 @@ impl Content {
             Content::Parts(parts) => {
                 let (mut text, mut thought) = (String::new(), String::new());
                 for part in parts {
-                    // A thinking part's own `text` is reasoning. Some gateways put the trace there
-                    // instead of under `thinking`, and showing it as the reply is the bug.
-                    let thought_part = part.kind.as_deref() == Some("thinking") || (part.thinking.is_some() && part.kind.as_deref() != Some("text"));
-                    if let Some(t) = part.text {
-                        if thought_part {
-                            thought.push_str(&t);
-                        } else {
-                            text.push_str(&t);
-                        }
+                    // A thinking part's own words are reasoning. Some gateways put the trace in
+                    // `text`, some in `content`, and showing either as the reply is the bug.
+                    let kind = part.kind.as_deref();
+                    let thought_part = matches!(kind, Some("thinking" | "reasoning"))
+                        || (part.thinking.is_some() && kind != Some("text"));
+                    let words = own_text(part.text, part.content);
+                    if thought_part {
+                        thought.push_str(&words);
+                    } else {
+                        text.push_str(&words);
                     }
                     if let Some(thinking) = part.thinking {
                         thought.push_str(&thinking.text());
@@ -173,7 +237,7 @@ where
             let (text, thought) = match choice.delta {
                 Some(d) => {
                     let (text, mut thought) = d.content.map(Content::split).unwrap_or_default();
-                    thought.push_str(&d.reasoning_content.unwrap_or_default());
+                    thought.push_str(&d.reasoning_content.map(ReasoningValue::text).unwrap_or_default());
                     (text, thought)
                 }
                 None => Default::default(),
@@ -347,6 +411,23 @@ mod tests {
             let chunks = collect(&sse, 4096).await.unwrap();
             assert_eq!(chunks[0].delta_text, "", "{content}");
             assert_eq!(chunks[0].thought_delta_text, thought, "{content}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_trace_under_content_or_a_reasoning_content_list_still_reaches_the_fold() {
+        // The shapes that used to vanish: the chunk parsed (or failed) and `thought_delta_text`
+        // stayed empty, so the Reasoning fold never appeared.
+        for (delta, thought, reply) in [
+            (r#"{"content":[{"type":"thinking","content":"hmm"}]}"#, "hmm", ""),
+            (r#"{"content":[{"type":"thinking","thinking":[{"type":"text","content":"hmm"}]}]}"#, "hmm", ""),
+            (r#"{"content":"Hi","reasoning_content":[{"type":"thinking","content":"planning"}]}"#, "planning", "Hi"),
+            (r#"{"reasoning":"planning","content":"Hi"}"#, "planning", "Hi"),
+        ] {
+            let sse = format!("data: {{\"choices\":[{{\"delta\":{delta}}}]}}\n\n");
+            let chunks = collect(&sse, 4096).await.unwrap();
+            assert_eq!(chunks[0].thought_delta_text, thought, "{delta}");
+            assert_eq!(chunks[0].delta_text, reply, "{delta}");
         }
     }
 }

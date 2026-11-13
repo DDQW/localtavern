@@ -7,6 +7,8 @@ pub mod signin;
 mod think;
 pub mod wire;
 
+pub use think::separate_think_tags;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 

@@ -39,11 +39,12 @@ use crate::providers::oauth::{OAuthPkceClient, OAuthSession};
 use crate::providers::openai::ChatGptSubscriptionProvider;
 use crate::providers::xai::XaiSubscriptionProvider;
 use crate::providers::ollama::OllamaProvider;
+use crate::providers::omlx::OmlxProvider;
 use crate::providers::vastai::VastAiProvider;
 use crate::providers::ondevice::{OnDeviceProvider, Runtime};
 use crate::providers::{http, LlmProvider, LlmProviderRegistry};
 use crate::secrets::KeyringSecretStore;
-use crate::settings::{DbGeminiOptions, DbOllamaOptions, DbOnDeviceOptions, DbVastAiOptions};
+use crate::settings::{DbGeminiOptions, DbOllamaOptions, DbOmlxOptions, DbOnDeviceOptions, DbVastAiOptions};
 
 /// Where the database and images live: `LOCALTAVERN_DATA_DIR` if set (handy for trying the app on a
 /// scratch copy), otherwise the OS per-user app-data folder for this app's identifier.
@@ -83,6 +84,9 @@ fn build_state(data_dir: PathBuf, gpu: gpu::GpuGate) -> Result<AppState, Box<dyn
         Arc::new(XaiSubscriptionProvider::new(client.clone(), xai.clone())),
         Arc::new(ChatGptSubscriptionProvider::new(client.clone(), chatgpt.clone())),
         Arc::new(OllamaProvider::new(client.clone(), Arc::new(DbOllamaOptions(db.clone()))).with_gpu_gate(gpu.clone())),
+        Arc::new(
+            OmlxProvider::new(client.clone(), secrets.clone(), Arc::new(DbOmlxOptions(db.clone()))).with_gpu_gate(gpu.clone()),
+        ),
         vast.clone(),
     ];
     if let Some(ondevice) = &ondevice {
@@ -181,6 +185,8 @@ pub fn run() {
             commands::save_gemini_options,
             commands::get_ollama_options,
             commands::save_ollama_options,
+            commands::get_omlx_options,
+            commands::save_omlx_options,
             commands::get_vastai_options,
             commands::save_vastai_options,
             commands::ondevice_status,

@@ -27,6 +27,7 @@ import type {
   SessionStatus,
   UserMemory,
   OllamaOptions,
+  OmlxOptions,
   VastAiOptions,
   OnDeviceOptions,
   OnDeviceStatus,
@@ -166,6 +167,7 @@ const providers: ProviderInfo[] = [
   { id: "xai-subscription", name: "SuperGrok", auth: "subscription", hasKey: false, browserSignIn: false },
   { id: "chatgpt-subscription", name: "ChatGPT", auth: "subscription", hasKey: true, browserSignIn: false },
   { id: "ollama", name: "Ollama", auth: "local", hasKey: true, browserSignIn: false },
+  { id: "omlx", name: "oMLX", auth: "local", hasKey: false, browserSignIn: false },
   { id: "vastai", name: "Vast.ai", auth: "apiKey", hasKey: false, browserSignIn: false },
   { id: "ondevice", name: "On-device", auth: "local", hasKey: true, browserSignIn: false },
 ];
@@ -174,6 +176,7 @@ const models: Record<string, string[]> = {
   gemini: ["gemini-2.5-flash", "gemini-2.5-pro"],
   deepseek: ["deepseek-chat", "deepseek-reasoner"],
   ollama: ["llama3:8b", "mistral:latest"],
+  omlx: ["qwen3", "gemma"],
   ondevice: ["rpDungeon_Gemma-4-E4B-Luchador-Q4_K_M", "MN-12B-Mag-Mell-R1-IQ4_XS"],
 };
 
@@ -912,6 +915,10 @@ You are the character. (Mock prompt for message ${messageId}.)
     return { baseUrl: "http://localhost:11434", contextSize: 8192 };
   },
   async saveOllamaOptions() {},
+  async getOmlxOptions(): Promise<OmlxOptions> {
+    return { baseUrl: "http://127.0.0.1:8000" };
+  },
+  async saveOmlxOptions() {},
   async getVastAiOptions(): Promise<VastAiOptions> {
     return { instanceId: 0, port: 11434, baseUrl: "", contextSize: 8192, idleStopSecs: 10, readyTimeoutSecs: 600 };
   },

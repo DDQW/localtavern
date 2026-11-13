@@ -1767,8 +1767,10 @@ present, keep it as its own final paragraph, still naming whose details they are
             Ok(p) => p,
             Err(e) => return StreamResult::failed(e),
         };
-        // Ollama waits for a picture holding the graphics card; the reply shows why it hasn't started.
-        if provider_id == crate::providers::ollama::PROVIDER_ID && self.inner.gpu.lock().unwrap().is_held() {
+        // A local model waits for a picture holding the graphics card; the reply shows why it hasn't started.
+        if matches!(provider_id, crate::providers::ollama::PROVIDER_ID | crate::providers::omlx::PROVIDER_ID)
+            && self.inner.gpu.lock().unwrap().is_held()
+        {
             sink.emit(ChatEvent::WaitingForPicture { message_id });
         }
 
