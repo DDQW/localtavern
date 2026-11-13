@@ -40,16 +40,9 @@
           : "Story time this reply covered, as estimated by the model",
   );
 
-  // Open the fold once thoughts start arriving. A closed <details> hid the trace that used to
-  // show in the reply, and forcing it open on every delta would fight someone who closed it.
+  // Stay closed until the reader opens it. Opening it from a streaming chunk made the fold
+  // jump open and shut as the trace arrived; their choice then holds for this message.
   let reasoningOpen = $state(false);
-  let reasoningRevealed = false;
-  $effect(() => {
-    if (!reasoningRevealed && message.streaming && message.reasoningText) {
-      reasoningRevealed = true;
-      reasoningOpen = true;
-    }
-  });
 
   // Prompts are big (the whole history each), so one is only fetched while its fold is open.
   let prompt = $state<string | null>(null);
