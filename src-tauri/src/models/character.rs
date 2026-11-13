@@ -93,8 +93,17 @@ pub struct Character {
     pub outfits: Vec<Outfit>,
     #[serde(default)]
     pub action_pictures: Vec<ActionPicture>,
+    /// When a roleplay has meters switched on, include this character. Off leaves them out of the
+    /// reading, the prompt, and the Story panel. On by default, which is how every character was
+    /// treated before the switch existed.
+    #[serde(default = "default_track_arousal")]
+    pub track_arousal: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+fn default_track_arousal() -> bool {
+    true
 }
 
 impl Default for Character {
@@ -119,6 +128,7 @@ impl Default for Character {
             picture_style: PictureStyle::default(),
             outfits: Vec::new(),
             action_pictures: Vec::new(),
+            track_arousal: true,
             created_at: now,
             updated_at: now,
         }

@@ -3,9 +3,11 @@
   import { chat } from "#lib/chat.svelte.js";
   import type { Country, HolidayOverview, Meter, StoryCharacter, WeatherCondition } from "#lib/types.js";
   import { addMinutes } from "#lib/util.js";
+  import StoryStartFields from "./StoryStartFields.svelte";
 
   const world = $derived(chat.session?.conversation.worldState ?? null);
   const cast = $derived(chat.session?.characters ?? []);
+  const tracked = $derived(cast.filter((c) => c.trackArousal !== false));
   const dressable = $derived(cast.filter((c) => c.outfits.length > 0));
 
   /** Puts a character in an outfit for this story ("" = their default clothes). */
@@ -34,9 +36,8 @@
   // The clock is frozen while a reply is being written so an edit mid-stream cannot race the reply.
   const locked = $derived(chat.busy);
 
-  function setTime(e: Event & { currentTarget: HTMLInputElement }) {
-    const value = e.currentTarget.value; // "YYYY-MM-DDTHH:mm", empty while the field is half-typed
-    if (value) void chat.updateWorld({ fictionalDateTime: `${value}:00` });
+  function setClock(next: string | null) {
+    if (next) void chat.updateWorld({ fictionalDateTime: next });
   }
 
   // ---- arousal meters ----
@@ -176,10 +177,7 @@
     {#if world}
       <p class="time">{when}</p>
       <div class="clock" class:locked>
-        <label class="field">
-          Date and time
-          <input type="datetime-local" value={world.fictionalDateTime.slice(0, 16)} disabled={locked} onchange={setTime} />
-        </label>
+        <StoryStartFields label="Date" disabled={locked} value={world.fictionalDateTime} onchange={setClock} />
         <div class="jumps">
           {#each JUMPS as jump (jump.label)}
             <button
@@ -305,9 +303,12 @@
         </label>
         {#if world.metersEnabled}
           <p class="muted small">
-            After each reply the story is read for anything that raises or lowers them (one extra request), so they follow what was written. An orgasm in the text counts, empties climax and drops arousal. Off by default; you can also set them by hand.
+            After each reply the story is read for anything that raises or lowers them (one extra request), so they follow what was written. An orgasm in the text counts, empties climax and drops arousal. A character whose editor has tracking turned off is left out. You can also set the numbers by hand.
           </p>
-          {#each cast as c (c.id)}
+          {#if tracked.length === 0}
+            <p class="muted small">Nobody in this chat is set to track arousal. Turn it on in their character editor.</p>
+          {/if}
+          {#each tracked as c (c.id)}
             {@const m = world.meters?.[c.id] ?? { arousal: 0, climax: 0, orgasms: 0 }}
             <div class="meter">
               <strong>{c.name}</strong>

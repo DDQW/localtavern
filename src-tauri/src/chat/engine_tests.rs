@@ -745,6 +745,27 @@ async fn meters_follow_the_story_after_each_reply_and_stop_when_switched_off() {
     assert_eq!(f.provider.asked(crate::chat::meters::ASK).len(), 2, "no more questions once tracking is off");
 }
 
+#[tokio::test]
+async fn a_character_left_out_of_arousal_is_not_read_or_shown() {
+    use crate::models::Meter;
+    let f = fixture(vec![Script::Items(vec![chunk("Hello."), finish("STOP")])]);
+    let mut nova = add_character(&f.db, "Nova", None, &[]);
+    nova.track_arousal = false;
+    f.db.with(|c| characters::upsert(c, &nova)).unwrap();
+    let conv = ready_character(&f, &nova);
+    let mut state = world(&f, conv).unwrap();
+    state.meters_enabled = true;
+    state.meters.insert(nova.id, Meter { arousal: 12, climax: 3, orgasms: 1 });
+    f.engine.set_world_state(conv, state).unwrap();
+
+    send(&f, conv, "hi").await.0.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let requests = f.provider.requests();
+    assert_eq!(requests.len(), 1, "no extra reading when this character is left out");
+    assert!(!request_text(&requests[0]).contains("arousal"), "{}", request_text(&requests[0]));
+    assert_eq!(world(&f, conv).unwrap().meters[&nova.id].arousal, 12);
+}
+
 #[test]
 fn a_full_climax_meter_counts_an_orgasm_and_resets() {
     use crate::models::Meter;

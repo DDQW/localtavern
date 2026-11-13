@@ -1570,7 +1570,11 @@ present, keep it as its own final paragraph, still naming whose details they are
             .filter_map(|c| c.schedule.as_ref().filter(|s| !s.is_empty()).map(|s| (c.name.as_str(), s)))
             .collect();
         let meters = if state.meters_enabled {
-            ctx.characters.iter().map(|c| (c.name.as_str(), state.meters.get(&c.id).copied().unwrap_or_default())).collect()
+            ctx.characters
+                .iter()
+                .filter(|c| c.track_arousal)
+                .map(|c| (c.name.as_str(), state.meters.get(&c.id).copied().unwrap_or_default()))
+                .collect()
         } else {
             Vec::new()
         };
@@ -2459,12 +2463,16 @@ present, keep it as its own final paragraph, still naming whose details they are
     /// that to the story's current meters once the answer is in. Best-effort and detached: a failed
     /// request just leaves the meters as they were.
     fn spawn_meter_tracking(&self, ctx: &ReplyContext, user_text: String, reply_text: String, sink: Arc<dyn EventSink>) {
-        if !ctx.conversation.world_state.as_ref().is_some_and(|w| w.meters_enabled) || ctx.characters.is_empty() {
+        if !ctx.conversation.world_state.as_ref().is_some_and(|w| w.meters_enabled) {
+            return;
+        }
+        let cast: Vec<(Uuid, String)> =
+            ctx.characters.iter().filter(|c| c.track_arousal).map(|c| (c.id, c.name.clone())).collect();
+        if cast.is_empty() {
             return;
         }
         let engine = self.clone();
         let conversation = ctx.conversation.clone();
-        let cast: Vec<(Uuid, String)> = ctx.characters.iter().map(|c| (c.id, c.name.clone())).collect();
         let user_name = roles::user_name(ctx.persona.as_ref()).to_string();
         tokio::spawn(async move {
             report("meter tracking", engine.track_meters(&conversation, &cast, &user_name, &user_text, &reply_text, &sink).await);

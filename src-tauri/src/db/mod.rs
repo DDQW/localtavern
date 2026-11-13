@@ -59,6 +59,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (24, include_str!("../../migrations/0024_group_scenario_setting.sql")),
     (25, include_str!("../../migrations/0025_message_prompts.sql")),
     (26, include_str!("../../migrations/0026_message_clips.sql")),
+    (27, include_str!("../../migrations/0027_character_track_arousal.sql")),
 ];
 
 /// The migration that moved the saved prompts out of ChatMessages. The space they freed is only

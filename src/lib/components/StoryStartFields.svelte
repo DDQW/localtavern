@@ -4,10 +4,14 @@
   let {
     value = null,
     onchange,
+    label = "Story starts",
+    disabled = false,
   }: {
     /** Local story clock, "YYYY-MM-DDTHH:MM:SS", or null when unset. */
     value: string | null;
     onchange: (next: string | null) => void;
+    label?: string;
+    disabled?: boolean;
   } = $props();
 
   let day = $state("");
@@ -31,12 +35,12 @@
 
 <div class="start">
   <label class="field">
-    Story starts
-    <input type="date" value={day} onchange={(e) => commit(e.currentTarget.value, clock)} />
+    {label}
+    <input type="date" {disabled} value={day} onchange={(e) => commit(e.currentTarget.value, clock)} />
   </label>
   <label class="field">
     Time
-    <input type="time" value={clock} onchange={(e) => commit(day, e.currentTarget.value)} />
+    <input type="time" {disabled} value={clock} onchange={(e) => commit(day, e.currentTarget.value)} />
   </label>
 </div>
 

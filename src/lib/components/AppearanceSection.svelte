@@ -456,7 +456,14 @@
     gap: 6px;
   }
 
+  .birthday input[type="date"] {
+    width: 11rem;
+    min-width: 11rem;
+  }
+
   .agerow input {
     width: 80px;
+    min-width: 80px;
+    flex: none;
   }
 </style>

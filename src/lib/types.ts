@@ -137,6 +137,8 @@ export interface Character {
   pictureStyle: PictureStyle;
   outfits: Outfit[];
   actionPictures: ActionPicture[];
+  /** When a roleplay has meters on, include this character. On unless they opt out. */
+  trackArousal: boolean;
   createdAt: string;
   updatedAt: string;
 }

@@ -25,6 +25,7 @@ fn map(row: &Row) -> rusqlite::Result<Character> {
         picture_style: rows::opt_blob(row, "PictureStyleJson")?.unwrap_or_default(),
         outfits: rows::blob(row, "OutfitsJson")?,
         action_pictures: rows::blob(row, "ActionPicturesJson")?,
+        track_arousal: row.get("TrackArousal")?,
         created_at: rows::datetime(row, "CreatedAt")?,
         updated_at: rows::datetime(row, "UpdatedAt")?,
     })
@@ -65,13 +66,14 @@ pub fn upsert(conn: &Connection, c: &Character) -> Result<()> {
     let id = c.id.to_string();
     tx.execute(
         "INSERT INTO Characters
-            (Id, Name, AvatarPath, Description, Personality, Scenario, FirstMessagesJson, ExampleDialogue, TagsJson, ExpressionsJson, GalleryImagePathsJson, CreatedAt, UpdatedAt, AppearanceJson, BirthDate, ScheduleJson, PictureStyleJson, OutfitsJson, ActionPicturesJson)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+            (Id, Name, AvatarPath, Description, Personality, Scenario, FirstMessagesJson, ExampleDialogue, TagsJson, ExpressionsJson, GalleryImagePathsJson, CreatedAt, UpdatedAt, AppearanceJson, BirthDate, ScheduleJson, PictureStyleJson, OutfitsJson, ActionPicturesJson, TrackArousal)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
          ON CONFLICT(Id) DO UPDATE SET
             Name = ?2, AvatarPath = ?3, Description = ?4, Personality = ?5, Scenario = ?6,
             FirstMessagesJson = ?7, ExampleDialogue = ?8, TagsJson = ?9, ExpressionsJson = ?10,
             GalleryImagePathsJson = ?11, UpdatedAt = ?13, AppearanceJson = ?14, BirthDate = ?15,
-            ScheduleJson = ?16, PictureStyleJson = ?17, OutfitsJson = ?18, ActionPicturesJson = ?19;",
+            ScheduleJson = ?16, PictureStyleJson = ?17, OutfitsJson = ?18, ActionPicturesJson = ?19,
+            TrackArousal = ?20;",
         params![
             id,
             c.name,
@@ -92,6 +94,7 @@ pub fn upsert(conn: &Connection, c: &Character) -> Result<()> {
             json::to_blob(&c.picture_style)?,
             json::to_blob(&c.outfits)?,
             json::to_blob(&c.action_pictures)?,
+            c.track_arousal,
         ],
     )?;
     tx.execute("DELETE FROM CharacterLorebooks WHERE CharacterId = ?1;", [&id])?;
@@ -141,6 +144,12 @@ mod tests {
         assert_eq!(loaded.expressions, c.expressions);
         assert_eq!(loaded.linked_lorebook_ids, vec![book.id]);
         assert_eq!(loaded.avatar_path, c.avatar_path);
+        assert!(loaded.track_arousal, "a character saved without the switch stays tracked");
+
+        let mut opted_out = c.clone();
+        opted_out.track_arousal = false;
+        upsert(&conn, &opted_out).unwrap();
+        assert!(!get(&conn, c.id).unwrap().unwrap().track_arousal);
     }
 
     #[test]

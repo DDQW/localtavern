@@ -61,6 +61,8 @@ struct LocalTavernExtension {
     /// Picture prompts travel with the card; the pictures themselves (local files) don't.
     picture_style: Option<PictureStyle>,
     outfits: Vec<Outfit>,
+    /// Absent on cards written before the switch: those characters stay tracked.
+    track_arousal: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,6 +112,7 @@ pub fn map_card_json(json: &str) -> Result<CharacterImportResult> {
         schedule: ours.schedule,
         picture_style: ours.picture_style.unwrap_or_default(),
         outfits: ours.outfits,
+        track_arousal: ours.track_arousal.unwrap_or(true),
         personality: data.personality.unwrap_or_default(),
         scenario: data.scenario.unwrap_or_default(),
         first_messages,
@@ -188,6 +191,7 @@ pub fn export_card_json(character: &Character, lorebook: Option<&Lorebook>) -> R
                 birth_date: character.birth_date,
                 schedule: character.schedule.clone(),
                 picture_style: Some(character.picture_style.clone()),
+                track_arousal: Some(character.track_arousal),
                 outfits: character
                     .outfits
                     .iter()
@@ -444,6 +448,16 @@ mod tests {
         assert_eq!(reimported.description, original.description);
         assert_eq!(reimported.appearance, original.appearance);
         assert_eq!(reimported.birth_date, original.birth_date);
+    }
+
+    #[test]
+    fn track_arousal_survives_a_card_and_stays_on_when_the_card_omits_it() {
+        let opted_out = Character { name: "Nova".into(), track_arousal: false, ..Default::default() };
+        let reimported = map_card_json(&export_card_json(&opted_out, None).unwrap()).unwrap().character;
+        assert!(!reimported.track_arousal);
+
+        let old = r#"{"spec":"chara_card_v2","data":{"name":"N","extensions":{"localtavern":{}}}}"#;
+        assert!(map_card_json(old).unwrap().character.track_arousal);
     }
 
     #[test]

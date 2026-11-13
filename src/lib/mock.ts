@@ -90,6 +90,7 @@ const characters: Character[] = ["Nova", "Mira", "Dorian"].map((name, i) => ({
   pictureStyle: { baseLook: "", defaultOutfit: "", promptPrefix: "", negativePrompt: "", seed: -1 },
   outfits: [],
   actionPictures: [],
+  trackArousal: true,
   createdAt: now(),
   updatedAt: now(),
 }));

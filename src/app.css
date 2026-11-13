@@ -142,6 +142,18 @@ textarea {
   min-width: 0;
 }
 
+/* A date or time control whose segments shrink to nothing cannot be edited. */
+input[type="date"],
+input[type="datetime-local"] {
+  min-width: 11rem;
+  flex-shrink: 0;
+}
+
+input[type="time"] {
+  min-width: 6.5rem;
+  flex-shrink: 0;
+}
+
 textarea {
   resize: vertical;
 }

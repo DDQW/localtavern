@@ -45,6 +45,7 @@
       pictureStyle: { baseLook: "", defaultOutfit: "", promptPrefix: "", negativePrompt: "", seed: -1 },
       outfits: [],
       actionPictures: [],
+      trackArousal: true,
       createdAt: now,
       updatedAt: now,
     };
@@ -276,6 +277,14 @@
         Tags (comma separated)
         <input bind:value={tagsText} placeholder="sci-fi, friendly" />
       </label>
+
+      <label class="check">
+        <input type="checkbox" bind:checked={form.trackArousal} />
+        Track arousal and climax
+      </label>
+      <p class="muted small">
+        When a roleplay has meters switched on, this character is included: the story is read after each reply and the Story panel shows their arousal. Turn it off to leave them out.
+      </p>
 
       <h2>Lorebooks</h2>
       {#if lorebooks.length === 0}
