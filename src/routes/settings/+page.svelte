@@ -352,7 +352,7 @@
             />
             <button class="primary" type="submit" disabled={busy[provider.id]}>{keys[provider.id] ? "Save key" : provider.hasKey ? "Remove key" : "Save key"}</button>
           </form>
-          <p class="muted small">Stored in the Windows Credential Manager, never in the database. Leave the box empty and press the button to remove a saved key.</p>
+          <p class="muted small">Stored in the system keychain, never in the database. Leave the box empty and press the button to remove a saved key.</p>
           {#if provider.browserSignIn}
             <div class="keyrow">
               <button onclick={() => browserSignIn(provider)} disabled={signingIn[provider.id]}>

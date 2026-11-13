@@ -60,7 +60,21 @@
 
   function hasRoutine(s: Schedule): boolean {
     const blank = (d: DayPlan) => d.kind === "off" && d.blocks.length === 0;
-    return !!s.homeCountry || !!s.homeRegion || !!s.notes?.trim() || s.days.some((d) => !blank(d)) || !blank(s.holiday);
+    return !!s.notes?.trim() || s.days.some((d) => !blank(d)) || !blank(s.holiday);
+  }
+
+  function setHome(patch: { homeCountry?: string | null; homeRegion?: string | null }) {
+    const country = patch.homeCountry !== undefined ? patch.homeCountry : (schedule?.homeCountry ?? null);
+    const region = patch.homeRegion !== undefined ? patch.homeRegion : (schedule?.homeRegion ?? null);
+    if (!schedule) {
+      if (!country && !region) return;
+      ensure();
+    }
+    if (patch.homeCountry !== undefined) schedule!.homeCountry = patch.homeCountry;
+    if (patch.homeRegion !== undefined) schedule!.homeRegion = patch.homeRegion;
+    if (schedule && !schedule.storyStart && !opened && !hasRoutine(schedule) && !schedule.homeCountry && !schedule.homeRegion) {
+      schedule = null;
+    }
   }
 
   const showEditor = $derived(opened || (schedule !== null && hasRoutine(schedule)));
@@ -72,12 +86,29 @@
       return;
     }
     schedule.storyStart = next;
-    if (!next && !opened && !hasRoutine(schedule)) schedule = null;
+    if (!next && !opened && !hasRoutine(schedule) && !schedule.homeCountry && !schedule.homeRegion) schedule = null;
   }
 </script>
 
-<StoryStartFields value={schedule?.storyStart ?? null} onchange={setStoryStart} />
-<p class="muted small">New roleplays begin on this day and at this time. No time means 09:00. Leave both empty for 1 January 2025, 09:00.</p>
+<div class="home">
+  <label class="field">
+    Lives in (country)
+    {#if countries.length}
+      <select value={schedule?.homeCountry ?? ""} onchange={(e) => setHome({ homeCountry: e.currentTarget.value || null })}>
+        <option value="">—</option>
+        {#each countries as c (c.countryCode)}<option value={c.countryCode}>{c.name}</option>{/each}
+      </select>
+    {:else}
+      <input maxlength="2" placeholder="e.g. DE" value={schedule?.homeCountry ?? ""} oninput={(e) => setHome({ homeCountry: e.currentTarget.value.toUpperCase() || null })} />
+    {/if}
+  </label>
+  <label class="field">
+    Region (optional)
+    <input placeholder="e.g. DE-BY" value={schedule?.homeRegion ?? ""} oninput={(e) => setHome({ homeRegion: e.currentTarget.value.toUpperCase() || null })} />
+  </label>
+  <StoryStartFields value={schedule?.storyStart ?? null} onchange={setStoryStart} />
+</div>
+<p class="muted small">New roleplays are set in this country and begin on this day and at this time. No time means 09:00. Leave the day empty for 1 January 2025, 09:00.</p>
 
 {#if !showEditor || !schedule}
   <div class="btnrow">
@@ -87,27 +118,12 @@
   </div>
 {:else}
   <div class="home">
-    <label class="field">
-      Lives in (country)
-      {#if countries.length}
-        <select value={schedule.homeCountry ?? ""} onchange={(e) => (schedule!.homeCountry = e.currentTarget.value || null)}>
-          <option value="">—</option>
-          {#each countries as c (c.countryCode)}<option value={c.countryCode}>{c.name}</option>{/each}
-        </select>
-      {:else}
-        <input maxlength="2" placeholder="e.g. DE" value={schedule.homeCountry ?? ""} oninput={(e) => (schedule!.homeCountry = e.currentTarget.value.toUpperCase() || null)} />
-      {/if}
-    </label>
-    <label class="field">
-      Region (optional)
-      <input placeholder="e.g. DE-BY" value={schedule.homeRegion ?? ""} oninput={(e) => (schedule!.homeRegion = e.currentTarget.value.toUpperCase() || null)} />
-    </label>
     <label class="check">
       <input type="checkbox" bind:checked={schedule.observesHolidays} />
       Takes public holidays off
     </label>
   </div>
-  <p class="muted small">New roleplays with this character are set in this country (its public holidays apply) and begin at the start date and time, if you set one.</p>
+  <p class="muted small">The week below is what a roleplay is told they are doing. Public holidays use the holiday day when the box above is ticked.</p>
 
   <div class="tabs" role="tablist" aria-label="Day">
     {#each [...WEEKDAYS, "Holiday"] as name, i (name)}
@@ -178,6 +194,17 @@
     gap: 16px;
     align-items: flex-end;
     flex-wrap: wrap;
+  }
+
+  .home label.field {
+    flex: 1 1 12rem;
+    min-width: 11rem;
+  }
+
+  .home label.field select,
+  .home label.field input {
+    width: 100%;
+    min-width: 11rem;
   }
 
   .tabs {

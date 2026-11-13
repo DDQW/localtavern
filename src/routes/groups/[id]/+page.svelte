@@ -278,7 +278,19 @@
   .setting {
     display: flex;
     flex-wrap: wrap;
+    align-items: flex-end;
     gap: 10px 12px;
+  }
+
+  .setting > label.field {
+    flex: 1 1 12rem;
+    min-width: 11rem;
+  }
+
+  .setting > label.field select,
+  .setting > label.field input {
+    width: 100%;
+    min-width: 11rem;
   }
 
   .preview {
