@@ -29,13 +29,13 @@ npm install
 npm run tauri dev
 ```
 
-A Windows installer (NSIS) is produced with:
+A release bundle is produced with:
 
 ```sh
 npm run tauri build
 ```
 
-The setup file is written to `src-tauri/target/release/bundle/nsis/`.
+On Windows that writes an NSIS installer to `src-tauri/target/release/bundle/nsis/`. On macOS (Apple Silicon) it writes a DMG to `src-tauri/target/release/bundle/dmg/`. The macOS build is ad-hoc signed (`signingIdentity` `-`) unless you set a Developer ID.
 
 ## License
 

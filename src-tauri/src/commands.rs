@@ -26,6 +26,7 @@ use crate::powershell::settings::{self as tool_settings, PowerShellToolOptions};
 use crate::providers::gemini::GeminiRequestOptions;
 use crate::providers::oauth::{OAuthSession, SessionStatus};
 use crate::providers::ollama::OllamaRequestOptions;
+use crate::providers::omlx::OmlxRequestOptions;
 use crate::providers::ondevice::{self, ModelFile, OnDeviceOptions, OnDeviceProvider};
 use crate::providers::vastai::VastAiOptions;
 use crate::providers::{ApiKeyProvider, LlmProviderRegistry, SecretStore};
@@ -101,7 +102,7 @@ fn provider_info(state: &AppState, id: &str) -> ProviderInfo {
         name: crate::chat::reply::provider_display_name(id).to_string(),
         auth: match (id, session) {
             (_, Some(_)) => "subscription",
-            ("ollama" | "ondevice", _) => "local",
+            ("ollama" | "ondevice" | "omlx", _) => "local",
             _ => "apiKey",
         },
         has_key: match session {
@@ -689,6 +690,16 @@ pub fn save_gemini_options(state: State<'_, AppState>, options: GeminiRequestOpt
 #[tauri::command]
 pub fn get_ollama_options(state: State<'_, AppState>) -> Result<OllamaRequestOptions> {
     state.db.with(settings::load_ollama_options)
+}
+
+#[tauri::command]
+pub fn get_omlx_options(state: State<'_, AppState>) -> Result<OmlxRequestOptions> {
+    state.db.with(settings::load_omlx_options)
+}
+
+#[tauri::command]
+pub fn save_omlx_options(state: State<'_, AppState>, options: OmlxRequestOptions) -> Result<()> {
+    state.db.with(|c| settings::save_omlx_options(c, &options))
 }
 
 #[tauri::command]

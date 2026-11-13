@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::llm::{LlmRequest, LlmRole};
-use crate::models::ReasoningEffort;
 
 /// `type` is "input_text" for user turns and "output_text" for assistant turns - the Responses API
 /// rejects the wrong one.
@@ -103,8 +102,8 @@ pub struct CodexModelsResponse {
 
 /// Builds a Responses-API request for the ChatGPT Codex backend. Sampling parameters (temperature,
 /// top_p, max output tokens) are intentionally not sent: this backend serves reasoning models that
-/// reject them, and an unsupported parameter fails the whole request. "Off"/unset reasoning effort
-/// omits the block entirely so the model keeps its own default.
+/// reject them, and an unsupported parameter fails the whole request. Reasoning is always "high",
+/// the top level this backend accepts on every current model. "max" and "xhigh" are refused by some of them.
 pub fn to_responses_request(request: &LlmRequest) -> ResponsesRequest {
     let input = request
         .history
@@ -127,20 +126,13 @@ pub fn to_responses_request(request: &LlmRequest) -> ResponsesRequest {
         })
         .collect();
 
-    let effort = match request.generation_config.reasoning_effort {
-        Some(ReasoningEffort::Low) => Some("low"),
-        Some(ReasoningEffort::Medium) => Some("medium"),
-        Some(ReasoningEffort::High) => Some("high"),
-        _ => None,
-    };
-
     ResponsesRequest {
         model: request.model.clone(),
         instructions: request.system_instruction.clone().unwrap_or_default(),
         input,
         stream: true,
         store: false,
-        reasoning: effort.map(|e| ResponsesReasoning { effort: Some(e.into()), summary: Some("auto".into()) }),
+        reasoning: Some(ResponsesReasoning { effort: Some("high".into()), summary: Some("auto".into()) }),
     }
 }
 
@@ -148,6 +140,7 @@ pub fn to_responses_request(request: &LlmRequest) -> ResponsesRequest {
 mod tests {
     use super::*;
     use crate::llm::{LlmGenerationConfig, LlmMessage};
+    use crate::models::ReasoningEffort;
 
     fn request(effort: Option<ReasoningEffort>) -> LlmRequest {
         LlmRequest {
@@ -176,9 +169,10 @@ mod tests {
         assert_eq!(json["instructions"], "be brief");
         assert_eq!(json["store"], false);
         assert_eq!(json["stream"], true);
-        for absent in ["temperature", "top_p", "max_output_tokens", "reasoning"] {
+        for absent in ["temperature", "top_p", "max_output_tokens"] {
             assert!(json.get(absent).is_none(), "{absent} should not be sent");
         }
+        assert_eq!(json["reasoning"]["effort"], "high");
 
         let input = json["input"].as_array().unwrap();
         assert_eq!(input.len(), 3);
@@ -201,20 +195,10 @@ mod tests {
 
     #[test]
     fn maps_reasoning_effort_and_requests_summaries() {
-        for (effort, expected) in [
-            (Some(ReasoningEffort::Low), Some("low")),
-            (Some(ReasoningEffort::Medium), Some("medium")),
-            (Some(ReasoningEffort::High), Some("high")),
-            (Some(ReasoningEffort::Off), None),
-            (None, None),
-        ] {
+        for effort in [Some(ReasoningEffort::Low), Some(ReasoningEffort::Medium), Some(ReasoningEffort::High), Some(ReasoningEffort::Off), None] {
             let reasoning = to_responses_request(&request(effort)).reasoning;
-            assert_eq!(reasoning.as_ref().and_then(|r| r.effort.as_deref()), expected, "{effort:?}");
-            assert_eq!(
-                reasoning.as_ref().and_then(|r| r.summary.as_deref()),
-                expected.map(|_| "auto"),
-                "{effort:?}"
-            );
+            assert_eq!(reasoning.as_ref().and_then(|r| r.effort.as_deref()), Some("high"), "{effort:?}");
+            assert_eq!(reasoning.as_ref().and_then(|r| r.summary.as_deref()), Some("auto"), "{effort:?}");
         }
     }
 }

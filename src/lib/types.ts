@@ -481,6 +481,11 @@ export interface OllamaOptions {
   contextSize: number;
 }
 
+/** oMLX, the Apple Silicon MLX server. `baseUrl` is the server root, without `/v1`. */
+export interface OmlxOptions {
+  baseUrl: string;
+}
+
 export interface VastAiOptions {
   instanceId: number;
   port: number;

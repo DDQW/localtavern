@@ -14,12 +14,14 @@ use crate::providers::gemini::{
     GeminiOptionsSource, GeminiRequestOptions, GeminiSafetyCategory, GeminiSafetyThreshold,
 };
 use crate::providers::ollama::{OllamaOptionsSource, OllamaRequestOptions};
+use crate::providers::omlx::{OmlxOptionsSource, OmlxRequestOptions};
 use crate::providers::ondevice::{OnDeviceOptions, OnDeviceOptionsSource};
 use crate::providers::vastai::{VastAiOptions, VastAiOptionsSource};
 use crate::repo::{app_settings, personas};
 
 const GEMINI_KEY: &str = "gemini.requestOptions";
 const OLLAMA_KEY: &str = "ollama.requestOptions";
+const OMLX_KEY: &str = "omlx.requestOptions";
 const VASTAI_KEY: &str = "vastai.options";
 const ONDEVICE_KEY: &str = "ondevice.options";
 const LAST_PROVIDER_KEY: &str = "app.provider.lastSelected";
@@ -134,6 +136,28 @@ pub fn save_ollama_options(conn: &Connection, options: &OllamaRequestOptions) ->
     app_settings::set(conn, OLLAMA_KEY, &serde_json::to_string(&stored)?)
 }
 
+// ---- oMLX ----
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct StoredOmlx {
+    base_url: String,
+}
+
+pub fn load_omlx_options(conn: &Connection) -> Result<OmlxRequestOptions> {
+    let Some(json) = app_settings::get(conn, OMLX_KEY)?.filter(|j| !j.is_empty()) else {
+        return Ok(OmlxRequestOptions::default());
+    };
+    match serde_json::from_str::<StoredOmlx>(&json) {
+        Ok(stored) if !stored.base_url.trim().is_empty() => Ok(OmlxRequestOptions { base_url: stored.base_url }),
+        _ => Ok(OmlxRequestOptions::default()),
+    }
+}
+
+pub fn save_omlx_options(conn: &Connection, options: &OmlxRequestOptions) -> Result<()> {
+    app_settings::set(conn, OMLX_KEY, &serde_json::to_string(&StoredOmlx { base_url: options.base_url.clone() })?)
+}
+
 // ---- Vast.ai ----
 
 pub fn load_vastai_options(conn: &Connection) -> Result<VastAiOptions> {
@@ -160,6 +184,7 @@ pub fn save_ondevice_options(conn: &Connection, options: &OnDeviceOptions) -> Re
 /// Settings applies immediately without restarting anything.
 pub struct DbGeminiOptions(pub Db);
 pub struct DbOllamaOptions(pub Db);
+pub struct DbOmlxOptions(pub Db);
 pub struct DbVastAiOptions(pub Db);
 pub struct DbOnDeviceOptions(pub Db);
 
@@ -172,6 +197,12 @@ impl GeminiOptionsSource for DbGeminiOptions {
 impl OllamaOptionsSource for DbOllamaOptions {
     fn current(&self) -> OllamaRequestOptions {
         self.0.with(load_ollama_options).unwrap_or_default()
+    }
+}
+
+impl OmlxOptionsSource for DbOmlxOptions {
+    fn current(&self) -> OmlxRequestOptions {
+        self.0.with(load_omlx_options).unwrap_or_default()
     }
 }
 
@@ -356,6 +387,17 @@ mod tests {
         assert_eq!((old.base_url.as_str(), old.context_size), ("http://old:1", 8192));
         app_settings::set(&conn, OLLAMA_KEY, r#"{"BaseUrl":"  "}"#).unwrap();
         assert_eq!(load_ollama_options(&conn).unwrap(), OllamaRequestOptions::default());
+    }
+
+    #[test]
+    fn omlx_options_round_trip() {
+        let conn = open_in_memory().unwrap();
+        assert_eq!(load_omlx_options(&conn).unwrap(), OmlxRequestOptions::default());
+        save_omlx_options(&conn, &OmlxRequestOptions { base_url: "http://mac:8000".into() }).unwrap();
+        assert_eq!(load_omlx_options(&conn).unwrap().base_url, "http://mac:8000");
+        assert!(app_settings::get(&conn, OMLX_KEY).unwrap().unwrap().contains("\"BaseUrl\":\"http://mac:8000\""));
+        app_settings::set(&conn, OMLX_KEY, r#"{"BaseUrl":" "}"#).unwrap();
+        assert_eq!(load_omlx_options(&conn).unwrap(), OmlxRequestOptions::default());
     }
 
     #[test]

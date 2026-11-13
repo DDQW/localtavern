@@ -219,10 +219,15 @@ impl ChatMessage {
         (self.active_alternate_index.max(0) as usize) + 1 < self.alternates.len()
     }
 
-    /// Re-establishes the invariant `text == active alternate's text`; called after loading a row.
+    /// Re-establishes the invariant that the shown text and reasoning are the active alternate's.
+    /// Called after loading a row. An alternate with no reasoning leaves the column's trace alone,
+    /// so a reply saved before alternates carried thoughts still shows them.
     pub fn sync_text_from_alternates(&mut self) {
         if let Some(i) = self.active_index() {
             self.text = self.alternates[i].text.clone();
+            if let Some(reasoning) = self.alternates[i].reasoning_text.clone().filter(|r| !r.is_empty()) {
+                self.reasoning_text = Some(reasoning);
+            }
         }
     }
 }
@@ -253,6 +258,26 @@ mod tests {
         m.active_alternate_index = 9;
         m.sync_text_from_alternates();
         assert_eq!(m.text, "only");
+    }
+
+    #[test]
+    fn loading_shows_the_active_alternate_reasoning() {
+        let mut m = ChatMessage::new(Uuid::new_v4(), MessageRole::Character, "stale");
+        m.reasoning_text = None;
+        m.alternates = vec![
+            MessageAlternate { text: "first".into(), reasoning_text: Some("why first".into()), raw_prompt: None },
+            MessageAlternate { text: "second".into(), reasoning_text: Some("why second".into()), raw_prompt: None },
+        ];
+        m.active_alternate_index = 1;
+        m.sync_text_from_alternates();
+        assert_eq!(m.text, "second");
+        assert_eq!(m.reasoning_text.as_deref(), Some("why second"));
+
+        // A variant that never stored a trace does not wipe one the column already has.
+        m.reasoning_text = Some("kept".into());
+        m.alternates[1].reasoning_text = None;
+        m.sync_text_from_alternates();
+        assert_eq!(m.reasoning_text.as_deref(), Some("kept"));
     }
 
     #[test]

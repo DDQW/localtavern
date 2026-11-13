@@ -225,6 +225,10 @@ struct AssembleOptions<'a> {
     returning: bool,
     /// A private talk's reply may end the talk and go back to the group (`[back]` tag).
     offer_back: bool,
+    /// The user discarded a reply and wants another. That reply is already absent from the history.
+    /// Earlier turns keep their reasoning, so the model still remembers what happened, and a note
+    /// asks for a different reply without undoing the scene.
+    another_take: bool,
 }
 
 /// What a group voice is answering, which decides what its reply may do.
@@ -949,9 +953,9 @@ present, keep it as its own final paragraph, still naming whose details they are
                 return Err(Error::Other("No model selected - pick one, or refresh the model list in Settings.".into()));
             }
             match &ctx.group {
-                Some(group) => engine.group_round(conversation_id, group, &ctx.messages, vec![character_id], Occasion::Message, &inner_sink, &token).await,
+                Some(group) => engine.group_round(conversation_id, group, &ctx.messages, vec![character_id], Occasion::Message, false, &inner_sink, &token).await,
                 None => {
-                    let replied = engine.generate_new(conversation_id, Some(character_id), &[], Occasion::Message, &inner_sink, &token).await?;
+                    let replied = engine.generate_new(conversation_id, Some(character_id), &[], Occasion::Message, false, &inner_sink, &token).await?;
                     leave_talk(conversation_id, Some(character_id), &replied, &inner_sink);
                     Ok(())
                 }
@@ -990,7 +994,7 @@ present, keep it as its own final paragraph, still naming whose details they are
                     speakers.push(id);
                 }
             }
-            engine.group_round(conversation_id, group, &ctx.messages, speakers, occasion, &inner_sink, &token).await
+            engine.group_round(conversation_id, group, &ctx.messages, speakers, occasion, false, &inner_sink, &token).await
         })
         .await
     }
@@ -1421,11 +1425,11 @@ present, keep it as its own final paragraph, still naming whose details they are
             let latest_user_text =
                 history.iter().rev().find(|m| m.role == MessageRole::User).map(|m| m.text.clone()).unwrap_or_default();
             let speakers = strategy_for(group.activation_mode).select_next_speakers(group, &ctx.characters, &history, &latest_user_text);
-            return self.group_round(conversation_id, group, &history, speakers, Occasion::Message, &sink, &token).await;
+            return self.group_round(conversation_id, group, &history, speakers, Occasion::Message, is_retry, &sink, &token).await;
         }
 
         let speaker_id = (ctx.characters.len() == 1).then(|| ctx.characters[0].id);
-        let replied = self.generate_new(conversation_id, speaker_id, &[], Occasion::Message, &sink, &token).await?;
+        let replied = self.generate_new(conversation_id, speaker_id, &[], Occasion::Message, is_retry, &sink, &token).await?;
         leave_talk(conversation_id, ctx.breakout.is_some().then_some(speaker_id).flatten(), &replied, &sink);
         Ok(())
     }
@@ -1444,6 +1448,7 @@ present, keep it as its own final paragraph, still naming whose details they are
         history: &[ChatMessage],
         speakers: Vec<Uuid>,
         occasion: Occasion,
+        another_take: bool,
         sink: &Arc<dyn EventSink>,
         token: &CancellationToken,
     ) -> Result<()> {
@@ -1457,6 +1462,7 @@ present, keep it as its own final paragraph, still naming whose details they are
             .collect();
         let mut queue = VecDeque::from(speakers);
         let mut aside = None;
+        let mut fresh = another_take;
         while let Some(speaker) = queue.pop_front() {
             let candidates: Vec<Uuid> = if group.joint_replies {
                 let free = |id: &Uuid| *id != speaker && !answered.contains(id) && !queue.contains(id);
@@ -1466,7 +1472,8 @@ present, keep it as its own final paragraph, still naming whose details they are
             };
             // Once the user is being taken aside, nobody else takes them anywhere.
             let turn = if aside.is_some() { Occasion::Reaction } else { occasion };
-            let replied = self.generate_new(conversation_id, Some(speaker), &candidates, turn, sink, token).await?;
+            let replied = self.generate_new(conversation_id, Some(speaker), &candidates, turn, fresh, sink, token).await?;
+            fresh = false;
             if !replied.completed {
                 return Ok(());
             }
@@ -1732,6 +1739,12 @@ present, keep it as its own final paragraph, still naming whose details they are
                 request.history.push(LlmMessage::new(LlmRole::User, roles::group_turn_note(&ins, &me.name, &others)));
             }
         }
+        if options.another_take {
+            request.history.push(LlmMessage::new(
+                LlmRole::User,
+                ins.note("The previous reply was discarded. Write a different reply. Everything that already happened before it still stands."),
+            ));
+        }
         Ok(request)
     }
 
@@ -1754,8 +1767,10 @@ present, keep it as its own final paragraph, still naming whose details they are
             Ok(p) => p,
             Err(e) => return StreamResult::failed(e),
         };
-        // Ollama waits for a picture holding the graphics card; the reply shows why it hasn't started.
-        if provider_id == crate::providers::ollama::PROVIDER_ID && self.inner.gpu.lock().unwrap().is_held() {
+        // A local model waits for a picture holding the graphics card; the reply shows why it hasn't started.
+        if matches!(provider_id, crate::providers::ollama::PROVIDER_ID | crate::providers::omlx::PROVIDER_ID)
+            && self.inner.gpu.lock().unwrap().is_held()
+        {
             sink.emit(ChatEvent::WaitingForPicture { message_id });
         }
 
@@ -1998,6 +2013,7 @@ present, keep it as its own final paragraph, still naming whose details they are
         speaker_id: Option<Uuid>,
         next_speakers: &[Uuid],
         occasion: Occasion,
+        another_take: bool,
         sink: &Arc<dyn EventSink>,
         token: &CancellationToken,
     ) -> Result<Replied> {
@@ -2006,8 +2022,9 @@ present, keep it as its own final paragraph, still naming whose details they are
             Ok(assistant && tool_settings::load(c)?.enabled)
         })?;
 
+        let mut another_take = another_take;
         for round_trips in 0.. {
-            match self.generate_turn(conversation_id, speaker_id, next_speakers, occasion, sink, token, tools).await? {
+            match self.generate_turn(conversation_id, speaker_id, next_speakers, occasion, another_take, sink, token, tools).await? {
                 Turn::Done(replied) => return Ok(replied),
                 Turn::ToolCall(call) => {
                     if round_trips >= MAX_TOOL_ITERATIONS {
@@ -2019,6 +2036,7 @@ present, keep it as its own final paragraph, still naming whose details they are
                     }
                 }
             }
+            another_take = false;
         }
         unreachable!("the loop only ends by returning")
     }
@@ -2030,6 +2048,7 @@ present, keep it as its own final paragraph, still naming whose details they are
         speaker_id: Option<Uuid>,
         next_speakers: &[Uuid],
         occasion: Occasion,
+        another_take: bool,
         sink: &Arc<dyn EventSink>,
         token: &CancellationToken,
         tools: bool,
@@ -2058,6 +2077,7 @@ present, keep it as its own final paragraph, still naming whose details they are
                 offer_private,
                 returning: occasion == Occasion::Return,
                 offer_back,
+                another_take,
                 ..Default::default()
             },
         )?;
@@ -2272,7 +2292,7 @@ present, keep it as its own final paragraph, still naming whose details they are
         let request = self.assemble(
             &ctx,
             &ctx.messages[..position],
-            AssembleOptions { speaker: speaker.as_ref(), reply_tags: true, ..Default::default() },
+            AssembleOptions { speaker: speaker.as_ref(), reply_tags: true, another_take: true, ..Default::default() },
         )?;
         let raw_prompt = format_prompt(&request);
 

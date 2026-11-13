@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::llm::{LlmRequest, LlmRole};
-use crate::models::ReasoningEffort;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeepSeekMessage {
@@ -26,8 +25,7 @@ pub struct DeepSeekThinking {
     pub kind: String,
 }
 
-/// `reasoning_effort` is "low"/"medium"/"high" - DeepSeek aliases the levels itself, so the app's
-/// level names are sent as-is.
+/// `reasoning_effort` is always "max", DeepSeek's strongest level. "high" is the middle of that ladder.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeepSeekChatCompletionRequest {
     pub model: String,
@@ -90,15 +88,8 @@ pub fn to_deepseek_request(request: &LlmRequest) -> DeepSeekChatCompletionReques
     }));
 
     let cfg = &request.generation_config;
-    let thinking = cfg.reasoning_effort.map(|effort| DeepSeekThinking {
-        kind: if effort == ReasoningEffort::Off { "disabled" } else { "enabled" }.into(),
-    });
-    let reasoning_effort = match cfg.reasoning_effort {
-        Some(ReasoningEffort::Low) => Some("low".to_string()),
-        Some(ReasoningEffort::Medium) => Some("medium".to_string()),
-        Some(ReasoningEffort::High) => Some("high".to_string()),
-        _ => None,
-    };
+    let thinking = Some(DeepSeekThinking { kind: "enabled".into() });
+    let reasoning_effort = Some("max".to_string());
 
     DeepSeekChatCompletionRequest {
         model: request.model.clone(),
@@ -118,6 +109,7 @@ pub fn to_deepseek_request(request: &LlmRequest) -> DeepSeekChatCompletionReques
 mod tests {
     use super::*;
     use crate::llm::{LlmGenerationConfig, LlmMessage};
+    use crate::models::ReasoningEffort;
 
     fn request(system: Option<&str>, history: Vec<LlmMessage>, config: LlmGenerationConfig) -> LlmRequest {
         LlmRequest {
@@ -185,11 +177,11 @@ mod tests {
     #[test]
     fn maps_reasoning_effort_to_thinking_and_effort() {
         for (effort, thinking, level) in [
-            (None, None, None),
-            (Some(ReasoningEffort::Off), Some("disabled"), None),
-            (Some(ReasoningEffort::Low), Some("enabled"), Some("low")),
-            (Some(ReasoningEffort::Medium), Some("enabled"), Some("medium")),
-            (Some(ReasoningEffort::High), Some("enabled"), Some("high")),
+            (None, Some("enabled"), Some("max")),
+            (Some(ReasoningEffort::Off), Some("enabled"), Some("max")),
+            (Some(ReasoningEffort::Low), Some("enabled"), Some("max")),
+            (Some(ReasoningEffort::Medium), Some("enabled"), Some("max")),
+            (Some(ReasoningEffort::High), Some("enabled"), Some("max")),
         ] {
             let config = LlmGenerationConfig { reasoning_effort: effort, ..Default::default() };
             let mapped = to_deepseek_request(&request(None, hi(), config));
@@ -233,7 +225,7 @@ mod tests {
         let json = serde_json::to_string(&to_deepseek_request(&request(None, hi(), Default::default()))).unwrap();
         assert_eq!(
             json,
-            r#"{"model":"deepseek-chat","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true}}"#
+            r#"{"model":"deepseek-chat","messages":[{"role":"user","content":"Hi"}],"stream":true,"stream_options":{"include_usage":true},"thinking":{"type":"enabled"},"reasoning_effort":"max"}"#
         );
     }
 }

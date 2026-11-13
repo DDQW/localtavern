@@ -9,6 +9,7 @@
     GeminiOptions,
     Persona,
     OllamaOptions,
+    OmlxOptions,
     VastAiOptions,
     PowerShellOptions,
     ProviderInfo,
@@ -26,6 +27,7 @@
   let modelCounts = $state<Record<string, number>>({});
   let gemini = $state<GeminiOptions | null>(null);
   let ollama = $state<OllamaOptions | null>(null);
+  let omlx = $state<OmlxOptions | null>(null);
   let vastai = $state<VastAiOptions | null>(null);
   let error = $state("");
   let sessions = $state<Record<string, SessionStatus>>({});
@@ -80,6 +82,7 @@
         }
         gemini = await api.getGeminiOptions();
         ollama = await api.getOllamaOptions();
+        omlx = await api.getOmlxOptions();
         vastai = await api.getVastAiOptions();
         powershell = await api.getPowerShellOptions();
         memories = await api.listMemories();
@@ -260,6 +263,16 @@
     }
   }
 
+  async function saveOmlx() {
+    if (!omlx) return;
+    try {
+      await api.saveOmlxOptions($state.snapshot(omlx));
+      status.omlx = "oMLX options saved.";
+    } catch (e) {
+      status.omlx = errorText(e);
+    }
+  }
+
   async function saveOllama() {
     if (!ollama) return;
     try {
@@ -412,6 +425,39 @@
           <div class="keyrow">
             <button onclick={saveOllama}>Save Ollama options</button>
             {#if status.ollama}<span class="muted small" role="status">{status.ollama}</span>{/if}
+          </div>
+        {/if}
+        {#if provider.id === "omlx" && omlx}
+          <h3>oMLX options</h3>
+          <div class="ollama">
+            <label class="field">
+              Server address
+              <input type="url" bind:value={omlx.baseUrl} placeholder="http://127.0.0.1:8000" />
+            </label>
+          </div>
+          <p class="muted small">
+            Apple Silicon MLX server. Models come from <code>/v1/models</code> on this address (port 8000). A pasted <code>/v1</code> is fine.
+          </p>
+          <form
+            class="keyrow"
+            onsubmit={(e) => {
+              e.preventDefault();
+              void saveKey(provider);
+            }}
+          >
+            <input
+              type="password"
+              autocomplete="off"
+              placeholder={provider.hasKey ? "Enter a new key to replace the saved one" : "API key, only if oMLX asks for one"}
+              bind:value={keys[provider.id]}
+              aria-label="oMLX API key"
+            />
+            <button class="primary" type="submit" disabled={busy[provider.id]}>{keys[provider.id] ? "Save key" : provider.hasKey ? "Remove key" : "Save key"}</button>
+          </form>
+          <p class="muted small">Loopback needs no key. oMLX requires one only when it listens beyond this Mac. Stored in the keychain, like the other keys.</p>
+          <div class="keyrow">
+            <button onclick={saveOmlx}>Save oMLX options</button>
+            {#if status.omlx}<span class="muted small" role="status">{status.omlx}</span>{/if}
           </div>
         {/if}
         {#if provider.id === "ondevice"}

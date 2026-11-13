@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::llm::{LlmMessage, LlmRequest, LlmRole};
-use crate::models::ReasoningEffort;
 
 // ---- options ----
 
@@ -140,7 +139,7 @@ pub struct GeminiContent {
 }
 
 /// Requests thought summaries back on models that support thinking - harmless on models that don't.
-/// `thinking_level` is "low"/"medium"/"high", or None to let the model apply its own default.
+/// `thinking_level` is always "high", the top of the ladder.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GeminiThinkingConfig {
@@ -276,7 +275,7 @@ pub fn to_gemini_request(request: &LlmRequest, options: &GeminiRequestOptions) -
         stop_sequences: cfg.stop_sequences.clone(),
         thinking_config: Some(GeminiThinkingConfig {
             include_thoughts: true,
-            thinking_level: to_thinking_level(cfg.reasoning_effort).map(String::from),
+            thinking_level: Some(to_thinking_level().into()),
         }),
     };
 
@@ -302,14 +301,9 @@ pub fn to_gemini_request(request: &LlmRequest, options: &GeminiRequestOptions) -
     }
 }
 
-/// Gemini can't switch thinking off on every model, so Off falls back to its lowest level rather
-/// than a request some models would reject.
-fn to_thinking_level(effort: Option<ReasoningEffort>) -> Option<&'static str> {
-    match effort? {
-        ReasoningEffort::Off | ReasoningEffort::Low => Some("low"),
-        ReasoningEffort::Medium => Some("medium"),
-        ReasoningEffort::High => Some("high"),
-    }
+/// "high" is the top of Gemini's thinking ladder. A preset cannot lower it.
+fn to_thinking_level() -> &'static str {
+    "high"
 }
 
 /// One text part for the message (even if empty, so a picture-only message still has a content part)
@@ -331,6 +325,7 @@ mod tests {
     use super::*;
     use base64::Engine;
     use crate::llm::{LlmAttachment, LlmGenerationConfig};
+    use crate::models::ReasoningEffort;
 
     fn request(history: Vec<LlmMessage>, config: LlmGenerationConfig) -> LlmRequest {
         LlmRequest {
@@ -507,19 +502,13 @@ mod tests {
 
     #[test]
     fn maps_reasoning_effort_to_thinking_level() {
-        for (effort, expected) in [
-            (None, None),
-            (Some(ReasoningEffort::Off), Some("low")),
-            (Some(ReasoningEffort::Low), Some("low")),
-            (Some(ReasoningEffort::Medium), Some("medium")),
-            (Some(ReasoningEffort::High), Some("high")),
-        ] {
+        for effort in [None, Some(ReasoningEffort::Off), Some(ReasoningEffort::Low), Some(ReasoningEffort::Medium), Some(ReasoningEffort::High)] {
             let r = request(
                 vec![LlmMessage::new(LlmRole::User, "Hi")],
                 LlmGenerationConfig { reasoning_effort: effort, ..Default::default() },
             );
             let thinking = to_gemini_request(&r, &Default::default()).generation_config.unwrap().thinking_config.unwrap();
-            assert_eq!(thinking.thinking_level.as_deref(), expected, "{effort:?}");
+            assert_eq!(thinking.thinking_level.as_deref(), Some("high"), "{effort:?}");
             assert!(thinking.include_thoughts);
         }
     }
@@ -531,7 +520,7 @@ mod tests {
         let json = serde_json::to_string(&to_gemini_request(&r, &Default::default())).unwrap();
         assert!(json.contains("\"system_instruction\":{\"parts\":[{\"text\":\"sys\"}]}"), "{json}");
         assert!(json.contains("\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Hi\"}]}]"), "{json}");
-        assert!(json.contains("\"generationConfig\":{\"thinkingConfig\":{\"includeThoughts\":true}}"), "{json}");
+        assert!(json.contains("\"generationConfig\":{\"thinkingConfig\":{\"includeThoughts\":true,\"thinkingLevel\":\"high\"}}"), "{json}");
         assert!(!json.contains("null"), "{json}");
         assert!(!json.contains("\"tools\""), "{json}");
     }

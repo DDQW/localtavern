@@ -27,6 +27,7 @@ import type {
   GroupChat,
   Lorebook,
   OllamaOptions,
+  OmlxOptions,
   VastAiOptions,
   OnDeviceOptions,
   OnDeviceStatus,
@@ -139,6 +140,8 @@ export interface Api {
   saveGeminiOptions(options: GeminiOptions): Promise<void>;
   getOllamaOptions(): Promise<OllamaOptions>;
   saveOllamaOptions(options: OllamaOptions): Promise<void>;
+  getOmlxOptions(): Promise<OmlxOptions>;
+  saveOmlxOptions(options: OmlxOptions): Promise<void>;
   getVastAiOptions(): Promise<VastAiOptions>;
   saveVastAiOptions(options: VastAiOptions): Promise<void>;
   ondeviceStatus(): Promise<OnDeviceStatus>;
@@ -307,6 +310,8 @@ const tauriApi: Api = {
   saveGeminiOptions: (options) => invoke("save_gemini_options", { options }),
   getOllamaOptions: () => invoke("get_ollama_options"),
   saveOllamaOptions: (options) => invoke("save_ollama_options", { options }),
+  getOmlxOptions: () => invoke("get_omlx_options"),
+  saveOmlxOptions: (options) => invoke("save_omlx_options", { options }),
   getVastAiOptions: () => invoke("get_vastai_options"),
   saveVastAiOptions: (options) => invoke("save_vastai_options", { options }),
   ondeviceStatus: () => invoke("ondevice_status"),

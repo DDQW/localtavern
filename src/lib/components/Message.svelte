@@ -40,6 +40,17 @@
           : "Story time this reply covered, as estimated by the model",
   );
 
+  // Open the fold once thoughts start arriving. A closed <details> hid the trace that used to
+  // show in the reply, and forcing it open on every delta would fight someone who closed it.
+  let reasoningOpen = $state(false);
+  let reasoningRevealed = false;
+  $effect(() => {
+    if (!reasoningRevealed && message.streaming && message.reasoningText) {
+      reasoningRevealed = true;
+      reasoningOpen = true;
+    }
+  });
+
   // Prompts are big (the whole history each), so one is only fetched while its fold is open.
   let prompt = $state<string | null>(null);
   async function onPromptToggle(event: Event) {
@@ -99,7 +110,7 @@
     </div>
 
     {#if message.reasoningText}
-      <details class="fold">
+      <details class="fold" bind:open={reasoningOpen}>
         <summary>Reasoning</summary>
         <div class="plain muted">{message.reasoningText}</div>
       </details>

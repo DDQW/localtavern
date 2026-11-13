@@ -919,8 +919,8 @@ async fn swiping_right_past_the_last_alternate_generates_a_new_one_and_left_goes
 
     // The regeneration was prompted from the history *before* the reply, not including it.
     let request = &f.provider.requests()[1];
-    assert_eq!(request.history.len(), 1);
     assert_eq!(request.history[0].text, "hi");
+    assert!(request.history.last().unwrap().text.contains("discarded"), "a new take is asked to differ");
 
     let back = f.engine.swipe_previous(reply_id).unwrap();
     assert_eq!((back.text.as_str(), back.active_alternate_index), ("first", 0));
@@ -931,6 +931,40 @@ async fn swiping_right_past_the_last_alternate_generates_a_new_one_and_left_goes
     f.engine.swipe_next(conv, reply_id, sink.clone()).await.unwrap();
     assert_eq!(f.provider.requests().len(), 2);
     assert!(matches!(&sink.events()[0], ChatEvent::MessageUpdated { message } if message.text == "second"));
+}
+
+#[tokio::test]
+async fn retrying_a_deleted_reply_keeps_earlier_reasoning() {
+    let first = LlmResponseChunk {
+        delta_text: "Hello.".into(),
+        thought_delta_text: "I'll greet them and offer ale next.".into(),
+        ..Default::default()
+    };
+    let f = fixture(vec![
+        Script::Items(vec![Ok(first), finish("STOP")]),
+        Script::Items(vec![chunk("Have the ale."), finish("STOP")]),
+        Script::Items(vec![chunk("Have the wine."), finish("STOP")]),
+    ]);
+    let conv = ready_roleplay(&f);
+    send(&f, conv, "hi").await.0.unwrap();
+    send(&f, conv, "what do you recommend?").await.0.unwrap();
+
+    let follow = f.provider.requests();
+    let prior = follow[1].history.iter().find(|m| m.role == LlmRole::Model).unwrap();
+    assert_eq!(prior.text, "Hello.");
+    assert_eq!(prior.reasoning.as_deref(), Some("I'll greet them and offer ale next."));
+
+    let reply = messages(&f, conv).last().unwrap().id;
+    f.engine.delete_message(reply).unwrap();
+    send(&f, conv, "").await.0.unwrap();
+
+    let retry = f.provider.requests();
+    let again = &retry[2];
+    let prior = again.history.iter().find(|m| m.text == "Hello.").unwrap();
+    assert_eq!(prior.reasoning.as_deref(), Some("I'll greet them and offer ale next."), "earlier turns still carry what happened");
+    assert!(again.history.iter().all(|m| m.text != "Have the ale."), "the discarded reply itself stays out");
+    let note = again.history.last().unwrap().text.as_str();
+    assert!(note.contains("discarded") && note.contains("still stands"), "{note}");
 }
 
 #[tokio::test]

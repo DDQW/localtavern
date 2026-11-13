@@ -200,8 +200,8 @@ fn build_history(ctx: &PromptAssemblyContext, macros: &Macros) -> Vec<LlmMessage
             };
 
             let reasoning = match role {
-                LlmRole::Model => message.reasoning_text.clone().filter(|r| !r.trim().is_empty()),
-                LlmRole::User => None,
+                LlmRole::Model if ctx.include_reasoning => message.reasoning_text.clone().filter(|r| !r.trim().is_empty()),
+                _ => None,
             };
 
             LlmMessage { role, text, attachments, reasoning }
@@ -719,6 +719,22 @@ mod tests {
             assemble(&PromptAssemblyContext::new(&conv, &preset, &history).with_characters(&characters), &NullScanner);
 
         assert_eq!(request.history[0].text, "Hello!");
+    }
+
+    #[test]
+    fn a_replacement_reply_keeps_the_words_and_drops_the_reasoning() {
+        let conv = roleplay();
+        let preset = create_roleplay_preset();
+        let mut reply = msg(MessageRole::Character, "Have the house ale.");
+        reply.reasoning_text = Some("I'll recommend the house ale.".into());
+        let history = [msg(MessageRole::User, "What do you recommend?"), reply];
+
+        let kept = assemble(&PromptAssemblyContext::new(&conv, &preset, &history), &NullScanner);
+        assert_eq!(kept.history[1].reasoning.as_deref(), Some("I'll recommend the house ale."));
+
+        let fresh = assemble(&PromptAssemblyContext::new(&conv, &preset, &history).with_include_reasoning(false), &NullScanner);
+        assert_eq!(fresh.history[1].text, "Have the house ale.");
+        assert!(fresh.history[1].reasoning.is_none());
     }
 
     #[test]
