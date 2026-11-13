@@ -1,7 +1,8 @@
 // Colours spoken dialogue: text between quotation marks gets a `md-quote` span, the way SillyTavern
 // (and this app's earlier WinUI version) styled it. Actions written as *asterisks* are plain
 // emphasis, so they come out italic without any help from here. A character's thoughts are italics
-// that are a parenthesis too, `*(I hope he buys it.)*`, and get a `md-thought` class.
+// that are a parenthesis too, `*(I hope he buys it.)*`, or a paragraph that is only `(like this)`,
+// and get a `md-thought` class. Straight and fullwidth parentheses both count.
 //
 // Straight, curly and guillemet quotes are all treated as the same toggle, since models and phones
 // emit curly ones far more often than a keyboard's ASCII `"`. The quote marks themselves belong to
@@ -42,15 +43,23 @@ export function splitDialogue(text: string, inQuote: boolean): { segments: Segme
   return { segments, inQuote };
 }
 
+function isParenOpen(ch: string): boolean {
+  return ch === "(" || ch === "（";
+}
+
+function isParenClose(ch: string): boolean {
+  return ch === ")" || ch === "）";
+}
+
 /** Whether emphasised text is a thought: all of it inside one pair of parentheses. */
 export function isThought(text: string): boolean {
   const t = text.trim();
-  if (t.length < 3 || !t.startsWith("(") || !t.endsWith(")")) return false;
+  if (t.length < 3 || !isParenOpen(t[0]) || !isParenClose(t[t.length - 1])) return false;
   // The first "(" has to close at the very end: "(a) and (b)" is two asides, not one thought.
   let depth = 0;
   for (let i = 0; i < t.length; i++) {
-    if (t[i] === "(") depth++;
-    else if (t[i] === ")" && --depth === 0 && i < t.length - 1) return false;
+    if (isParenOpen(t[i])) depth++;
+    else if (isParenClose(t[i]) && --depth === 0 && i < t.length - 1) return false;
   }
   return depth === 0;
 }
@@ -71,11 +80,32 @@ function markThoughts(children: Token[]): void {
   }
 }
 
+/**
+ * A paragraph that is only a parenthetical, `(like this)`, is a thought even without asterisks.
+ * One written as `*(like this)*` is already an emphasis and is marked by [`markThoughts`].
+ */
+function wrapBareThought(state: StateCore, children: Token[]): Token[] | null {
+  if (children.some((token) => token.type === "em_open")) return null;
+  const text = children
+    .filter((token) => token.type === "text")
+    .map((token) => token.content)
+    .join("");
+  if (!isThought(text)) return null;
+  const open = new state.Token("html_inline", "", 0);
+  open.content = '<span class="md-thought">';
+  const close = new state.Token("html_inline", "", 0);
+  close.content = "</span>";
+  return [open, ...children, close];
+}
+
 /** markdown-it plugin: wraps quoted text in `<span class="md-quote">` and marks thoughts. */
 export function dialoguePlugin(md: MarkdownIt): void {
   md.core.ruler.push("dialogue_thoughts", (state: StateCore) => {
     for (const block of state.tokens) {
-      if (block.type === "inline" && block.children) markThoughts(block.children);
+      if (block.type !== "inline" || !block.children) continue;
+      markThoughts(block.children);
+      const wrapped = wrapBareThought(state, block.children);
+      if (wrapped) block.children = wrapped;
     }
   });
   md.core.ruler.push("dialogue_quotes", (state: StateCore) => {

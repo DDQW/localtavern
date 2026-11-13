@@ -522,7 +522,9 @@ async fn no_emotion_instruction_is_sent_without_an_expression_pack() {
 
     send(&f, conv, "hi").await.0.unwrap();
 
-    assert!(!f.provider.requests()[0].system_instruction.clone().unwrap().contains("[emotion:"));
+    let system = f.provider.requests()[0].system_instruction.clone().unwrap();
+    assert!(!system.contains("[emotion:"));
+    assert!(system.contains("*(like this)*"), "{system}");
     assert_eq!(messages(&f, conv)[1].text, "hi", "a stray tag never reaches the chat, pack or not");
 }
 

@@ -133,11 +133,12 @@ character who spoke it.",
     Instruction {
         key: RULES_COMMON,
         group: ROLES,
-        title: "Actions, speech and system notes",
-        help: "Follows the who-is-who part in every roleplay reply.",
+        title: "Actions, speech, thoughts and system notes",
+        help: "Follows the who-is-who part in every roleplay reply. A thought written as *(like this)* is coloured in the chat.",
         placeholders: &["{user}"],
-        default: "Text in *asterisks* is action or narration and text in \"quotes\" is speech; both belong to whoever wrote that \
-message. A message in the form [System note: ...] comes from the app, not from {user}: follow it without mentioning it.",
+        default: "Text in *asterisks* is action or narration, text in \"quotes\" is speech, and a thought of whoever wrote the \
+message is italics inside parentheses, *(like this)*. All three belong to whoever wrote that message. A message in the \
+form [System note: ...] comes from the app, not from {user}: follow it without mentioning it.",
     },
     Instruction {
         key: RULES_GROUP_MEMBERS,
@@ -670,6 +671,13 @@ pub fn save(conn: &Connection, instructions: Instructions) -> Result<Instruction
 mod tests {
     use super::*;
     use crate::db::open_in_memory;
+
+    #[test]
+    fn roleplay_rules_ask_for_thoughts_in_the_reply() {
+        let text = Instructions::default().render(RULES_COMMON, &[("user", "Alex")]);
+        assert!(text.contains("*(like this)*"), "{text}");
+        assert!(text.contains("Alex"), "{text}");
+    }
 
     #[test]
     fn a_reworded_text_is_used_and_a_blank_one_falls_back() {
