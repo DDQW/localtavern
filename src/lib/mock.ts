@@ -267,6 +267,7 @@ function conversation(overrides: Partial<Conversation>): Conversation {
       customHolidays: [],
       outfits: {},
       maxSkipMinutes: 360,
+      clockAdvances: false,
       metersEnabled: true,
       meters: {},
     },

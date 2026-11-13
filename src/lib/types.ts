@@ -206,6 +206,8 @@ export interface WorldState {
   outfits: Record<Uuid, Uuid>;
   /** Largest jump one reply may make on its own, in minutes (0 = no limit). */
   maxSkipMinutes: number;
+  /** Each reply moves the story clock. Off leaves the clock where the Story panel set it. */
+  clockAdvances: boolean;
   /** Track an arousal / climax meter per character. */
   metersEnabled: boolean;
   /** Character id -> meter. */

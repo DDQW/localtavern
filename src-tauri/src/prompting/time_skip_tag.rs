@@ -1,5 +1,5 @@
-//! The trailing `[time-skip: 3 hours]` tag every roleplay reply is asked to append, estimating how
-//! much in-story time that reply covered. The flat per-message tick
+//! The trailing `[time-skip: 3 hours]` tag a roleplay reply is asked to append while automatic time
+//! advance is on, estimating how much in-story time that reply covered. The flat per-message tick
 //! (`WorldState::default_advance_minutes_per_message`) is only a fallback for when the tag is
 //! missing or unparseable.
 

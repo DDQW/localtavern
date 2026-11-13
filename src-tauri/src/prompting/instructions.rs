@@ -171,9 +171,9 @@ chosen from exactly this list: {emotions}. Format: [emotion: <one of the list ab
         key: TIME_SKIP_TAG,
         group: TAGS,
         title: "Time-skip tag",
-        help: "Not injected any more: the story clock is set by hand in the Story panel. Kept here so you can still edit the old wording if you want it back in a custom preset.",
+        help: "Injected while automatic time advance is on in the Story panel. The tag is what moves the clock.",
         placeholders: &[],
-        default: "The story has a clock that only moves when you move it. At the very end of every reply, on its own last line, \
+        default: "The story clock moves by the time this reply covers. At the very end of every reply, on its own last line, \
 append a tag saying how much in-story time that reply covered - never omit it, and never write 0: a short line of dialogue or a quick \
 reaction is about 1 minute; a described action, a wait or some small talk is several minutes; a meal, a drive or a long conversation is \
 tens of minutes; an explicit time jump (an overnight, a training montage, \"the rest of the evening\") must match what was narrated. \

@@ -58,7 +58,7 @@ pub struct WorldState {
     pub fictional_date_time: NaiveDateTime,
     pub weather: WeatherCondition,
     pub weather_notes: Option<String>,
-    /// Unused while the clock is manual (Story panel). Kept for older saves.
+    /// Minutes added when a reply gives no time-skip, once automatic advance is on.
     pub default_advance_minutes_per_message: i32,
     pub auto_drift_weather_enabled: bool,
     /// Where the story is set (ISO 3166-1 alpha-2, e.g. "DE"); picks the public holidays.
@@ -74,9 +74,14 @@ pub struct WorldState {
     /// character not listed wears their default.
     #[serde(default)]
     pub outfits: std::collections::BTreeMap<Uuid, Uuid>,
-    /// Unused while the clock is manual (Story panel). Kept for older saves.
+    /// Largest jump one reply may make, in minutes, once automatic advance is on. 0 means no limit.
     #[serde(default = "default_max_skip_minutes")]
     pub max_skip_minutes: i32,
+    /// When on, each reply moves this clock: by the reply's time-skip, or by
+    /// `default_advance_minutes_per_message` when the reply gives none. Off leaves the clock
+    /// where the Story panel set it. Missing on older saves, which stay manual.
+    #[serde(default)]
+    pub clock_advances: bool,
     /// Track an arousal / climax meter per character: after each reply the story is read for what
     /// raised or lowered them (off unless switched on in the Story panel).
     #[serde(default = "default_meters_enabled")]
@@ -209,6 +214,7 @@ impl WorldState {
             custom_holidays: Vec::new(),
             outfits: Default::default(),
             max_skip_minutes: default_max_skip_minutes(),
+            clock_advances: false,
             meters_enabled: false,
             meters: Default::default(),
         }

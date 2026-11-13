@@ -548,6 +548,36 @@ async fn the_world_clock_stays_put_and_time_skip_tags_are_only_peeled() {
 }
 
 #[tokio::test]
+async fn a_reply_moves_the_clock_when_advance_is_on() {
+    let f = fixture(vec![Script::Items(vec![chunk("They walked for a while. [time-skip: 3 hours]"), finish("STOP")])]);
+    let nova = add_character(&f.db, "Nova", None, &[]);
+    let conv = ready_character(&f, &nova);
+    let start = NaiveDate::from_ymd_opt(2025, 6, 14).unwrap().and_hms_opt(9, 0, 0).unwrap();
+    f.db
+        .with(|c| {
+            conversations::update_world_state(
+                c,
+                conv,
+                Some(&WorldState { fictional_date_time: start, clock_advances: true, ..WorldState::create_default() }),
+            )
+        })
+        .unwrap();
+
+    let (result, events) = send(&f, conv, "go").await;
+    result.unwrap();
+
+    let expected = start.checked_add_signed(chrono::Duration::hours(3)).unwrap();
+    assert_eq!(world(&f, conv).unwrap().fictional_date_time, expected);
+    assert!(events.iter().any(|e| matches!(e, ChatEvent::WorldStateChanged { world_state, .. } if world_state.fictional_date_time == expected)));
+    let reply = &messages(&f, conv)[1];
+    assert_eq!(reply.text, "They walked for a while.");
+    let clock = reply.clock.as_ref().expect("the reply records how far the clock moved");
+    assert_eq!(clock.advanced_minutes, 180);
+    assert!(!clock.estimated);
+    assert!(f.provider.requests()[0].system_instruction.clone().unwrap().contains("[time-skip:"));
+}
+
+#[tokio::test]
 async fn without_a_world_clock_no_time_skip_instruction_is_sent() {
     let f = fixture(vec![Script::Items(vec![chunk("ok"), finish("STOP")])]);
     let nova = add_character(&f.db, "Nova", None, &[]);

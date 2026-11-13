@@ -27,6 +27,14 @@
 
   const weatherLabel = (w: string) => w.replace(/([a-z])([A-Z])/g, "$1 $2");
   const WEATHER: WeatherCondition[] = ["Clear", "PartlyCloudy", "Overcast", "Rain", "Thunderstorm", "Snow", "Fog", "Windy"];
+  const SKIP_LIMITS = [
+    { label: "1 hour", minutes: 60 },
+    { label: "3 hours", minutes: 180 },
+    { label: "6 hours", minutes: 360 },
+    { label: "12 hours", minutes: 720 },
+    { label: "1 day", minutes: 1440 },
+    { label: "No limit", minutes: 0 },
+  ];
   const JUMPS = [
     { label: "+1 hour", minutes: 60 },
     { label: "+6 hours", minutes: 360 },
@@ -149,6 +157,12 @@
     void chat.updateWorld({ customHolidays: world.customHolidays.filter((_, i) => i !== index) });
   }
 
+  function setMinutes(e: Event & { currentTarget: HTMLInputElement }) {
+    const minutes = Math.round(Number(e.currentTarget.value));
+    if (Number.isFinite(minutes) && minutes >= 1) void chat.updateWorld({ defaultAdvanceMinutesPerMessage: minutes });
+    else e.currentTarget.value = String(world?.defaultAdvanceMinutesPerMessage ?? 5);
+  }
+
 </script>
 
 {#snippet editor()}
@@ -203,7 +217,30 @@
             onchange={(e) => chat.updateWorld({ weatherNotes: e.currentTarget.value })}
           />
         </label>
-        <p class="muted small">The clock and weather only change when you edit them here. Replies do not move them.</p>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={world.clockAdvances}
+            disabled={locked}
+            onchange={(e) => chat.updateWorld({ clockAdvances: e.currentTarget.checked })}
+          />
+          Advance the clock with each reply
+        </label>
+        {#if world.clockAdvances}
+          <label class="field">
+            Largest automatic jump per reply
+            <select value={world.maxSkipMinutes ?? 360} disabled={locked} onchange={(e) => chat.updateWorld({ maxSkipMinutes: Number(e.currentTarget.value) })}>
+              {#each SKIP_LIMITS as l (l.minutes)}<option value={l.minutes}>{l.label}</option>{/each}
+            </select>
+          </label>
+          <label class="field">
+            Minutes per message (when the reply gives no time)
+            <input class="minutes" type="number" min="1" step="1" value={world.defaultAdvanceMinutesPerMessage} disabled={locked} onchange={setMinutes} />
+          </label>
+          <p class="muted small">Each reply moves the clock by the time it describes, or by the minutes above when it doesn't say. Weather still changes only when you edit it here.</p>
+        {:else}
+          <p class="muted small">The clock stays where you set it. Weather changes only when you edit it here.</p>
+        {/if}
       </div>
 
       {#if dressable.length > 0}
@@ -452,6 +489,11 @@
     flex: 1;
     font-size: 11px;
     padding: 4px 6px;
+  }
+
+  .minutes {
+    width: 6rem;
+    min-width: 6rem;
   }
 
   .day {

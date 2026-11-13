@@ -26,7 +26,7 @@ use super::images;
 use super::meters;
 use super::next_voice;
 use super::overheard;
-use super::reply::{append_instruction, check_blocked, format_prompt, match_emotion, user_message};
+use super::reply::{advance_clock, append_instruction, check_blocked, format_prompt, match_emotion, random_unit, user_message};
 use super::session::{self, build_session, load_reply_context, ChatSession, ReplyContext};
 use crate::db::Db;
 use crate::error::{Error, Result};
@@ -45,7 +45,7 @@ use crate::prompting::powershell_tool::{self, PowerShellToolCallRequest, ToolRes
 use crate::prompting::group_reply::SpeakerCut;
 use crate::prompting::reply_tags::{self, ReplyTags};
 use crate::prompting::{
-    self, audio_tag, breakout, emotion_tag, instructions, next_speaker_tag, photo_tag, roles, video_tag, world_state,
+    self, audio_tag, breakout, emotion_tag, instructions, next_speaker_tag, photo_tag, roles, time_skip_tag, video_tag, world_state,
     KeywordWorldInfoScanner,
     PromptAssemblyContext,
 };
@@ -209,7 +209,7 @@ struct AssembleOptions<'a> {
     /// Whose reply this is: what `{{char}}` means, and who the roleplay rules say the model plays.
     speaker: Option<&'a Character>,
     /// A whole new reply, whose trailing tags are stripped again: asks a speaker with an expression
-    /// pack for an `[emotion: ...]` tag and, while a world clock runs, for a `[time-skip: ...]` tag.
+    /// pack for an `[emotion: ...]` tag and, while automatic time advance is on, for a `[time-skip: ...]` tag.
     reply_tags: bool,
     /// Offer the PowerShell tool (Assistant chats only).
     tools: bool,
@@ -1685,8 +1685,14 @@ present, keep it as its own final paragraph, still naming whose details they are
         if options.tools && conversation.mode == ConversationMode::Assistant {
             append_instruction(&mut request, &powershell_tool::build_instruction(&ins));
         }
-        // Time is manual in the Story panel: the model still reads the clock from the world-state
-        // block, but is not asked for a [time-skip: ...] tag and replies do not move the clock.
+        // The clock stays put unless this story turned automatic advance on. Then the reply is
+        // asked for a [time-skip: ...] tag, and apply_reply_tags moves the clock by it.
+        if options.reply_tags
+            && conversation.mode == ConversationMode::Roleplay
+            && conversation.world_state.as_ref().is_some_and(|state| state.clock_advances)
+        {
+            append_instruction(&mut request, &time_skip_tag::build_instruction(&ins));
+        }
         if let Some(character) = options.speaker.filter(|_| options.reply_tags && !options.next_speakers.is_empty()) {
             let user = roles::user_name(ctx.persona.as_ref());
             append_instruction(&mut request, &next_speaker_tag::build_instruction(&ins, &character.name, options.next_speakers, user));
@@ -1887,21 +1893,29 @@ present, keep it as its own final paragraph, still naming whose details they are
             .collect()
     }
 
-    /// Peels the trailing tags off a finished reply. The story clock is manual (Story panel), so
-    /// replies never move it - `advance` is kept for call-site clarity and ignored. Weather drift
-    /// and time-skip tags are likewise left alone.
+    /// Peels the trailing tags off a finished reply. When this story's automatic advance is on and
+    /// `advance` is set (a normal reply, or a regenerate of the latest reply that moved the clock),
+    /// the clock moves by the time-skip tag, or by the per-message default when the tag is missing.
+    /// The in-memory world state is what advances, so a regenerate that already rewound it does not
+    /// move a second time. The tag is always peeled, so it never shows up in the chat.
     fn apply_reply_tags(
         &self,
         ctx: &ReplyContext,
         raw_text: String,
-        _advance: bool,
-        _sink: &Arc<dyn EventSink>,
+        advance: bool,
+        sink: &Arc<dyn EventSink>,
     ) -> Result<(String, ReplyTags, Option<ClockSnapshot>)> {
         if ctx.conversation.mode != ConversationMode::Roleplay {
             return Ok((raw_text, ReplyTags::default(), None));
         }
         let (clean, tags) = reply_tags::peel(&raw_text);
-        Ok((clean, tags, None))
+        let Some(state) = ctx.conversation.world_state.as_ref().filter(|state| advance && state.clock_advances) else {
+            return Ok((clean, tags, None));
+        };
+        let (next, report) = advance_clock(state, tags.skip, &mut random_unit);
+        self.db().with(|c| conversations::update_world_state(c, ctx.conversation.id, Some(&next)))?;
+        sink.emit(ChatEvent::WorldStateChanged { conversation_id: ctx.conversation.id, world_state: next });
+        Ok((clean, tags, Some(report)))
     }
 
     /// Whether replies may carry sound effects and spoken lines for `speaker`: an ElevenLabs key is
