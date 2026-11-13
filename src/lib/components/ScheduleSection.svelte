@@ -5,6 +5,7 @@
   import { DAY_KINDS, TEMPLATES, WEEKDAYS, emptySchedule } from "#lib/scheduleTemplates.js";
   import type { Character, Country, DayPlan, Schedule } from "#lib/types.js";
   import AiDraft from "./AiDraft.svelte";
+  import StoryStartFields from "./StoryStartFields.svelte";
 
   let { schedule = $bindable(null), character }: { schedule: Schedule | null; character: () => Character } = $props();
 
@@ -53,11 +54,34 @@
     if (undo) schedule = undo;
     undo = null;
   }
+
+  // A start time lives on the schedule, but filling one in should not open the weekly editor.
+  let opened = $state(false);
+
+  function hasRoutine(s: Schedule): boolean {
+    const blank = (d: DayPlan) => d.kind === "off" && d.blocks.length === 0;
+    return !!s.homeCountry || !!s.homeRegion || !!s.notes?.trim() || s.days.some((d) => !blank(d)) || !blank(s.holiday);
+  }
+
+  const showEditor = $derived(opened || (schedule !== null && hasRoutine(schedule)));
+
+  function setStoryStart(next: string | null) {
+    if (!schedule) {
+      if (!next) return;
+      ensure().storyStart = next;
+      return;
+    }
+    schedule.storyStart = next;
+    if (!next && !opened && !hasRoutine(schedule)) schedule = null;
+  }
 </script>
 
-{#if !schedule}
+<StoryStartFields value={schedule?.storyStart ?? null} onchange={setStoryStart} />
+<p class="muted small">New roleplays begin on this day and at this time. No time means 09:00. Leave both empty for 1 January 2025, 09:00.</p>
+
+{#if !showEditor || !schedule}
   <div class="btnrow">
-    <button type="button" onclick={() => ensure()}>＋ Add a schedule</button>
+    <button type="button" onclick={() => { opened = true; ensure(); }}>＋ Add a schedule</button>
     <span class="muted small">or start from</span>
     {#each TEMPLATES as t (t.name)}<button type="button" class="ghost" onclick={() => applyTemplate(t.name)}>{t.name}</button>{/each}
   </div>
@@ -77,14 +101,6 @@
     <label class="field">
       Region (optional)
       <input placeholder="e.g. DE-BY" value={schedule.homeRegion ?? ""} oninput={(e) => (schedule!.homeRegion = e.currentTarget.value.toUpperCase() || null)} />
-    </label>
-    <label class="field">
-      Story starts (date and time)
-      <input
-        type="datetime-local"
-        value={schedule.storyStart?.slice(0, 16) ?? ""}
-        onchange={(e) => (schedule!.storyStart = e.currentTarget.value ? `${e.currentTarget.value}:00` : null)}
-      />
     </label>
     <label class="check">
       <input type="checkbox" bind:checked={schedule.observesHolidays} />
@@ -143,7 +159,7 @@
       </select>
     </label>
     <span class="spacer"></span>
-    <button type="button" class="ghost danger" onclick={() => (schedule = null)}>Remove schedule</button>
+    <button type="button" class="ghost danger" onclick={() => { schedule = null; opened = false; }}>Remove schedule</button>
   </div>
 {/if}
 

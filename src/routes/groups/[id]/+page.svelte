@@ -4,6 +4,7 @@
   import { api, errorText } from "#lib/api.js";
   import AiDraft from "#lib/components/AiDraft.svelte";
   import Avatar from "#lib/components/Avatar.svelte";
+  import StoryStartFields from "#lib/components/StoryStartFields.svelte";
   import type { Character, Country, GroupActivationMode, GroupChat } from "#lib/types.js";
   import { move, newId } from "#lib/util.js";
 
@@ -214,14 +215,7 @@
           Region (optional)
           <input placeholder="e.g. DE-BY" value={form.setting.regionCode ?? ""} oninput={(e) => (form!.setting.regionCode = e.currentTarget.value.toUpperCase() || null)} />
         </label>
-        <label class="field">
-          Story starts (date and time)
-          <input
-            type="datetime-local"
-            value={form.setting.storyStart?.slice(0, 16) ?? ""}
-            onchange={(e) => (form!.setting.storyStart = e.currentTarget.value ? `${e.currentTarget.value}:00` : null)}
-          />
-        </label>
+        <StoryStartFields value={form.setting.storyStart} onchange={(next) => (form!.setting.storyStart = next)} />
       </div>
       <p class="muted small">
         New chats with this group are set here (its public holidays apply) and begin at this date and time. Whatever you leave empty comes from
